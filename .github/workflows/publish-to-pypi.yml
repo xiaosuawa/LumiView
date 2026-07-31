@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install webkit2gtk
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libglib2.0-dev
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --out dist
+      - name: Repair manylinux (exclude GTK3/GLib — system provides them)
+        run: |
+          pip install auditwheel
+          auditwheel repair \
+            --exclude 'libgtk-3.so.*' \
+            --exclude 'libgdk-3.so.*' \
+            --exclude 'libglib-2.0.so.*' \
+            --exclude 'libgobject-2.0.so.*' \
+            --exclude 'libgio-2.0.so.*' \
+            --exclude 'libgmodule-2.0.so.*' \
+            --exclude 'libgdk_pixbuf-2.0.so.*' \
+            --exclude 'libpango-1.0.so.*' \
+            --exclude 'libcairo.so.*' \
+            -w dist dist/lumiview-*.whl
+          rm dist/*-linux_x86_64.whl
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux
+          path: dist
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --out dist
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows
+          path: dist
+
+  macos:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: macos-14
+            target: x86_64
+          - runner: macos-latest
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-${{ matrix.platform.target }}
+          path: dist
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: dist
+
+  pypi-publish:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos, sdist]
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: pypi
+      url: https://pypi.org/project/lumiview/
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version match
+        shell: pwsh
+        run: |
+          $pyprojectVersion = (Select-String -Path pyproject.toml -Pattern 'version = "(.+?)"').Matches.Groups[1].Value
+          $gitTag = "${{ github.ref }}".Split('/')[-1]
+          $gitTagVersion = $gitTag.TrimStart('v')
+          if ($pyprojectVersion -ne $gitTagVersion) {
+            Write-Error "Version mismatch: pyproject.toml=$pyprojectVersion vs tag=$gitTag"
+            exit 1
+          }
+          Write-Host "Versions match: $pyprojectVersion"
+
+      - name: Retrieve release distributions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Publish release distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

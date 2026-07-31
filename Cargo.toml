@@ -1,0 +1,29 @@
+[package]
+name = "lumiview"
+version = "0.1.0-dev0"
+edition = "2021"
+description = "Python binding for tao — cross-platform window management."
+
+[lib]
+name = "lumiview"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["extension-module"] }
+tao = "0.36"
+raw-window-handle = "0.6"
+window-vibrancy = "0.8"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Tao marks a window as transparent at the DWM level, but it does not draw an
+# alpha-cleared client surface. Keep the transparent backing surface alive in
+# the same way as tauri-runtime-wry so the initial client rectangle is not
+# retained as an opaque bitmap.
+softbuffer = { version = "0.4", default-features = false }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+gtk = "0.18"
+
+[profile.release]
+lto = true
+codegen-units = 1

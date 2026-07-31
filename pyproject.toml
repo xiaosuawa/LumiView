@@ -1,0 +1,51 @@
+[build-system]
+requires = ["maturin>=1.0"]
+build-backend = "maturin"
+
+[project]
+name = "lumiview"
+authors = [{ name = "校溯", email = "xiaosu@xiaosu.icu" }]
+description = "Pythonic desktop window + webview — lightweight, async-first, no toolchain required."
+readme = "README.md"
+version = "0.1.0.dev0"
+requires-python = ">=3.10"
+dependencies = ["wryview>=0.5.1"]
+license = "MPL-2.0"
+license-files = ["LICENSE"]
+keywords = [
+    "tao",
+    "window",
+    "webview",
+    "desktop",
+    "gui",
+    "pyo3",
+    "wry",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL-2.0)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: User Interfaces",
+]
+
+[project.urls]
+Homepage = "https://github.com/xiaosuawa/LumiView"
+Repository = "https://github.com/xiaosuawa/LumiView"
+Issues = "https://github.com/xiaosuawa/LumiView/issues"
+Discussions = "https://github.com/xiaosuawa/LumiView/discussions"
+
+[tool.maturin]
+python-source = "python"
+module-name = "lumiview._core"
+features = ["pyo3/extension-module", "pyo3/abi3-py310"]
