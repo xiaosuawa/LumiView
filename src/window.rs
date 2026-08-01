@@ -546,11 +546,11 @@ impl TaoWindow {
     /// (via ``WindowBuilderExtUnix::with_default_vbox(false)``).
     #[cfg(all(unix, not(target_os = "macos")))]
     fn gtk_container(&self) -> isize {
-        use gtk::glib::translate::ToGlibPtr;
+        use gtk::prelude::WidgetExt;
         use tao::platform::unix::WindowExtUnix;
         self.inner
             .default_vbox()
-            .map(|vbox| vbox.to_glib_none().0 as isize)
+            .map(|vbox| vbox.as_ptr() as isize)
             .unwrap_or(0)
     }
 }
