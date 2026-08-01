@@ -100,12 +100,12 @@ class Window:
             self._app: App
             self._win_id: int
             self._tao: TaoWindow | None
-            self._wv: WebView | None
+            self._webview: WebView | None
             self._bridge: Bridge
             self._hooks: dict[WindowHookEvent, list[Callable[..., Any]]]
             self._close_behavior: str
-            self._nav_policy: Callable[[str], bool] | None
-            self._newwin_policy: Callable[[str], str] | None
+            self._navigation_policy: Callable[[str], bool] | None
+            self._new_win_policy: Callable[[str], str] | None
             self._download_started_policy: Callable[[str, str], bool | str] | None
             self._download_completed_policy: (
                 Callable[[str, str | None, bool], None] | None
@@ -229,12 +229,12 @@ class Window:
         self = cls.__new__(cls)
         self._app = app
         self._tao = None
-        self._wv = None
+        self._webview = None
         self._hooks = {}
         self._close_behavior = close_behavior
         self._bridge = bridge or Bridge()
-        self._nav_policy = on_navigation
-        self._newwin_policy = on_new_window
+        self._navigation_policy = on_navigation
+        self._new_win_policy = on_new_window
         self._download_started_policy = on_download_started
         self._download_completed_policy = on_download_completed
         self._bridge_enabled = bridge is not None
@@ -346,7 +346,7 @@ class Window:
         init_script = "\n".join(init_scripts) or None
 
         # ── WebView ──────────────────────────────────────────────────────────
-        wv = WebView(
+        webview = WebView(
             handle,
             width=width,
             height=height,
@@ -362,10 +362,10 @@ class Window:
             hotkeys_zoom=hotkeys_zoom,
             initialization_script=init_script,
             ipc_handler=self._make_ipc_handler(),
-            on_navigation=self._make_nav_handler(on_navigation),
+            on_navigation=self._make_navigation_handler(on_navigation),
             on_page_load=lambda ev, u: self._emit(_page_event(ev), u),
             on_title_changed=lambda t: self._emit(WindowHookEvent.TitleChanged, t),
-            on_new_window=self._make_newwin_handler(on_new_window),
+            on_new_window=self._make_new_win_handler(on_new_window),
             drag_drop_handler=drag_drop_handler,
             custom_protocols=custom_protocols or None,
             proxy=_parse_proxy(proxy) if proxy is not None else None,
@@ -377,12 +377,12 @@ class Window:
             https_scheme=https_scheme,
             default_context_menus=default_context_menus,
             on_download_started=(
-                self._make_dl_started_handler(on_download_started)
+                self._make_download_started_handler(on_download_started)
                 if on_download_started is not None
                 else None
             ),
             on_download_completed=(
-                self._make_dl_completed_handler(on_download_completed)
+                self._make_download_completed_handler(on_download_completed)
                 if on_download_completed is not None
                 else None
             ),
@@ -390,7 +390,7 @@ class Window:
             parent_hwnd_kind=kind,
         )
 
-        self._wv = wv
+        self._webview = webview
         self._tao = tao_win
 
         if transparent:
@@ -412,18 +412,18 @@ class Window:
 
     @main_thread
     def load_url(self, url: str) -> None:
-        assert self._wv is not None
-        self._wv.load_url(url)
+        assert self._webview is not None
+        self._webview.load_url(url)
 
     @main_thread
     def load_html(self, html: str) -> None:
-        assert self._wv is not None
-        self._wv.load_html(html)
+        assert self._webview is not None
+        self._webview.load_html(html)
 
     @main_thread
     def reload(self) -> None:
-        assert self._wv is not None
-        self._wv.reload()
+        assert self._webview is not None
+        self._webview.reload()
 
     # ═══ JavaScript ═══
 
@@ -434,8 +434,8 @@ class Window:
         handle: Task[str] = Task()
 
         def _do():
-            if self._wv is not None:
-                self._wv.eval_js_with_callback(
+            if self._webview is not None:
+                self._webview.eval_js_with_callback(
                     script, lambda result: handle.set_result(result)
                 )
             else:
@@ -486,8 +486,8 @@ class Window:
 
     @main_thread
     def set_bounds(self, x: float, y: float, w: float, h: float) -> None:
-        assert self._wv is not None
-        self._wv.set_bounds(x, y, w, h)
+        assert self._webview is not None
+        self._webview.set_bounds(x, y, w, h)
 
     @main_thread
     def set_size(self, width: float, height: float) -> None:
@@ -573,8 +573,8 @@ class Window:
         script = f"window.lumiview._dispatchEvent({payload_json})"
 
         def _do():
-            if self._wv is not None:
-                self._wv.eval_js_with_callback(
+            if self._webview is not None:
+                self._webview.eval_js_with_callback(
                     script, lambda _result: handle.set_result(None)
                 )
             else:
@@ -652,10 +652,10 @@ class Window:
             return
 
         self._app._emit(AppHookEvent.Close)
-        if self._wv is not None:
-            self._wv.close()
+        if self._webview is not None:
+            self._webview.close()
         self._tao = None
-        self._wv = None
+        self._webview = None
         self._app._remove_window(self._win_id)
 
     def close(self) -> Task[None]:
@@ -664,10 +664,10 @@ class Window:
         app = App.get()
 
         def _do():
-            if self._wv is not None:
-                self._wv.close()
+            if self._webview is not None:
+                self._webview.close()
             self._tao = None
-            self._wv = None
+            self._webview = None
             app._remove_window(self._win_id)
 
         return app.call_on_main(_do)
@@ -676,42 +676,42 @@ class Window:
 
     @main_thread
     def open_devtools(self) -> None:
-        assert self._wv is not None
-        self._wv.open_devtools()
+        assert self._webview is not None
+        self._webview.open_devtools()
 
     @main_thread
     def close_devtools(self) -> None:
-        assert self._wv is not None
-        self._wv.close_devtools()
+        assert self._webview is not None
+        self._webview.close_devtools()
 
     @main_thread
     def is_devtools_open(self) -> bool:
-        assert self._wv is not None
-        return self._wv.is_devtools_open()
+        assert self._webview is not None
+        return self._webview.is_devtools_open()
 
     @main_thread
     def zoom(self, scale: float) -> None:
         """Set the page zoom level.  1.0 = 100%, 1.5 = 150%."""
-        assert self._wv is not None
-        self._wv.zoom(scale)
+        assert self._webview is not None
+        self._webview.zoom(scale)
 
     @main_thread
     def print(self) -> None:
         """Open the system print dialog for the current page."""
-        assert self._wv is not None
-        self._wv.print()
+        assert self._webview is not None
+        self._webview.print()
 
     @main_thread
     def set_background_color(self, r: int, g: int, b: int, a: int = 255) -> None:
         """Set the WebView background colour before content loads."""
-        assert self._wv is not None
-        self._wv.set_background_color(r, g, b, a)
+        assert self._webview is not None
+        self._webview.set_background_color(r, g, b, a)
 
     @main_thread
     def cookies(self) -> list[dict]:
         """Return all cookies as dicts with name, value, domain, path, etc."""
-        assert self._wv is not None
-        raw = self._wv.cookies()
+        assert self._webview is not None
+        raw = self._webview.cookies()
         return [
             {
                 "name": c.name,
@@ -727,8 +727,8 @@ class Window:
     @main_thread
     def cookies_for_url(self, url: str) -> list[dict]:
         """Return cookies applicable to *url*."""
-        assert self._wv is not None
-        raw = self._wv.cookies_for_url(url)
+        assert self._webview is not None
+        raw = self._webview.cookies_for_url(url)
         return [
             {
                 "name": c.name,
@@ -751,20 +751,20 @@ class Window:
         path: str | None = None,
     ) -> None:
         """Set a cookie."""
-        assert self._wv is not None
-        self._wv.set_cookie(name, value, domain, path)
+        assert self._webview is not None
+        self._webview.set_cookie(name, value, domain, path)
 
     @main_thread
     def delete_cookie(self, name: str, url: str) -> None:
         """Delete a cookie by name for a specific URL."""
-        assert self._wv is not None
-        self._wv.delete_cookie(name, url)
+        assert self._webview is not None
+        self._webview.delete_cookie(name, url)
 
     @main_thread
     def clear_all_browsing_data(self) -> None:
         """Clear all browsing data (cache, cookies, storage)."""
-        assert self._wv is not None
-        self._wv.clear_all_browsing_data()
+        assert self._webview is not None
+        self._webview.clear_all_browsing_data()
 
     # ═══ Policy setters (post-creation) ═══
 
@@ -774,9 +774,9 @@ class Window:
         The handler receives a URL and should return ``True`` to allow
         or ``False`` to block navigation.
         """
-        self._nav_policy = handler
-        if self._wv is not None:
-            self._wv.set_on_navigation(self._make_nav_handler(handler))
+        self._navigation_policy = handler
+        if self._webview is not None:
+            self._webview.set_on_navigation(self._make_navigation_handler(handler))
 
     def set_on_new_window(self, handler: Callable[[str], str]) -> None:
         """Replace the new-window policy callback.
@@ -784,25 +784,25 @@ class Window:
         The handler receives a URL and should return ``"allow"``
         or ``"deny"``.
         """
-        self._newwin_policy = handler
-        if self._wv is not None:
-            self._wv.set_on_new_window(self._make_newwin_handler(handler))
+        self._new_win_policy = handler
+        if self._webview is not None:
+            self._webview.set_on_new_window(self._make_new_win_handler(handler))
 
     def set_on_download_started(
         self, handler: Callable[[str, str], bool | str]
     ) -> None:
         """Replace the download-started policy callback."""
         self._download_started_policy = handler
-        if self._wv is not None:
-            self._wv.set_on_download_started(self._make_dl_started_handler(handler))
+        if self._webview is not None:
+            self._webview.set_on_download_started(self._make_download_started_handler(handler))
 
     def set_on_download_completed(
         self, handler: Callable[[str, str | None, bool], None]
     ) -> None:
         """Replace the download-completed notification callback."""
         self._download_completed_policy = handler
-        if self._wv is not None:
-            self._wv.set_on_download_completed(self._make_dl_completed_handler(handler))
+        if self._webview is not None:
+            self._webview.set_on_download_completed(self._make_download_completed_handler(handler))
 
     # ═══ Internal ═══
 
@@ -812,7 +812,7 @@ class Window:
 
     # ── Callback factories ────────────────────────────────────────────────
 
-    def _make_nav_handler(
+    def _make_navigation_handler(
         self,
         policy: Callable[[str], bool] | None,
     ) -> Callable[[str], bool]:
@@ -829,7 +829,7 @@ class Window:
 
         return _handler
 
-    def _make_newwin_handler(
+    def _make_new_win_handler(
         self,
         policy: Callable[[str], str] | None,
     ) -> Callable[[str], str]:
@@ -851,7 +851,7 @@ class Window:
 
         return _handler
 
-    def _make_dl_started_handler(
+    def _make_download_started_handler(
         self,
         policy: Callable[[str, str], bool | str],
     ) -> Callable[[str, str], bool | str]:
@@ -866,7 +866,7 @@ class Window:
 
         return _handler
 
-    def _make_dl_completed_handler(
+    def _make_download_completed_handler(
         self,
         policy: Callable[[str, str | None, bool], None],
     ) -> Callable[[str, str | None, bool], None]:
@@ -890,7 +890,7 @@ class Window:
         """
 
         def _handler(raw: str) -> None:
-            if self._bridge_enabled and self._wv is not None:
+            if self._bridge_enabled and self._webview is not None:
                 self._bridge._on_message(self, raw)
             self._emit(WindowHookEvent.WebMessageReceived, raw)
 

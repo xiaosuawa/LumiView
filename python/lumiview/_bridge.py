@@ -108,7 +108,7 @@ class Bridge:
         """Called from the main thread by wryview's IPC handler.
 
         *window* is passed by the Window's own IPC handler (which closes
-        over ``self``) — no wv → Window mapping needed.  The unsendable
+        over ``self``) — no webview → Window mapping needed.  The unsendable
         WebView is never captured into the asyncio coroutine below; it is
         only touched on the main thread (inside ``_respond``'s callback).
         """
@@ -215,12 +215,12 @@ class Bridge:
         script = f"window.lumiview._dispatchResponse({payload})"
 
         def _send() -> None:
-            wv = window._wv  # main thread — safe to touch and drop
-            if wv is None:
+            webview = window._webview  # main thread — safe to touch and drop
+            if webview is None:
                 log.warning("Bridge response dropped: WebView is closed")
                 return
             try:
-                wv.eval_js(script)
+                webview.eval_js(script)
             except Exception:
                 log.exception("Failed to send bridge response")
 

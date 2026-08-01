@@ -121,7 +121,7 @@ class App:
         self._exit_code: int = 0
 
         # ── Rust bindings (created in run()) ──────────────────────────────
-        self._el: TaoEventLoop | None = None
+        self._event_loop: TaoEventLoop | None = None
         self._proxy = None  # TaoEventLoopProxy
 
         # ── Thread identity ───────────────────────────────────────────────
@@ -359,8 +359,8 @@ class App:
         self._state = AppState.STARTING
 
         # Create Tao event loop on the main thread.
-        self._el = TaoEventLoop()
-        self._proxy = self._el.create_proxy()
+        self._event_loop = TaoEventLoop()
+        self._proxy = self._event_loop.create_proxy()
         self._main_tid = threading.get_ident()
 
         # Set deadlock detection globals.
@@ -404,7 +404,7 @@ class App:
 
         # Run the Tao event loop (blocks main thread).
         try:
-            self._el.run(self._on_tao_event)
+            self._event_loop.run(self._on_tao_event)
         except Exception:
             log.exception("Event loop crashed")
         finally:
@@ -490,9 +490,9 @@ class App:
         elif isinstance(event, ResizedEvent):
             if (wid := event.window_id) is not None:
                 win = self._windows.get(wid)
-                if win is not None and win._wv is not None and win._tao is not None:
+                if win is not None and win._webview is not None and win._tao is not None:
                     sf = win._tao.scale_factor()
-                    win._wv.set_bounds(0, 0, event.width / sf, event.height / sf)
+                    win._webview.set_bounds(0, 0, event.width / sf, event.height / sf)
                     # Resize the child HWND first, then replace the parent
                     # backing surface. This prevents either old edge from
                     # surviving into the newly composed frame.
@@ -517,13 +517,13 @@ class App:
             if (wid := event.window_id) is not None:
                 win = self._windows.get(wid)
                 if win is not None:
-                    if win._wv is not None:
+                    if win._webview is not None:
                         try:
-                            win._wv.close()
+                            win._webview.close()
                         except Exception:
                             pass
                     win._tao = None
-                    win._wv = None
+                    win._webview = None
                     self._remove_window(wid)
 
         return EventLoopControl.Continue
@@ -535,10 +535,10 @@ class App:
         # Close all windows.
         for win in list(self._windows.values()):
             try:
-                if win._wv is not None:
-                    win._wv.close()
+                if win._webview is not None:
+                    win._webview.close()
                 win._tao = None
-                win._wv = None
+                win._webview = None
             except Exception:
                 log.exception("Error closing window")
 
