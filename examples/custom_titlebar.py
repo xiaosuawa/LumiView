@@ -4,7 +4,7 @@ custom_titlebar.py — Frameless window with custom titlebar and native effects.
 Shows:
   - decorations=False — hide the system titlebar
   - transparent=True — transparent window background
-  - window_controls=True — enable lumiview.window.* JS API
+  - bridge.include(WindowControls()) — window.* JS API + drag regions
   - data-lumiview-drag-region — declarative drag area
   - apply_effect() — native window material (Acrylic / Mica / Vibrancy)
 
@@ -14,9 +14,13 @@ Run:
 
 import sys
 
-from lumiview import App, Window, WindowEffect
+from lumiview import App, Bridge, Window, WindowEffect
+from lumiview.plugins import WindowControls
 
 app = App(name="CustomTitlebar")
+
+bridge = Bridge()
+bridge.include(WindowControls(drag_regions=True))
 
 HTML = """<!doctype html>
 <html>
@@ -57,7 +61,7 @@ async def main():
         height=520,
         decorations=False,          # no system titlebar
         transparent=True,           # transparent window background
-        window_controls=True,       # enable JS window control API
+        bridge=bridge,
         background_color=(0, 0, 0, 0),
     )
 

@@ -102,7 +102,7 @@ For runnable code, see the [`examples/`](examples/) directory.
 
 - [x] Window management (TaoWindow + Window)
 - [x] WebView embedding (wryview)
-- [x] JS ↔ Python Bridge (IPC + Proxy)
+- [x] JS ↔ Python Bridge (invoke/listen IPC)
 - [x] Hook event system (AppHookEvent / WindowHookEvent)
 - [x] Unified async/sync `Task` interface
 - [x] Static file serving + WSGI proxy

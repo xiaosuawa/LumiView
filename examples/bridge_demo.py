@@ -3,6 +3,7 @@ bridge_demo.py — JS ↔ Python IPC via Bridge.
 
 Shows:
   - @bridge.command — expose sync Python functions to JS
+    (payload is unpacked by signature; commands no longer receive the raw dict)
   - @bridge.command (async) — expose async Python functions
   - Structured error handling (BridgeError)
 
@@ -21,25 +22,24 @@ b = Bridge()
 
 
 @b.command
-def greet(payload: dict) -> dict:
+def greet(name: str) -> dict:
     """Say hello — synchronous Python function."""
-    name = payload.get("name", "World")
     return {"msg": f"Hello, {name}!"}
 
 
 @b.command
-async def delayed_greet(payload: dict) -> dict:
+async def delayed_greet(name: str) -> dict:
     """Async example — runs on the asyncio loop without blocking."""
     import asyncio
 
     await asyncio.sleep(1.5)
-    return {"msg": f"Hello after delay, {payload.get('name', 'World')}!"}
+    return {"msg": f"Hello after delay, {name}!"}
 
 
 @b.command
-def maybe_fail(payload: dict) -> None:
+def maybe_fail(msg: str) -> None:
     """Raise a structured error — caught and returned to JS."""
-    raise BridgeError("demo_error", payload.get("msg", "Something went wrong"))
+    raise BridgeError("demo_error", msg)
 
 
 HTML = """<!doctype html>

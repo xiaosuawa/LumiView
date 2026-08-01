@@ -9,7 +9,7 @@ description = "Pythonic desktop window + webview — lightweight, async-first, n
 readme = "README.md"
 version = "0.1.0.dev0"
 requires-python = ">=3.10"
-dependencies = ["wryview>=0.5.1"]
+dependencies = ["wryview>=0.5.1", "cattrs>=26.1", "typing_extensions~=4.11"]
 license = "MPL-2.0"
 license-files = ["LICENSE"]
 keywords = [
@@ -44,6 +44,9 @@ Homepage = "https://github.com/xiaosuawa/LumiView"
 Repository = "https://github.com/xiaosuawa/LumiView"
 Issues = "https://github.com/xiaosuawa/LumiView/issues"
 Discussions = "https://github.com/xiaosuawa/LumiView/discussions"
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
 
 [tool.maturin]
 python-source = "python"

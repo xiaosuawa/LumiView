@@ -3,80 +3,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
-from wryview import WebView
-
+from lumiview._scope import (
+    BridgeError,
+    InitContext,
+    Scope,
+    ScopePermission,
+    check_chain,
+    iter_tree,
+)
 from lumiview._task import _run_async
 
+if TYPE_CHECKING:
+    from lumiview._window import Window
+
 log = logging.getLogger("lumiview.bridge")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# BridgeError — structured errors
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class BridgeError(Exception):
-    """Structured error returned to JavaScript on bridge call failure.
-
-    Parameters:
-        code: Machine-readable error code (e.g. ``"invalid_argument"``).
-        message: Human-readable description.
-        data: Optional additional context (must be JSON-serializable).
-    """
-
-    def __init__(self, code: str, message: str, data: Any = None) -> None:
-        super().__init__(message)
-        self.code = code
-        self.data = data
-
-    def to_dict(self) -> dict:
-        result: dict = {"code": self.code, "message": str(self)}
-        if self.data is not None:
-            result["data"] = self.data
-        return result
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Permission model
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-@dataclass
-class BridgePermission:
-    """Permission rules for a Bridge instance.
-
-    Default: all commands allowed, 1 MB request limit, 64 concurrent per page.
-    """
-
-    allowed_commands: list[str] = field(default_factory=lambda: ["*"])
-    max_request_size: int = 1024 * 1024  # 1 MB
-    max_concurrent_per_page: int = 64
-
-    def check_command(self, command: str) -> bool:
-        """Check if a command is allowed.
-
-        Patterns use ``:`` as capability separator (Tauri convention):
-
-        - ``"*"`` — allow all commands
-        - ``"storage:*"`` — allow all ``storage.*`` commands
-        - ``"settings:read"`` — allow exact command
-        """
-        for pattern in self.allowed_commands:
-            if pattern == "*":
-                return True
-            # Normalize : to . for command name comparison
-            normalized = pattern.replace(":", ".")
-            if normalized.endswith("*"):
-                prefix = normalized[:-1]
-                if command.startswith(prefix):
-                    return True
-            elif command == normalized:
-                return True
-        return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -87,90 +29,89 @@ class BridgePermission:
 class Bridge:
     """Registry of Python functions callable from JavaScript.
 
-    Each window can have its own Bridge, or multiple windows can share one.
-    Set ``bridge=None`` to disable bridge entirely for a window.
+    Composes an anonymous root :class:`Scope`; tree operations are
+    forwarded to it.  ``bridge=None`` disables the bridge entirely for
+    a window (full isolation, see design doc §7).
+
+    No resource limits (request size / concurrency): see design doc §10.
+
+    Convenience constructor arguments (equivalent to calling the methods
+    after creation)::
+
+        bridge = Bridge(
+            includes=[WindowControls()],
+            permissions=ScopePermission(allow=("fs.*",)),
+        )
     """
 
     def __init__(
         self,
-        permission: BridgePermission | None = None,
+        *,
+        includes: Sequence[Scope] = (),
+        permissions: ScopePermission | None = None,
     ) -> None:
-        self._funcs: dict[str, Callable[..., Any]] = {}
-        self._permission = permission or BridgePermission()
-        self._concurrent_count = 0
-        self._concurrent_lock = threading.Lock()
+        self._root = Scope(
+            permissions=permissions or ScopePermission(allow=("*",)),
+            includes=includes
+        )
 
-    # ── Registration ────────────────────────────────────────────────────
+    # ── Tree facade ─────────────────────────────────────────────────────
+
+    def scope(self, name: str) -> Scope:
+        return self._root.scope(name)
 
     def command(
         self,
-        name_or_fn: str | Callable[..., Any] | None = None,
+        fn: Callable[..., Any] | None = None,
         /,
         *,
+        name: str | None = None,
         replace: bool = False,
-    ):
-        """Decorator to register a bridge command.
-
-        Can be used as ``@bridge.command`` (uses function name) or
-        ``@bridge.command("storage.save_all")`` (explicit name).
-
-        Sync commands run on the thread pool; async commands run on the
-        asyncio loop.  Neither runs on the GUI thread.
-        """
-        if callable(name_or_fn):
-            return self._register(name_or_fn.__name__, name_or_fn, replace)
-
-        # name_or_fn is str (or None → fallback to fn.__name__ inside decorator)
-        _name = name_or_fn if isinstance(name_or_fn, str) else ""
-
-        def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-            self._register(_name or fn.__name__, fn, replace)
-            return fn
-
-        return decorator
-
-    def register(self, name: str, fn: Callable[..., Any]) -> None:
-        """Register a function by name (non-decorator style)."""
-        self._register(name, fn, replace=True)
-
-    def _register(
-        self, name: str, fn: Callable[..., Any], replace: bool
+        strict: bool = True,
     ) -> Callable[..., Any]:
-        if name in self._funcs and not replace:
-            raise ValueError(
-                f"Command {name!r} already registered. "
-                "Use replace=True to overwrite."
-            )
-        self._funcs[name] = fn
-        return fn
+        return self._root.command(fn, name=name, replace=replace, strict=strict)
 
-    # ── Permission ──────────────────────────────────────────────────────
+    def include(self, other: Scope, *, prefix: str | None = None) -> None:
+        """Mount a scope onto the tree (pure mounting, see Scope.include).
 
-    def allow(
-        self,
-        *,
-        commands: list[str] | None = None,
-    ) -> None:
-        """Set allowed commands.
-
-        Commands use capability-style patterns:
-
-        - ``"storage:*"`` — all storage.* commands
-        - ``"*"`` — everything
+        Instances always end up on the tree, so their on_init/on_ready
+        hooks are reachable via tree walk — no extra hook list needed.
         """
-        if commands is not None:
-            self._permission.allowed_commands = list(commands)
+        self._root.include(other, prefix=prefix)
+
+    def allow(self, *patterns: str) -> None:
+        self._root.allow(*patterns)
+
+    def deny(self, *patterns: str) -> None:
+        self._root.deny(*patterns)
+
+    # ── Plugin lifecycle (driven by Window.create) ──────────────────────
+
+    def _run_on_init(self, ctx: InitContext) -> InitContext:
+        """Run every on_init hook in tree order (root → leaves)."""
+        for scope in iter_tree(self._root):
+            on_init = getattr(scope, "on_init", None)
+            if on_init is not None:
+                ctx = on_init(ctx) or ctx
+        return ctx
+
+    def _run_on_ready(self, window: "Window") -> None:
+        """Run every on_ready hook (once per window using this bridge)."""
+        for scope in iter_tree(self._root):
+            on_ready = getattr(scope, "on_ready", None)
+            if on_ready is not None:
+                on_ready(window)
 
     # ── IPC dispatch ────────────────────────────────────────────────────
 
-    def _on_message(self, wv: WebView, raw: str) -> None:
-        """Called from the main thread by wryview's IPC handler."""
-        
-        # Check request size
-        if len(raw) > self._permission.max_request_size:
-            log.warning("IPC message exceeds max request size, droped.")
-            return
-        
+    def _on_message(self, window: "Window", raw: str) -> None:
+        """Called from the main thread by wryview's IPC handler.
+
+        *window* is passed by the Window's own IPC handler (which closes
+        over ``self``) — no wv → Window mapping needed.  The unsendable
+        WebView is never captured into the asyncio coroutine below; it is
+        only touched on the main thread (inside ``_respond``'s callback).
+        """
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
@@ -188,123 +129,96 @@ class Bridge:
         if not call_id or not command:
             return
 
-        # Check command permission
-        if not self._permission.check_command(command):
+        cmd = self._root.lookup(command)
+        if cmd is None:
             self._respond(
-                wv,
-                call_id,
-                error=BridgeError("forbidden", f"Command {command!r} is not allowed"),
-            )
-            return
-
-        # Check concurrency
-        with self._concurrent_lock:
-            if self._concurrent_count >= self._permission.max_concurrent_per_page:
-                self._respond(
-                    wv,
-                    call_id,
-                    error=BridgeError(
-                        "too_many_requests", "Too many concurrent requests"
-                    ),
-                )
-                return
-            self._concurrent_count += 1
-
-        entry = self._funcs.get(command)
-        if entry is None:
-            with self._concurrent_lock:
-                self._concurrent_count -= 1
-            self._respond(
-                wv,
+                window,
                 call_id,
                 error=BridgeError("unknown_command", f"Unknown command: {command}"),
             )
             return
 
-        self._dispatch(wv, call_id, command, entry, payload)
+        if not check_chain(cmd.scope, command):
+            self._respond(
+                window,
+                call_id,
+                error=BridgeError("forbidden", f"Command {command!r} is not allowed"),
+            )
+            return
 
-    def _dispatch(
-        self,
-        wv: WebView,
-        call_id: str,
-        command: str,
-        fn: Callable[..., Any],
-        payload: Any,
-    ) -> None:
-        """Dispatch to asyncio loop or thread pool — NEVER the GUI thread."""
+        # ── Schedule on the asyncio loop (never the GUI thread) ─────────
         from lumiview._app import App
 
         try:
             app = App.get()
         except RuntimeError:
             self._respond(
-                wv, call_id, error=BridgeError("internal_error", "App not running")
+                window,
+                call_id,
+                error=BridgeError("internal_error", "App not running"),
             )
             return
 
         loop = app._async_loop
         if loop is None:
             self._respond(
-                wv, call_id, error=BridgeError("internal_error", "App not running")
+                window,
+                call_id,
+                error=BridgeError("internal_error", "App not running"),
             )
             return
 
         async def _run_async_cmd() -> None:
             try:
-                result = await _run_async(
-                    fn,
-                    payload,
-                    pool=app._threadpool,
-                )
-                self._respond(wv, call_id, result=result)
+                from lumiview._binding import bind_arguments  # avoid import cycle
+
+                kwargs = bind_arguments(cmd, payload, window)
+                result = await _run_async(cmd.fn, pool=app._threadpool, **kwargs)
+                self._respond(window, call_id, result=result)
             except BridgeError as e:
-                self._respond(wv, call_id, error=e)
+                self._respond(window, call_id, error=e)
             except Exception as e:
-                log.exception("Bridge command %r failed", command)
+                log.exception("Bridge command %r failed", cmd.full_name)
                 self._respond(
-                    wv,
+                    window,
                     call_id,
                     error=BridgeError("internal_error", str(e)),
                 )
-            finally:
-                with self._concurrent_lock:
-                    self._concurrent_count -= 1
 
         loop.call_soon_threadsafe(lambda: asyncio.create_task(_run_async_cmd()))
 
-    # ── Response ─────────────────────────────────────────────────────────
+    # ── Response ────────────────────────────────────────────────────────
 
     @staticmethod
     def _respond(
-        wv: WebView,
+        window: "Window",
         call_id: str,
         *,
         result: Any = None,
         error: BridgeError | None = None,
     ) -> None:
-        """Send a response back to JavaScript via eval_js on the main thread."""
+        """Send a response back to JavaScript via eval_js on the main thread.
+
+        The WebView is read from *window* inside the main-thread callback
+        so the unsendable object is only ever referenced on the main
+        thread.
+        """
         from lumiview._app import App
 
         if error is not None:
             payload = json.dumps(
-                {
-                    "type": "reject",
-                    "id": call_id,
-                    "error": error.to_dict(),
-                }
+                {"type": "reject", "id": call_id, "error": error.to_dict()}
             )
         else:
-            payload = json.dumps(
-                {
-                    "type": "resolve",
-                    "id": call_id,
-                    "value": result,
-                }
-            )
+            payload = json.dumps({"type": "resolve", "id": call_id, "value": result})
 
         script = f"window.lumiview._dispatchResponse({payload})"
 
         def _send() -> None:
+            wv = window._wv  # main thread — safe to touch and drop
+            if wv is None:
+                log.warning("Bridge response dropped: WebView is closed")
+                return
             try:
                 wv.eval_js(script)
             except Exception:

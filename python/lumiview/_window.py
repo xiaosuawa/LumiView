@@ -47,93 +47,6 @@ R = TypeVar("R")
 
 log = logging.getLogger("lumiview.window")
 
-WINDOW_CONTROLS_SCRIPT = """\
-(() => {
-  const lumiview = window.lumiview || (window.lumiview = {});
-  if (lumiview.window) return;
-
-  let nextId = 0;
-  const pending = {};
-
-  function call(action, payload = {}) {
-    return new Promise((resolve, reject) => {
-      const id = `window-${++nextId}`;
-      pending[id] = { resolve, reject };
-      window.ipc.postMessage(JSON.stringify({
-        type: "window",
-        id,
-        action,
-        ...payload,
-      }));
-    });
-  }
-
-  lumiview.window = {
-    minimize() {
-      return call("minimize");
-    },
-    toggleMaximize() {
-      return call("toggle_maximize");
-    },
-    isMaximized() {
-      return call("is_maximized");
-    },
-    close() {
-      return call("close");
-    },
-    startDragging() {
-      return call("start_dragging");
-    },
-    startResizeDragging(direction) {
-      return call("start_resize_dragging", { direction });
-    },
-
-    /** Resolve or reject a pending window-control Promise. */
-    _dispatchResponse(detail) {
-      const request = pending[detail.id];
-      if (!request) return;
-      delete pending[detail.id];
-      if (detail.error) {
-        request.reject(new Error(detail.error));
-      } else {
-        request.resolve(detail.value);
-      }
-    },
-  };
-
-  document.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || !(event.target instanceof Element)) return;
-
-    const resizeRegion = event.target.closest(
-      "[data-lumiview-resize-region]",
-    );
-    if (resizeRegion) {
-      const direction = resizeRegion.getAttribute(
-        "data-lumiview-resize-region",
-      );
-      if (direction) {
-        event.preventDefault();
-        void lumiview.window.startResizeDragging(direction).catch(() => {});
-      }
-      return;
-    }
-
-    const dragRegion = event.target.closest("[data-lumiview-drag-region]");
-    if (!dragRegion) return;
-    if (event.target.closest(
-      "button, a, input, select, textarea, [role='button'], "
-      + "[data-lumiview-no-drag]",
-    )) return;
-    event.preventDefault();
-    if (event.detail === 2) {
-      void lumiview.window.toggleMaximize().catch(() => {});
-    } else {
-      void lumiview.window.startDragging().catch(() => {});
-    }
-  }, true);
-})();
-"""
-
 TRANSPARENT_WEBVIEW_SCRIPT = """\
 (() => {
   function installTransparentBackground() {
@@ -151,18 +64,6 @@ TRANSPARENT_WEBVIEW_SCRIPT = """\
   });
 })();
 """
-
-_RESIZE_DIRECTIONS = {
-    "east": ResizeDirection.East,
-    "north": ResizeDirection.North,
-    "north-east": ResizeDirection.NorthEast,
-    "north-west": ResizeDirection.NorthWest,
-    "south": ResizeDirection.South,
-    "south-east": ResizeDirection.SouthEast,
-    "south-west": ResizeDirection.SouthWest,
-    "west": ResizeDirection.West,
-}
-
 
 # ═══ @main_thread — decorator ══════════════════════════════════════════════
 
@@ -210,7 +111,6 @@ class Window:
                 Callable[[str, str | None, bool], None] | None
             )
             self._bridge_enabled: bool
-            self._window_controls: bool
         raise RuntimeError("Use 'await Window.create(...)' instead")
 
     @classmethod
@@ -263,7 +163,6 @@ class Window:
         back_forward_gestures: bool = False,
         https_scheme: bool = True,
         default_context_menus: bool = True,
-        window_controls: bool = False,
         drag_drop_handler: (
             Callable[[DragDropEvent, list[str], tuple[int, int]], bool] | None
         ) = None,
@@ -309,9 +208,6 @@ class Window:
             hotkeys_zoom: Enable Ctrl+/Ctrl- zoom (default ``True``).
             clipboard: Enable clipboard access (default ``True``).
             javascript: Enable JavaScript (default ``True``).
-            window_controls: Inject the opt-in custom-titlebar helper at
-                ``window.lumiview.window`` and enable declarative drag/resize
-                regions.
             background_color: Initial background colour ``(r, g, b, a)``.
             headers: Extra HTTP headers sent with every request.
             on_navigation: Called before navigation — return ``False`` to block.
@@ -342,7 +238,6 @@ class Window:
         self._download_started_policy = on_download_started
         self._download_completed_policy = on_download_completed
         self._bridge_enabled = bridge is not None
-        self._window_controls = window_controls
 
         # ── Resolve source → url / html / custom_protocols ─────────────────
         custom_protocols: dict[str, Any] = {}
@@ -437,9 +332,17 @@ class Window:
         if transparent:
             init_scripts.append(TRANSPARENT_WEBVIEW_SCRIPT)
         if bridge is not None:
-            init_scripts.append(BRIDGE_SCRIPT)
-        if window_controls:
-            init_scripts.append(WINDOW_CONTROLS_SCRIPT)
+            from lumiview._scope import InitContext
+
+            try:
+                ctx = bridge._run_on_init(InitContext(inject_script=BRIDGE_SCRIPT))
+            except Exception:
+                # TaoWindow has no explicit close: dropping the last
+                # reference destroys the native window (same path as
+                # Window.close()).  Don't leak it when on_init raises.
+                del tao_win
+                raise
+            init_scripts.append(ctx.inject_script)
         init_script = "\n".join(init_scripts) or None
 
         # ── WebView ──────────────────────────────────────────────────────────
@@ -458,11 +361,7 @@ class Window:
             javascript_enabled=javascript,
             hotkeys_zoom=hotkeys_zoom,
             initialization_script=init_script,
-            ipc_handler=(
-                self._make_ipc_handler()
-                if (bridge is not None or window_controls)
-                else None
-            ),
+            ipc_handler=self._make_ipc_handler(),
             on_navigation=self._make_nav_handler(on_navigation),
             on_page_load=lambda ev, u: self._emit(_page_event(ev), u),
             on_title_changed=lambda t: self._emit(WindowHookEvent.TitleChanged, t),
@@ -503,6 +402,10 @@ class Window:
         win_id = tao_win.id()
         self._win_id = win_id
         app._windows[win_id] = self
+
+        if bridge is not None:
+            bridge._run_on_ready(self)
+
         return self
 
     # ═══ Content ═══
@@ -619,6 +522,12 @@ class Window:
         return maximized
 
     @main_thread
+    def set_fullscreen(self, fullscreen: bool) -> None:
+        """Enter or exit fullscreen."""
+        assert self._tao is not None
+        self._tao.set_fullscreen(fullscreen)
+
+    @main_thread
     def is_maximized(self) -> bool:
         assert self._tao is not None
         return self._tao.is_maximized()
@@ -634,13 +543,6 @@ class Window:
         self._tao.drag_resize_window(direction)
 
     # ═══ Bridge ═══
-
-    def expose(self, name: str, fn: Callable[..., Any]) -> None:
-        """Expose a Python function to JavaScript.
-
-        JS calls ``window.lumiview.api.NAME(...)`` which returns a Promise.
-        """
-        self._bridge.register(name, fn)
 
     def emit(self, event: str, payload: Any = None) -> Task[None]:
         """Send an event to JavaScript listeners.
@@ -981,90 +883,18 @@ class Window:
     # ── IPC handler ───────────────────────────────────────────────────────
 
     def _make_ipc_handler(self) -> Callable[[str], None]:
-        """Create an IPC handler for Bridge and opt-in window-control messages."""
+        """Create an IPC handler that forwards messages to the Bridge.
+
+        Always installed (even with bridge=None) so raw IPC messages are
+        exposed as WebMessageReceived events — isolation mode design §7.
+        """
 
         def _handler(raw: str) -> None:
-            data: dict[str, Any] | None = None
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    data = parsed
-            except json.JSONDecodeError:
-                pass
-
-            if (
-                data is not None
-                and data.get("type") == "window"
-                and self._window_controls
-            ):
-                self._handle_window_control_message(data)
-                return
-
             if self._bridge_enabled and self._wv is not None:
-                self._bridge._on_message(self._wv, raw)
-
-            if data is None or data.get("t") != "v":
-                self._emit(WindowHookEvent.WebMessageReceived, raw)
+                self._bridge._on_message(self, raw)
+            self._emit(WindowHookEvent.WebMessageReceived, raw)
 
         return _handler
-
-    def _handle_window_control_message(
-        self,
-        data: dict[str, Any],
-    ) -> None:
-        """Execute a built-in window command synchronously on the GUI thread."""
-        request_id = str(data.get("id", ""))
-        action = data.get("action")
-
-        try:
-            tao = self._tao
-            if tao is None:
-                raise RuntimeError("Window is closed")
-
-            if action == "minimize":
-                tao.set_minimized(True)
-                value: Any = None
-            elif action == "toggle_maximize":
-                value = not tao.is_maximized()
-                tao.set_maximized(value)
-            elif action == "is_maximized":
-                value = tao.is_maximized()
-            elif action == "start_dragging":
-                tao.drag_window()
-                value = None
-            elif action == "start_resize_dragging":
-                raw_direction = str(data.get("direction", ""))
-                direction = _RESIZE_DIRECTIONS.get(raw_direction)
-                if direction is None:
-                    raise ValueError(f"Invalid resize direction: {raw_direction!r}")
-                tao.drag_resize_window(direction)
-                value = None
-            elif action == "close":
-                self._send_window_control_response(request_id, None)
-                self._request_close_now()
-                return
-            else:
-                raise ValueError(f"Unknown window action: {action!r}")
-
-            self._send_window_control_response(request_id, value)
-        except Exception as exc:
-            self._send_window_control_response(request_id, error=str(exc))
-
-    def _send_window_control_response(
-        self,
-        request_id: str,
-        value: Any = None,
-        *,
-        error: str | None = None,
-    ) -> None:
-        if not request_id:
-            return
-        detail = json.dumps(
-            {"id": request_id, "value": value, "error": error},
-            ensure_ascii=False,
-        )
-        if self._wv is not None:
-            self._wv.eval_js(f"window.lumiview.window._dispatchResponse({detail})")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

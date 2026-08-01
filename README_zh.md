@@ -102,7 +102,7 @@ app.run(main)
 
 - [x] 窗口管理 (TaoWindow + Window)
 - [x] WebView 嵌入 (wryview)
-- [x] JS ↔ Python Bridge (IPC + Proxy)
+- [x] JS ↔ Python Bridge (invoke/listen IPC)
 - [x] 钩子事件系统 (AppHookEvent / WindowHookEvent)
 - [x] 统一 async/sync `Task` 接口
 - [x] 静态文件服务 + WSGI 代理

@@ -5,7 +5,7 @@ Shows:
   - AppHookEvent.Ready — fires once when the app is ready
   - AppHookEvent.Close — fires on graceful shutdown
   - WindowHookEvent.TitleChanged — fires when the page title changes
-  - win.emit() — push events from Python to JS (CustomEvent)
+  - win.emit() — push events from Python to JS (window.lumiview.listen)
 
 Run:
     python examples/events.py
@@ -55,7 +55,7 @@ async def main():
     print("[emit] Sent 'my.event' to JS.")
 
     # On the JS side, listen with:
-    #   window.addEventListener('my.event', (e) => console.log(e.detail));
+    #   window.lumiview.listen('my.event', (payload) => console.log(payload));
 
     print("App running — close the window or press Ctrl+C.")
 

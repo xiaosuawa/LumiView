@@ -6,11 +6,10 @@ powered by Rust under the hood.
 
 Application layer (default — start here)::
 
-    from lumiview import App, Window, task
+    from lumiview import App, Window
 
     app = App(name="MyApp")
 
-    @app.on_ready
     async def main():
         win = await Window.create(title="MyApp", url="https://example.com")
         app.exit()
@@ -19,7 +18,7 @@ Application layer (default — start here)::
 
 Low-level bindings (available when you need them)::
 
-    from lumiview._core import TaoEventLoop, TaoWindowBuilder, ...
+    from lumiview import TaoEventLoop, TaoWindowBuilder, ...
 """
 
 from lumiview._core import (
@@ -62,9 +61,12 @@ from lumiview._core import (
 
 from lumiview._app import App, AppState, AppClosedError, WindowClosedError
 from lumiview._events import WindowHookEvent, AppHookEvent
-from lumiview._bridge import Bridge, BridgeError, BridgePermission
+from lumiview._bridge import Bridge, BridgeError
+from lumiview._scope import Scope, ScopePermission, BridgeContext, InitContext
 from lumiview._window import Window
 from lumiview._task import task, Task, TaskDeadlockError
+from lumiview import utils
+from lumiview import plugins
 
 # ── Serve subpackage (§10) ─────────────────────────────────────────────────
 
@@ -83,7 +85,12 @@ __all__ = [
     "AppHookEvent",
     "Bridge",
     "BridgeError",
-    "BridgePermission",
+    "Scope",
+    "ScopePermission",
+    "BridgeContext",
+    "InitContext",
+    "utils",
+    "plugins",
     "task",
     "Task",
     "TaskDeadlockError",
