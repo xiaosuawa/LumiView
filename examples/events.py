@@ -50,12 +50,15 @@ async def main():
 
     # ── Push events from Python to JS ───────────────────────────────────
 
-    await asyncio.sleep(1)
+    # Register a JS-side listener
+    await win.eval_js(
+        "window.lumiview.listen('my.event', (p) => { window.__evt = p.data; });"
+    )
     await win.emit("my.event", {"data": "Hello from Python!", "ts": 42})
     print("[emit] Sent 'my.event' to JS.")
 
-    # On the JS side, listen with:
-    #   window.lumiview.listen('my.event', (payload) => console.log(payload));
+    received = await win.eval_js("window.__evt")
+    print(f"[emit] JS received payload: {received!r}")
 
     print("App running — close the window or press Ctrl+C.")
 

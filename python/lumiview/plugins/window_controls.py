@@ -2,7 +2,7 @@
 
 Injected scripts are generated in ``on_init`` with the commands' actual
 full names (they follow the mount path, e.g. ``x.window.minimize`` when
-mounted under ``prefix="x"``).
+constructed as ``WindowControls(name="x")``).
 """
 
 from __future__ import annotations
@@ -101,10 +101,11 @@ class WindowControls(Scope):
     def __init__(
         self,
         *,
+        name: str = "window",
         drag_regions: bool = True,
         link_fullscreen: bool = True,
     ) -> None:
-        super().__init__("window")
+        super().__init__(name)
         self._drag_regions = drag_regions
         self._link_fullscreen = link_fullscreen
         self.command(self.minimize)
@@ -118,8 +119,9 @@ class WindowControls(Scope):
     # ── Lifecycle ───────────────────────────────────────────────────────
 
     def on_init(self, ctx: InitContext) -> InitContext:
-        # Only the scope path follows the mount (include prefix); command
-        # local names are fixed. Substitute the path into {{scope}}.
+        # Only the scope path follows the mount (construction name +
+        # mount path); command local names are fixed. Substitute the path
+        # into {{scope}}.
         scope_path = self._full_name("")
         parts = [API_SCRIPT_TEMPLATE]
         if self._drag_regions:

@@ -28,7 +28,8 @@ import signal
 import threading
 import uuid
 from collections.abc import Coroutine
-from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
+from concurrent.futures import Future, ThreadPoolExecutor
 from enum import Enum, auto
 from typing import Any, Callable, TypeVar, ParamSpec, TYPE_CHECKING
 
@@ -60,6 +61,11 @@ log = logging.getLogger("lumiview.app")
 # _check_deadlock() reads it via deferred import — a by-value import
 # would freeze it at None.
 _GUI_THREAD_ID: int | None = None
+
+# How long run() waits for AppHookEvent.Close handlers to finish before
+# stopping the asyncio loop.  Guards against a hanging handler blocking
+# app exit indefinitely.
+_CLOSE_HANDLER_TIMEOUT = 10.0
 
 if TYPE_CHECKING:
     from lumiview import Window
@@ -145,6 +151,10 @@ class App:
 
         # ── Windows ───────────────────────────────────────────────────────
         self._windows: dict[int, Window] = {}
+
+        # Completion signal for the Close event dispatch (set by
+        # _handle_exit_event, awaited in run()'s finally block).
+        self._close_done: Future[None] | None = None
 
         # ── Ctrl+C handler ────────────────────────────────────────────────
         self._original_sigint = signal.getsignal(signal.SIGINT)
@@ -317,22 +327,36 @@ class App:
 
     # ═══ Event dispatch (internal) ═══
 
-    def _emit(self, event: AppHookEvent, *args: object) -> None:
-        """Dispatch an app event to registered handlers on the asyncio loop."""
+    def _emit(self, event: AppHookEvent, *args: object) -> "Future[None] | None":
+        """Dispatch an app event to registered handlers on the asyncio loop.
+
+        Returns a completion signal (a plain ``concurrent.futures.Future``
+        resolved when all handlers finish) or None when there is no loop
+        or no handlers.  Callers that don't need to wait may ignore the
+        return value — only ``_handle_exit_event`` consumes it.
+        """
         loop = self._async_loop
         if loop is None:
             return
 
         handlers = self._hooks.get(event, [])
+        if not handlers:
+            return None
+
+        done: Future[None] = Future()
 
         async def _dispatch() -> None:
-            for fn in handlers:
-                try:
-                    await _run_async(fn, *args, pool=self._threadpool)
-                except Exception:
-                    log.exception("Error in %s handler: %s", event.name, fn)
+            try:
+                for fn in handlers:
+                    try:
+                        await _run_async(fn, *args, pool=self._threadpool)
+                    except Exception:
+                        log.exception("Error in %s handler: %s", event.name, fn)
+            finally:
+                done.set_result(None)
 
         loop.call_soon_threadsafe(lambda: asyncio.create_task(_dispatch()))
+        return done
 
     # ═══ Run loop ═══
 
@@ -412,6 +436,20 @@ class App:
 
             # Restore original signal handler.
             signal.signal(signal.SIGINT, self._original_sigint)
+
+            # Wait for Close handlers to finish before stopping the
+            # asyncio loop — they run on the asyncio thread, which is
+            # still alive here.  Timeout guards against a hanging handler.
+            if self._close_done is not None:
+                try:
+                    self._close_done.result(timeout=_CLOSE_HANDLER_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    log.warning(
+                        "Close handlers did not finish within %.1fs",
+                        _CLOSE_HANDLER_TIMEOUT,
+                    )
+                except BaseException:
+                    log.exception("Close handler wait failed")
 
             # Shutdown asyncio.
             if self._async_loop is not None:
@@ -544,8 +582,10 @@ class App:
 
         self._windows.clear()
 
-        # Emit Close for remaining handlers.
-        self._emit(AppHookEvent.Close)
+        # Emit Close for remaining handlers.  The completion signal is
+        # awaited in run()'s finally block before the asyncio loop stops,
+        # so cleanup handlers actually run.
+        self._close_done = self._emit(AppHookEvent.Close)
 
         return EventLoopControl.Exit
 

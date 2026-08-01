@@ -33,7 +33,7 @@ Thank you for your interest in contributing! LumiView is in early development, a
 # Clone and install dev dependencies
 git clone https://github.com/xiaosuawa/LumiView.git
 cd lumiview
-pip install maturin pytest
+pip install maturin
 
 # Build and install in debug mode
 maturin develop

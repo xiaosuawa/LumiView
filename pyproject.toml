@@ -45,9 +45,6 @@ Repository = "https://github.com/xiaosuawa/LumiView"
 Issues = "https://github.com/xiaosuawa/LumiView/issues"
 Discussions = "https://github.com/xiaosuawa/LumiView/discussions"
 
-[project.optional-dependencies]
-test = ["pytest>=8.0"]
-
 [tool.maturin]
 python-source = "python"
 module-name = "lumiview._core"

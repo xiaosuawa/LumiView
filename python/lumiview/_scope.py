@@ -249,16 +249,16 @@ class Scope:
             fn=fn, name=local, scope=self, strict=strict
         )
 
-    def include(self, other: Scope, *, prefix: str | None = None) -> None:
+    def include(self, other: Scope) -> None:
         """Mount another scope onto this tree — pure mounting, no copying,
         no merging, never mutates *other* (names and permissions are
-        relative paths, so the subtree is untouched).  The same instance
-        can be mounted multiple times on different trees.
+        relative paths, so the subtree is untouched).
 
-        - No prefix: mounted under its own name.
-        - prefix: *prefix* is a container node; *other* is mounted
-          inside it under its own name (full name = ``prefix.name.…``).
-        - Unnamed scopes cannot be mounted (ValueError).
+        An instance can be mounted exactly once — re-mounting it would
+        rewrite its parent pointer and silently change the permission
+        chain of the tree it already belongs to.  Custom mount names are
+        set at construction (``Scope(name=...)``); ``include()`` has no
+        prefix argument.  Unnamed scopes cannot be mounted (ValueError).
         """
         if not isinstance(other, Scope):
             raise TypeError(
@@ -266,13 +266,24 @@ class Scope:
             )
         if not other._name:
             raise ValueError("include() requires a named scope")
-        target = self.scope(prefix) if prefix is not None else self
-        if other._name in target._children:
+        if other._parent is not None:
+            raise ValueError(
+                f"Scope {other._name!r} is already mounted elsewhere — "
+                "mounting the same instance twice is not allowed"
+            )
+        node: Scope | None = self
+        while node is not None:
+            if node is other:
+                raise ValueError(
+                    f"Cannot mount {other._name!r} under its own subtree"
+                )
+            node = node._parent
+        if other._name in self._children:
             raise ValueError(
                 f"A scope named {other._name!r} is already mounted here"
             )
-        other._parent = target
-        target._children[other._name] = other
+        other._parent = self
+        self._children[other._name] = other
 
     # ── Permissions ─────────────────────────────────────────────────────
 

@@ -150,6 +150,7 @@ class Window:
         devtools: bool = False,
         # ── Bridge ──
         bridge: Bridge | None = None,
+        untrusted: bool = False,
         # ── WebView profile ──
         web_context: Any = None,
         data_directory: str | None = None,
@@ -196,6 +197,10 @@ class Window:
             close_behavior: ``"close"`` (destroy), ``"hide"`` (hide on close),
                 or ``"ignore"`` (do nothing on close request).
             bridge: Optional :class:`Bridge` for JS↔Python IPC.
+            untrusted: Do not inject any lumiview initialization scripts
+                (no ``window.lumiview`` — JS cannot call Python and
+                ``emit()`` events are not delivered).  Mutually exclusive
+                with *bridge*.
             web_context: A shared :class:`wryview.WebContext` for cross-window
                 cookies, cache, and storage.  Takes priority over
                 *data_directory* and *incognito*.
@@ -225,6 +230,12 @@ class Window:
         from lumiview._app import App
 
         app = App.get()
+
+        if untrusted and bridge is not None:
+            raise ValueError(
+                "untrusted mode cannot be combined with a bridge "
+                "(no scripts are injected)"
+            )
 
         self = cls.__new__(cls)
         self._app = app
@@ -331,18 +342,21 @@ class Window:
         init_scripts: list[str] = []
         if transparent:
             init_scripts.append(TRANSPARENT_WEBVIEW_SCRIPT)
-        if bridge is not None:
-            from lumiview._scope import InitContext
+        if not untrusted:
+            if bridge is not None:
+                from lumiview._scope import InitContext
 
-            try:
-                ctx = bridge._run_on_init(InitContext(inject_script=BRIDGE_SCRIPT))
-            except Exception:
-                # TaoWindow has no explicit close: dropping the last
-                # reference destroys the native window (same path as
-                # Window.close()).  Don't leak it when on_init raises.
-                del tao_win
-                raise
-            init_scripts.append(ctx.inject_script)
+                try:
+                    ctx = bridge._run_on_init(InitContext(inject_script=BRIDGE_SCRIPT))
+                except Exception:
+                    # TaoWindow has no explicit close: dropping the last
+                    # reference destroys the native window (same path as
+                    # Window.close()).  Don't leak it when on_init raises.
+                    del tao_win
+                    raise
+                init_scripts.append(ctx.inject_script)
+            else:
+                init_scripts.append(BRIDGE_SCRIPT)
         init_script = "\n".join(init_scripts) or None
 
         # ── WebView ──────────────────────────────────────────────────────────
@@ -768,38 +782,60 @@ class Window:
 
     # ═══ Policy setters (post-creation) ═══
 
+    @main_thread
     def set_on_navigation(self, handler: Callable[[str], bool]) -> None:
         """Replace the navigation policy callback.
 
         The handler receives a URL and should return ``True`` to allow
         or ``False`` to block navigation.
+
+        Dispatched on the GUI main thread; the returned :class:`Task`
+        resolves once the policy is registered (not when the policy is
+        later invoked).
         """
         self._navigation_policy = handler
         if self._webview is not None:
             self._webview.set_on_navigation(self._make_navigation_handler(handler))
 
+    @main_thread
     def set_on_new_window(self, handler: Callable[[str], str]) -> None:
         """Replace the new-window policy callback.
 
         The handler receives a URL and should return ``"allow"``
         or ``"deny"``.
+
+        Dispatched on the GUI main thread; the returned :class:`Task`
+        resolves once the policy is registered (not when the policy is
+        later invoked).
         """
         self._new_win_policy = handler
         if self._webview is not None:
             self._webview.set_on_new_window(self._make_new_win_handler(handler))
 
+    @main_thread
     def set_on_download_started(
         self, handler: Callable[[str, str], bool | str]
     ) -> None:
-        """Replace the download-started policy callback."""
+        """Replace the download-started policy callback.
+
+        Dispatched on the GUI main thread; the returned :class:`Task`
+        resolves once the policy is registered (not when the policy is
+        later invoked).
+        """
         self._download_started_policy = handler
         if self._webview is not None:
             self._webview.set_on_download_started(self._make_download_started_handler(handler))
 
+    @main_thread
     def set_on_download_completed(
         self, handler: Callable[[str, str | None, bool], None]
     ) -> None:
-        """Replace the download-completed notification callback."""
+        """Replace the download-completed notification callback.
+
+        Dispatched on the GUI main thread; the returned :class:`Task`
+        resolves once the policy is registered (not when the policy is
+        later invoked).
+        """
         self._download_completed_policy = handler
         if self._webview is not None:
             self._webview.set_on_download_completed(self._make_download_completed_handler(handler))
@@ -890,9 +926,13 @@ class Window:
         """
 
         def _handler(raw: str) -> None:
-            if self._bridge_enabled and self._webview is not None:
-                self._bridge._on_message(self, raw)
-            self._emit(WindowHookEvent.WebMessageReceived, raw)
+            try:
+                if self._bridge_enabled and self._webview is not None:
+                    self._bridge._on_message(self, raw)
+            except Exception:
+                log.exception("IPC handler raised an unexpected exception")
+            finally:
+                self._emit(WindowHookEvent.WebMessageReceived, raw)
 
         return _handler
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -74,13 +75,17 @@ class WSGI:
         """Run the WSGI app and deliver the response via ``respond()``."""
         environ = self._build_environ(request, self.scheme)
 
+        error_recalled = False
+
         def _send_error() -> None:
             """Send the best available error response.
 
-            If ``start_response`` was called (with or without ``exc_info``)
-            we use the status/headers it set.  Otherwise fall back to 500.
+            Only trust the status/headers set by ``start_response`` when
+            the app re-called it with ``exc_info`` after the exception
+            (PEP 3333 error handling); otherwise the earlier status is
+            void and we must not echo it (e.g. 200 + error body).
             """
-            if status_line:
+            if error_recalled and status_line:
                 code = 500
                 try:
                     code = int(status_line[0].split(" ", 1)[0])
@@ -97,12 +102,22 @@ class WSGI:
                 status: str,
                 headers: list[tuple[str, str]],
                 exc_info: Any = None,
-        ) -> None:
+        ) -> Callable[[bytes | str], None]:
+            """PEP 3333 ``start_response`` — returns a ``write()`` callable."""
+            nonlocal error_recalled
             if exc_info is not None:
+                error_recalled = True
                 status_line.clear()
                 response_headers.clear()
             status_line.append(status)
             response_headers.extend(headers)
+
+            def write(body_data: bytes | str) -> None:
+                if isinstance(body_data, str):
+                    body_data = body_data.encode("utf-8", errors="replace")
+                body_chunks.append(body_data)
+
+            return write
 
         try:
             result = self._app(environ, start_response)

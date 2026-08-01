@@ -71,13 +71,15 @@ class Bridge:
     ) -> Callable[..., Any]:
         return self._root.command(fn, name=name, replace=replace, strict=strict)
 
-    def include(self, other: Scope, *, prefix: str | None = None) -> None:
+    def include(self, other: Scope) -> None:
         """Mount a scope onto the tree (pure mounting, see Scope.include).
 
-        Instances always end up on the tree, so their on_init/on_ready
-        hooks are reachable via tree walk — no extra hook list needed.
+        An instance can only be mounted once.  Custom mount names are set
+        at construction (``Scope(name=...)``).  Instances always end up
+        on the tree, so their on_init/on_ready hooks are reachable via
+        tree walk — no extra hook list needed.
         """
-        self._root.include(other, prefix=prefix)
+        self._root.include(other)
 
     def allow(self, *patterns: str) -> None:
         self._root.allow(*patterns)
@@ -115,6 +117,9 @@ class Bridge:
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
+            return
+        if not isinstance(data, dict):
+            log.debug("Ignoring non-object bridge message: %r", raw[:200])
             return
 
         msg_type = data.get("type", "")

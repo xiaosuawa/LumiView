@@ -129,6 +129,7 @@ class ASGI:
         status: int = 500
         headers: list[tuple[str, str]] = []
         body_chunks: list[bytes] = []
+        finished = False
 
         # ── ASGI receive callable ──────────────────────────────────────
         async def receive() -> dict[str, Any]:
@@ -140,7 +141,7 @@ class ASGI:
 
         # ── ASGI send callable ─────────────────────────────────────────
         async def send(message: dict[str, Any]) -> None:
-            nonlocal status, headers
+            nonlocal status, headers, finished
 
             if message["type"] == "http.response.start":
                 status = message["status"]
@@ -155,10 +156,19 @@ class ASGI:
                 if chunk:
                     body_chunks.append(chunk)
                 if not message.get("more_body", False):
+                    finished = True
                     self._finish(status, headers, body_chunks, respond)
 
         # ── Invoke ─────────────────────────────────────────────────────
         await self._app(scope, receive, send)
+
+        if not finished:
+            # The app returned without sending a final body — the
+            # protocol callback would otherwise hang forever.  respond
+            # here is the deduped _once wrapper, so a late body from a
+            # background task is dropped.
+            log.error("ASGI app returned without sending a final http.response.body")
+            respond(500, [("Content-Type", "text/plain")], b"Internal Server Error")
 
     # ── Response assembly ──────────────────────────────────────────────
 
