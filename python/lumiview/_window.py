@@ -625,14 +625,7 @@ class Window:
 
     def _emit(self, event_or_name, *args: object) -> Future[None] | None:
         """Dispatch a per-window event to the asyncio loop."""
-        from lumiview._app import App
-
-        try:
-            app = App.get()
-        except RuntimeError:
-            return
-
-        if app._async_loop is None:
+        if self._app._async_loop is None:
             return
 
         # Support both WindowHookEvent enums and legacy string names
@@ -645,7 +638,7 @@ class Window:
         handlers = (
             self._hooks.get(event, []) if isinstance(event, WindowHookEvent) else []
         )
-        
+
         if not handlers:
             return
 
@@ -653,7 +646,7 @@ class Window:
             try:
                 for fn in handlers:
                     try:
-                        await _run_async(fn, *args, pool=app._threadpool)
+                        await _run_async(fn, *args, pool=self._app._threadpool)
                     except Exception:
                         logging.getLogger("lumiview.window").exception(
                             f"Error in {getattr(event, 'name', event)} handler: {fn}",

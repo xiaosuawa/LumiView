@@ -98,16 +98,16 @@ class Static:
             full = full.resolve(strict=False)
             full.relative_to(self._root)
         except ValueError:
-            return, None
+            return None, None
 
         if not full.is_file():
-            return, None
+            return None, None
 
         try:
             mtime = int(full.stat().st_mtime)
             return full.read_bytes(), mtime
         except OSError:
-            return, None
+            return None, None
 
     def _file_response(
         self,
