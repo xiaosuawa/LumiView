@@ -40,7 +40,7 @@ jobs:
             --exclude 'libpango-1.0.so.*' \
             --exclude 'libcairo.so.*' \
             -w dist dist/lumiview-*.whl
-          rm dist/*-linux_x86_64.whl
+          rm -f dist/*-linux_x86_64.whl
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
