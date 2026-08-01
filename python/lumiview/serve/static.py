@@ -82,11 +82,11 @@ class Static:
         try:
             decoded = unquote(path)
         except Exception:
-            return None
+            return
 
         normalized = posixpath.normpath(decoded).lstrip("/")
         if normalized.startswith("..") or os.path.isabs(normalized):
-            return None
+            return
         if not normalized:
             return "index.html"
         return normalized
@@ -98,16 +98,16 @@ class Static:
             full = full.resolve(strict=False)
             full.relative_to(self._root)
         except ValueError:
-            return None, None
+            return, None
 
         if not full.is_file():
-            return None, None
+            return, None
 
         try:
             mtime = int(full.stat().st_mtime)
             return full.read_bytes(), mtime
         except OSError:
-            return None, None
+            return, None
 
     def _file_response(
         self,

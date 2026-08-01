@@ -117,12 +117,12 @@ class Bridge:
         except json.JSONDecodeError:
             return
         if not isinstance(data, dict):
-            log.debug("Ignoring non-object bridge message: %r", raw[:200])
+            log.debug(f"Ignoring non-object bridge message: {raw[:200]!r}")
             return
 
         msg_type = data.get("type", "")
         if msg_type != "invoke":
-            log.warning("Unknown bridge message type: %r", msg_type)
+            log.warning(f"Unknown bridge message type: {msg_type!r}")
             return
 
         command = data.get("command", "")
@@ -181,7 +181,7 @@ class Bridge:
             except BridgeError as e:
                 self._respond(window, call_id, error=e)
             except Exception as e:
-                log.exception("Bridge command %r failed", cmd.full_name)
+                log.exception(f"Bridge command {cmd.full_name!r} failed")
                 self._respond(
                     window,
                     call_id,

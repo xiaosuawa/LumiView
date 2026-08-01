@@ -11,8 +11,6 @@ Run:
     python examples/events.py
 """
 
-import asyncio
-
 from lumiview import App, AppHookEvent, Window, WindowHookEvent
 
 app = App(name="EventsDemo")

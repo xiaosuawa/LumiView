@@ -1,15 +1,6 @@
-"""
-High-level Window — 1:1 binding of a tao window to a wryview WebView.
-
-Create via::
-
-    win = await Window.create(title="App", source=Static("frontend/dist"))
-"""
-
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import functools
 import json
 import logging
@@ -18,6 +9,7 @@ import webbrowser
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Callable, ParamSpec, TypeVar
 from urllib.parse import urlparse
+from concurrent.futures import Future
 
 from wryview import DragDropEvent, PageLoadEvent, WebView
 from wryview._core import WindowHandleKind as WryKind
@@ -289,15 +281,11 @@ class Window:
         for serve in serve_sources:
             scheme = getattr(serve, "scheme", "lumiview")
             if scheme in custom_protocols:
-                raise ValueError(
-                    f"Duplicate custom protocol scheme: {scheme!r}"
-                )
+                raise ValueError(f"Duplicate custom protocol scheme: {scheme!r}")
             custom_protocols[scheme] = _make_protocol_handler(serve)
 
         if serve_sources:
-            resolved_url = (
-                f"{getattr(serve_sources[0], 'scheme', 'lumiview')}://app/"
-            )
+            resolved_url = f"{getattr(serve_sources[0], 'scheme', 'lumiview')}://app/"
 
         if url is not None:
             resolved_url = url
@@ -344,7 +332,7 @@ class Window:
             rgba, iw, ih = _load_icon(icon)
             builder.with_window_icon(iw, ih, rgba)
         tao_win = builder.build()
-    
+
         if sys.platform == "linux":
             handle = tao_win.gtk_container()
             kind = WryKind.Gtk
@@ -439,7 +427,7 @@ class Window:
             if bridge is not None:
                 bridge._run_on_ready(self)
         except Exception:
-            self._request_close_now()
+            self.close()
             raise
 
         return self
@@ -635,7 +623,7 @@ class Window:
 
         return decorator
 
-    def _emit(self, event_or_name, *args: object) -> None:
+    def _emit(self, event_or_name, *args: object) -> Future[None] | None:
         """Dispatch a per-window event to the asyncio loop."""
         from lumiview._app import App
 
@@ -657,19 +645,30 @@ class Window:
         handlers = (
             self._hooks.get(event, []) if isinstance(event, WindowHookEvent) else []
         )
+        
+        if not handlers:
+            return
 
         async def _dispatch() -> None:
-            for fn in handlers:
-                try:
-                    await _run_async(fn, *args, pool=app._threadpool)
-                except Exception:
-                    logging.getLogger("lumiview.window").exception(
-                        "Error in %s handler: %s",
-                        getattr(event, "name", event),
-                        fn,
-                    )
+            try:
+                for fn in handlers:
+                    try:
+                        await _run_async(fn, *args, pool=app._threadpool)
+                    except Exception:
+                        logging.getLogger("lumiview.window").exception(
+                            f"Error in {getattr(event, 'name', event)} handler: {fn}",
+                        )
+            finally:
+                done.set_result(None)
 
-        app._async_loop.call_soon_threadsafe(lambda: asyncio.create_task(_dispatch()))
+        loop = self._app._async_loop
+        assert loop is not None
+
+        done: Future[None] = Future()
+
+        loop.call_soon_threadsafe(lambda: asyncio.create_task(_dispatch()))
+
+        return done
 
     # ═══ Lifecycle ═══
 
@@ -686,29 +685,23 @@ class Window:
         if behavior == CloseBehavior.Hide:
             if self._tao is not None:
                 self._tao.set_visible(False)
-            self._emit(WindowHookEvent.CloseRequested)
-            return
 
-        self._emit(WindowHookEvent.CloseRequested)
+        future = self._emit(WindowHookEvent.CloseRequested)
+
+        if behavior == CloseBehavior.Close:
+            if future is None:
+                self.close()
+            else:
+                future.add_done_callback(lambda _: self.close())
+
+    @main_thread
+    def close(self) -> None:
+        """Close the window and destroy its resources."""
         if self._webview is not None:
             self._webview.close()
         self._tao = None
         self._webview = None
         self._app._remove_window(self._win_id)
-
-    def close(self) -> Task[None]:
-        from lumiview._app import App
-
-        app = App.get()
-
-        def _do():
-            if self._webview is not None:
-                self._webview.close()
-            self._tao = None
-            self._webview = None
-            app._remove_window(self._win_id)
-
-        return app.call_on_main(_do)
 
     # ═══ WebView capabilities (§11) ═══
 
@@ -848,7 +841,9 @@ class Window:
         """
         self._download_started_policy = handler
         if self._webview is not None:
-            self._webview.set_on_download_started(self._make_download_started_handler(handler))
+            self._webview.set_on_download_started(
+                self._make_download_started_handler(handler)
+            )
 
     @main_thread
     def set_on_download_completed(
@@ -862,7 +857,9 @@ class Window:
         """
         self._download_completed_policy = handler
         if self._webview is not None:
-            self._webview.set_on_download_completed(self._make_download_completed_handler(handler))
+            self._webview.set_on_download_completed(
+                self._make_download_completed_handler(handler)
+            )
 
     # ═══ Internal ═══
 
@@ -975,7 +972,7 @@ def _page_event(ev: PageLoadEvent) -> WindowHookEvent:
 
 def _propagate_dispatch_failure(
     handle: Task[Any],
-    dispatched: concurrent.futures.Future[Any],
+    dispatched: Future[Any],
 ) -> None:
     """Propagate a failed main-thread dispatch into *handle*.
 

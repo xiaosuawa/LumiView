@@ -336,7 +336,7 @@ class Scope:
         for part in parts[:-1]:
             child = node._children.get(part)
             if child is None:
-                return None
+                return
             node = child
         return node._commands.get(parts[-1])
 

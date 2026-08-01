@@ -341,7 +341,7 @@ class App:
 
         handlers = self._hooks.get(event, [])
         if not handlers:
-            return None
+            return
 
         done: Future[None] = Future()
 
@@ -351,7 +351,7 @@ class App:
                     try:
                         await _run_async(fn, *args, pool=self._threadpool)
                     except Exception:
-                        log.exception("Error in %s handler: %s", event.name, fn)
+                        log.exception(f"Error in {event.name} handler: {fn}")
             finally:
                 done.set_result(None)
 
@@ -409,7 +409,7 @@ class App:
             try:
                 cb()
             except Exception:
-                log.exception("Error in before_run callback: %s", cb)
+                log.exception(f"Error in before_run callback: {cb}")
 
         # Start asyncio thread.
         self._async_thread = threading.Thread(
@@ -502,7 +502,7 @@ class App:
 
                 self._async_loop.run_until_complete(_run_cb())
             except Exception:
-                log.exception("Error in exit callback: %s", cb)
+                log.exception(f"Error in exit callback: {cb}")
 
     # ── Window tracking ──────────────────────────────────────────────────
 

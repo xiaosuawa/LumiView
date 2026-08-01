@@ -98,9 +98,8 @@ class ASGI:
             nonlocal responded
             if responded:
                 log.warning(
-                    "ASGI responder called a second time (status=%d) — "
+                    f"ASGI responder called a second time (status={status}) — "
                     "dropping duplicate response",
-                    status,
                 )
                 return
             responded = True
@@ -112,7 +111,7 @@ class ASGI:
                     self._execute(request, _once), timeout=self._timeout
                 )
             except asyncio.TimeoutError:
-                log.error("ASGI app did not complete within %.1fs", self._timeout)
+                log.error(f"ASGI app did not complete within {self._timeout:.1f}s")
                 _once(504, [("Content-Type", "text/plain")], b"Gateway Timeout")
             except BaseException:
                 log.exception("ASGI app raised an exception")
@@ -182,7 +181,7 @@ class ASGI:
         """Assemble and deliver the final response."""
         body = b"".join(body_chunks)
         if len(body) > self._max_body:
-            log.error("ASGI response body (%d bytes) exceeds limit", len(body))
+            log.error(f"ASGI response body ({len(body)} bytes) exceeds limit")
             respond(500, [("Content-Type", "text/plain")], b"Response too large")
             return
 
