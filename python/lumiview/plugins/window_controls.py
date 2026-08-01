@@ -7,9 +7,15 @@ constructed as ``WindowControls(name="x")``).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from lumiview._bridge import BridgeError
 from lumiview._core import ResizeDirection
+from lumiview._events import WindowHookEvent
 from lumiview._scope import BridgeContext, InitContext, Scope
+
+if TYPE_CHECKING:
+    from lumiview._window import Window
 
 API_SCRIPT_TEMPLATE = """\
 (() => {
@@ -20,6 +26,10 @@ API_SCRIPT_TEMPLATE = """\
     toggleMaximize() { return lumiview.invoke("{{scope}}.toggle_maximize", {}); },
     isMaximized() { return lumiview.invoke("{{scope}}.is_maximized", {}); },
     close() { return lumiview.invoke("{{scope}}.close", {}); },
+    onMaximizedChange(handler) {
+      return lumiview.listen("{{scope}}.maximized-changed",
+        (p) => handler(p.maximized));
+    },
     startDragging() { return lumiview.invoke("{{scope}}.start_dragging", {}); },
     startResizeDragging(direction) {
       return lumiview.invoke("{{scope}}.start_resize_dragging", {direction});
@@ -92,7 +102,8 @@ _RESIZE_DIRECTIONS = {
 
 
 class WindowControls(Scope):
-    """Custom titlebar controls (window.* JS API + drag regions + fullscreen).
+    """Custom titlebar controls (window.* JS API + drag regions + fullscreen
+    and maximize-state sync).
 
     All commands resolve their Task synchronously via ``.result()`` —
     they run on the thread pool, never on the GUI thread.
@@ -104,10 +115,14 @@ class WindowControls(Scope):
         name: str = "window",
         drag_regions: bool = True,
         link_fullscreen: bool = True,
+        link_maximized: bool = True,
     ) -> None:
         super().__init__(name)
         self._drag_regions = drag_regions
         self._link_fullscreen = link_fullscreen
+        self._link_maximized = link_maximized
+        self._window: Window | None = None
+        self._maximized = False
         self.command(self.minimize)
         self.command(self.toggle_maximize)
         self.command(self.is_maximized)
@@ -132,6 +147,34 @@ class WindowControls(Scope):
         # assembled script block from the base inject_script.
         ctx.inject_script += "\n" + "\n".join(parts).replace("{{scope}}", scope_path)
         return ctx
+
+    def on_ready(self, window: Window) -> None:
+        """Bind window hooks once the window is created (GUI thread)."""
+        if not self._link_maximized:
+            return
+        self._window = window
+        self._maximized = window.is_maximized().result()
+        self._emit_maximized()
+        window.on(WindowHookEvent.Resized)(self._sync_maximized)
+
+    async def _sync_maximized(self, *_: object) -> None:
+        """Hook handler: broadcast maximize-state changes to JS."""
+        if self._window is None:
+            return
+        maximized = await self._window.is_maximized()
+        if maximized == self._maximized:
+            return
+        self._maximized = maximized
+        self._emit_maximized()
+
+    def _emit_maximized(self) -> None:
+        """Fire the maximize-state event to JS listeners."""
+        if self._window is None:
+            return
+        self._window.emit(
+            f"{self._full_name('')}.maximized-changed",
+            {"maximized": self._maximized},
+        )
 
     # ── Commands ────────────────────────────────────────────────────────
 

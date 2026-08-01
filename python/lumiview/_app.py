@@ -33,16 +33,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from enum import Enum, auto
 from typing import Any, Callable, TypeVar, ParamSpec, TYPE_CHECKING
 
-from lumiview._core import (
-    TaoEventLoop,
-    TaoEvent,
-    EventLoopControl,
-    RedrawRequestedEvent,
-    ResizedEvent,
-    UserEvent,
-    CloseRequestedEvent,
-    DestroyedEvent,
-)
+from lumiview._core import TaoEventLoop, TaoEvent, EventLoopControl, UserEvent
 
 from lumiview._events import AppHookEvent
 from lumiview._task import Task, _run_async
@@ -524,45 +515,13 @@ class App:
                 return self._handle_exit_event()
             elif cmd == "wake":
                 pass  # just woke us to drain commands
+            return EventLoopControl.Continue
 
-        elif isinstance(event, ResizedEvent):
-            if (wid := event.window_id) is not None:
-                win = self._windows.get(wid)
-                if win is not None and win._webview is not None and win._tao is not None:
-                    sf = win._tao.scale_factor()
-                    win._webview.set_bounds(0, 0, event.width / sf, event.height / sf)
-                    # Resize the child HWND first, then replace the parent
-                    # backing surface. This prevents either old edge from
-                    # surviving into the newly composed frame.
-                    win._tao._redraw_transparent_surface()
-
-        elif isinstance(event, RedrawRequestedEvent):
-            if (wid := event.window_id) is not None:
-                win = self._windows.get(wid)
-                if win is not None and win._tao is not None:
-                    win._tao._redraw_transparent_surface()
-
-        elif isinstance(event, CloseRequestedEvent):
-            if (wid := event.window_id) is not None:
-                win = self._windows.get(wid)
-                if win is not None:
-                    win._request_close_now()
-
-        elif isinstance(event, DestroyedEvent):
-            # Safety net: if the OS destroys the window independently
-            # (e.g. user kills the process, or platform-specific behavior),
-            # ensure we clean up tracking and WebView resources.
-            if (wid := event.window_id) is not None:
-                win = self._windows.get(wid)
-                if win is not None:
-                    if win._webview is not None:
-                        try:
-                            win._webview.close()
-                        except Exception:
-                            pass
-                    win._tao = None
-                    win._webview = None
-                    self._remove_window(wid)
+        # Every other tao event is window-scoped — route it to the window.
+        if (wid := event.window_id) is not None:
+            win = self._windows.get(wid)
+            if win is not None:
+                win._on_tao_event(event)
 
         return EventLoopControl.Continue
 

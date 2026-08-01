@@ -16,8 +16,18 @@ from wryview._core import WindowHandleKind as WryKind
 
 from lumiview._bridge import BRIDGE_SCRIPT, Bridge
 from lumiview._core import (
+    CloseRequestedEvent,
+    DestroyedEvent,
+    FocusedEvent,
+    MovedEvent,
+    RedrawRequestedEvent,
     ResizeDirection,
+    ResizedEvent,
+    ScaleFactorChangedEvent,
+    TaoEvent,
     TaoWindowBuilder,
+    ThemeChangedEvent,
+    UnfocusedEvent,
     WindowEffect,
     WindowHandleKind,
 )
@@ -664,6 +674,53 @@ class Window:
         return done
 
     # ═══ Lifecycle ═══
+
+    def _on_tao_event(self, event: TaoEvent) -> None:
+        """Handle a tao window event routed from the app (GUI thread)."""
+        if isinstance(event, ResizedEvent):
+            if self._webview is not None and self._tao is not None:
+                sf = self._tao.scale_factor()
+                self._webview.set_bounds(0, 0, event.width / sf, event.height / sf)
+                # Resize the child HWND first, then replace the parent
+                # backing surface. This prevents either old edge from
+                # surviving into the newly composed frame.
+                self._tao._redraw_transparent_surface()
+            self._emit(WindowHookEvent.Resized, event.width, event.height)
+
+        elif isinstance(event, MovedEvent):
+            self._emit(WindowHookEvent.Moved, event.x, event.y)
+
+        elif isinstance(event, FocusedEvent):
+            self._emit(WindowHookEvent.Focused)
+
+        elif isinstance(event, UnfocusedEvent):
+            self._emit(WindowHookEvent.Unfocused)
+
+        elif isinstance(event, ScaleFactorChangedEvent):
+            self._emit(WindowHookEvent.ScaleFactorChanged, event.new_scale_factor)
+
+        elif isinstance(event, ThemeChangedEvent):
+            self._emit(WindowHookEvent.ThemeChanged, event.theme)
+
+        elif isinstance(event, RedrawRequestedEvent):
+            if self._tao is not None:
+                self._tao._redraw_transparent_surface()
+
+        elif isinstance(event, CloseRequestedEvent):
+            self._request_close_now()
+
+        elif isinstance(event, DestroyedEvent):
+            # Safety net: if the OS destroys the window independently
+            # (e.g. user kills the process, or platform-specific behavior),
+            # ensure we clean up tracking and WebView resources.
+            if self._webview is not None:
+                try:
+                    self._webview.close()
+                except Exception:
+                    pass
+            self._tao = None
+            self._webview = None
+            self._app._remove_window(self._win_id)
 
     @main_thread
     def request_close(self) -> None:

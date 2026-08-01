@@ -35,6 +35,14 @@ class WindowHookEvent(Enum):
     ``NewWindowRequested``        ``window.open()`` or similar
     ``CloseRequested``            Window close requested (per :class:`CloseBehavior`)
     ``WebMessageReceived``        Raw IPC message (non-bridge)
+    ``Resized``                   Window size changed (``width, height``,
+                                  physical pixels)
+    ``Moved``                     Window position changed (``x, y``,
+                                  physical screen coordinates)
+    ``Focused``                   Window gained keyboard focus
+    ``Unfocused``                 Window lost keyboard focus
+    ``ScaleFactorChanged``        DPI scale factor changed (``new_scale_factor``)
+    ``ThemeChanged``              System theme changed (``theme``)
     ============================ =========================================
     """
 
@@ -45,3 +53,9 @@ class WindowHookEvent(Enum):
     NewWindowRequested = auto()
     CloseRequested = auto()
     WebMessageReceived = auto()
+    Resized = auto()
+    Moved = auto()
+    Focused = auto()
+    Unfocused = auto()
+    ScaleFactorChanged = auto()
+    ThemeChanged = auto()
