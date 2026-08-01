@@ -15,6 +15,7 @@ import json
 import logging
 import sys
 import webbrowser
+from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Callable, ParamSpec, TypeVar
 from urllib.parse import urlparse
 
@@ -28,7 +29,7 @@ from lumiview._core import (
     WindowEffect,
     WindowHandleKind,
 )
-from lumiview._events import AppHookEvent, WindowHookEvent
+from lumiview._events import WindowHookEvent
 from lumiview._task import Task, _run_async
 
 if TYPE_CHECKING:
@@ -46,6 +47,20 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 log = logging.getLogger("lumiview.window")
+
+
+class CloseBehavior(Enum):
+    """What happens when the window receives a close request.
+
+    - ``Close`` — destroy the window (default).
+    - ``Hide`` — hide the window instead of destroying it.
+    - ``Ignore`` — do nothing.
+    """
+
+    Close = auto()
+    Hide = auto()
+    Ignore = auto()
+
 
 TRANSPARENT_WEBVIEW_SCRIPT = """\
 (() => {
@@ -103,7 +118,7 @@ class Window:
             self._webview: WebView | None
             self._bridge: Bridge
             self._hooks: dict[WindowHookEvent, list[Callable[..., Any]]]
-            self._close_behavior: str
+            self._close_behavior: CloseBehavior
             self._navigation_policy: Callable[[str], bool] | None
             self._new_win_policy: Callable[[str], str] | None
             self._download_started_policy: Callable[[str, str], bool | str] | None
@@ -111,6 +126,7 @@ class Window:
                 Callable[[str, str | None, bool], None] | None
             )
             self._bridge_enabled: bool
+            self._untrusted: bool
         raise RuntimeError("Use 'await Window.create(...)' instead")
 
     @classmethod
@@ -143,7 +159,7 @@ class Window:
         minimizable: bool = True,
         maximizable: bool = True,
         closable: bool = True,
-        close_behavior: str = "close",
+        close_behavior: CloseBehavior = CloseBehavior.Close,
         visible_on_all_workspaces: bool = False,
         content_protection: bool = False,
         # ── DevTools ──
@@ -194,8 +210,9 @@ class Window:
             undecorated_shadow: Windows-only native shadow for a borderless
                 window. ``None`` preserves Tao's default.
             resizable: Allow window resizing.
-            close_behavior: ``"close"`` (destroy), ``"hide"`` (hide on close),
-                or ``"ignore"`` (do nothing on close request).
+            close_behavior: :class:`CloseBehavior` — ``Close`` (destroy),
+                ``Hide`` (hide on close), or ``Ignore`` (do nothing on
+                close request).
             bridge: Optional :class:`Bridge` for JS↔Python IPC.
             untrusted: Do not inject any lumiview initialization scripts
                 (no ``window.lumiview`` — JS cannot call Python and
@@ -249,6 +266,7 @@ class Window:
         self._download_started_policy = on_download_started
         self._download_completed_policy = on_download_completed
         self._bridge_enabled = bridge is not None
+        self._untrusted = untrusted
 
         # ── Resolve source → url / html / custom_protocols ─────────────────
         custom_protocols: dict[str, Any] = {}
@@ -417,8 +435,12 @@ class Window:
         self._win_id = win_id
         app._windows[win_id] = self
 
-        if bridge is not None:
-            bridge._run_on_ready(self)
+        try:
+            if bridge is not None:
+                bridge._run_on_ready(self)
+        except Exception:
+            self._request_close_now()
+            raise
 
         return self
 
@@ -512,6 +534,7 @@ class Window:
     def show(self) -> None:
         assert self._tao is not None
         self._tao.set_visible(True)
+        self._tao.set_minimized(False)
 
     @main_thread
     def hide(self) -> None:
@@ -624,11 +647,12 @@ class Window:
         if app._async_loop is None:
             return
 
-        # Support both WindowHookEvent enums and string event names
+        # Support both WindowHookEvent enums and legacy string names
+        # (string names are kept for compatibility but have no handlers).
         if isinstance(event_or_name, WindowHookEvent):
             event = event_or_name
         else:
-            event = event_or_name  # raw string for close_requested etc.
+            event = event_or_name
 
         handlers = (
             self._hooks.get(event, []) if isinstance(event, WindowHookEvent) else []
@@ -657,15 +681,15 @@ class Window:
     def _request_close_now(self) -> None:
         """Apply ``close_behavior`` immediately on the GUI thread."""
         behavior = self._close_behavior
-        if behavior == "ignore":
+        if behavior == CloseBehavior.Ignore:
             return
-        if behavior == "hide":
+        if behavior == CloseBehavior.Hide:
             if self._tao is not None:
                 self._tao.set_visible(False)
-            self._emit("close_requested")
+            self._emit(WindowHookEvent.CloseRequested)
             return
 
-        self._app._emit(AppHookEvent.Close)
+        self._emit(WindowHookEvent.CloseRequested)
         if self._webview is not None:
             self._webview.close()
         self._tao = None
@@ -919,20 +943,19 @@ class Window:
     # ── IPC handler ───────────────────────────────────────────────────────
 
     def _make_ipc_handler(self) -> Callable[[str], None]:
-        """Create an IPC handler that forwards messages to the Bridge.
-
-        Always installed (even with bridge=None) so raw IPC messages are
-        exposed as WebMessageReceived events — isolation mode design §7.
-        """
+        """Create an IPC handler that forwards messages to the Bridge."""
 
         def _handler(raw: str) -> None:
-            try:
-                if self._bridge_enabled and self._webview is not None:
-                    self._bridge._on_message(self, raw)
-            except Exception:
-                log.exception("IPC handler raised an unexpected exception")
-            finally:
+            if self._untrusted:
                 self._emit(WindowHookEvent.WebMessageReceived, raw)
+            else:
+                try:
+                    if self._webview is not None:
+                        self._bridge._on_message(self, raw)
+                except Exception:
+                    log.exception("IPC handler raised an unexpected exception")
+                finally:
+                    self._emit(WindowHookEvent.WebMessageReceived, raw)
 
         return _handler
 

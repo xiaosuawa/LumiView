@@ -63,7 +63,7 @@ from lumiview._app import App, AppState, AppClosedError, WindowClosedError
 from lumiview._events import WindowHookEvent, AppHookEvent
 from lumiview._bridge import Bridge, BridgeError
 from lumiview._scope import Scope, ScopePermission, BridgeContext, InitContext
-from lumiview._window import Window
+from lumiview._window import CloseBehavior, Window
 from lumiview._task import task, Task, TaskDeadlockError
 from lumiview import utils
 from lumiview import plugins
@@ -78,6 +78,7 @@ __all__ = [
     # ── Application layer ──
     "App",
     "AppState",
+    "CloseBehavior",
     "Window",
     "WindowEffect",
     "ResizeDirection",

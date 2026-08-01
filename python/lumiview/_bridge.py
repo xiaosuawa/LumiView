@@ -31,9 +31,7 @@ class Bridge:
 
     Composes an anonymous root :class:`Scope`; tree operations are
     forwarded to it.  ``bridge=None`` disables the bridge entirely for
-    a window (full isolation, see design doc §7).
-
-    No resource limits (request size / concurrency): see design doc §10.
+    a window.
 
     Convenience constructor arguments (equivalent to calling the methods
     after creation)::
