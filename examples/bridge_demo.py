@@ -18,16 +18,16 @@ from lumiview import App, Bridge, BridgeError, Window
 
 app = App(name="BridgeDemo")
 
-b = Bridge()
+bridge = Bridge()
 
 
-@b.command
+@bridge.command
 def greet(name: str) -> dict:
     """Say hello — synchronous Python function."""
     return {"msg": f"Hello, {name}!"}
 
 
-@b.command
+@bridge.command
 async def delayed_greet(name: str) -> dict:
     """Async example — runs on the asyncio loop without blocking."""
     import asyncio
@@ -36,7 +36,7 @@ async def delayed_greet(name: str) -> dict:
     return {"msg": f"Hello after delay, {name}!"}
 
 
-@b.command
+@bridge.command
 def maybe_fail(msg: str) -> None:
     """Raise a structured error — caught and returned to JS."""
     raise BridgeError("demo_error", msg)
@@ -72,13 +72,13 @@ HTML = """<!doctype html>
 
 
 async def main():
-    win = await Window.create(
+    await Window.create(
         title="LumiView Bridge Demo",
         html=HTML,
         width=650,
         height=450,
         devtools=True,
-        bridge=b,
+        bridge=bridge,
     )
     print("Bridge ready — click the buttons to call Python from JS.")
 

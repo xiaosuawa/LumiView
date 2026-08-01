@@ -84,7 +84,7 @@ app = App(name="ASGIDemo")
 
 
 async def main():
-    win = await Window.create(
+    await Window.create(
         title="FastAPI + LumiView",
         source=ASGI(fastapi_app),
         width=760,
