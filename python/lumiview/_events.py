@@ -31,7 +31,7 @@ class WindowHookEvent(Enum):
     ``PageLoadStarted``           A new URL begins loading
     ``PageLoadFinished``          Page load complete
     ``TitleChanged``              ``document.title`` changed
-    ``NavigationRequested``       Navigation about to happen (can block)
+    ``NavigationRequested``       Navigation about to happen
     ``NewWindowRequested``        ``window.open()`` or similar
     ``CloseRequested``            Window close requested (per :class:`CloseBehavior`)
     ``WebMessageReceived``        Raw IPC message (non-bridge)

@@ -63,25 +63,6 @@ class CloseBehavior(Enum):
     Hide = auto()
     Ignore = auto()
 
-
-TRANSPARENT_WEBVIEW_SCRIPT = """\
-(() => {
-  function installTransparentBackground() {
-    const root = document.documentElement;
-    if (!root || root.querySelector("style[data-lumiview-transparent]")) return;
-    const style = document.createElement("style");
-    style.dataset.lumiviewTransparent = "";
-    style.textContent = ":root, body { background: transparent; }";
-    root.prepend(style);
-  }
-
-  installTransparentBackground();
-  document.addEventListener("DOMContentLoaded", installTransparentBackground, {
-    once: true,
-  });
-})();
-"""
-
 # ═══ @main_thread — decorator ══════════════════════════════════════════════
 
 
@@ -356,8 +337,6 @@ class Window:
             }[our]
 
         init_scripts: list[str] = []
-        if transparent:
-            init_scripts.append(TRANSPARENT_WEBVIEW_SCRIPT)
         if not untrusted:
             if bridge is not None:
                 from lumiview._scope import InitContext
