@@ -1,18 +1,3 @@
-"""
-Task — the universal concurrency primitive.
-
-``Task[T]`` extends ``concurrent.futures.Future`` with:
-
-- ``__await__`` for ``async``/``await`` — wraps with ``asyncio.wrap_future``
-  each time, never binds to a single event loop.
-- Deadlock detection — ``.result()`` on the GUI thread raises immediately.
-
-All cross-thread operations return ``Task[T]``, never raw values.
-
-Internal execution paths (event dispatch, bridge dispatch) use the
-lightweight ``_run_async()`` helper which does NOT create a Task.
-"""
-
 from __future__ import annotations
 
 import asyncio

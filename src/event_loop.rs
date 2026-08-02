@@ -5,6 +5,7 @@ use pyo3::prelude::*;
 use tao::event_loop::{
     ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget,
 };
+use tao::platform::run_return::EventLoopExtRunReturn;
 
 use crate::events::build_event;
 use crate::types::EventLoopControl;
@@ -104,11 +105,15 @@ unsafe fn run_event_loop_detached(
     py.detach(move || {
         // SAFETY: detach() runs on the calling thread.  We are on the
         // main thread, same address space — reconstructing the Box is safe.
-        let el: Box<EventLoop<String>> = unsafe { Box::from_raw(send_ptr.0) };
+        let mut el: Box<EventLoop<String>> = unsafe { Box::from_raw(send_ptr.0) };
         // Prevent SendPtr's Drop from double-freeing.
         std::mem::forget(send_ptr);
 
-        el.run(move |event, elwt, control_flow| {
+        // run_return (vs run) exits when ControlFlow::Exit is set, but
+        // during OS modal loops (e.g. window resize on Windows/macOS)
+        // tao defers returning until the gesture ends — events keep
+        // flowing, only the return is delayed.  Known limitation.
+        el.run_return(move |event, elwt, control_flow| {
             *control_flow = ControlFlow::Wait;
 
             // Stash ELWT pointer for build() during this callback.
@@ -144,7 +149,7 @@ unsafe fn run_event_loop_detached(
             RUNNING_PTR.with(|c| c.set(None));
         });
 
-        // Box<EventLoop> is dropped here after run() returns.
+        // Box<EventLoop> is dropped here after run_return() returns.
     });
 
     // Paranoia: clear the pointer after run() returns.

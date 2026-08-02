@@ -1,10 +1,3 @@
-"""Scope tree — command registration and permissions.
-
-Scope nodes form a tree; the full command name is the dot-joined path
-from the root to the command's local name.  The Bridge composes an
-anonymous root Scope and forwards tree operations to it.
-"""
-
 from __future__ import annotations
 
 import inspect

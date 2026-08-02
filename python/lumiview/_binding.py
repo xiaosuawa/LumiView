@@ -1,12 +1,3 @@
-"""Argument binding — payload → command signature.
-
-Rules:
-- Basic types: exact match via cattrs, no implicit cross-type conversion.
-- dataclass / TypedDict / nested structures: structured unboxing via cattrs.
-- Parameters annotated ``BridgeContext`` (any name): system-injected.
-- strict=True (default): extra payload keys are rejected.
-"""
-
 from __future__ import annotations
 
 import inspect

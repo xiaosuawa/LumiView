@@ -1,5 +1,3 @@
-"""Hook event types — use these instead of raw strings."""
-
 from __future__ import annotations
 
 from enum import Enum, auto

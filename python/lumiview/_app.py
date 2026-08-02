@@ -1,22 +1,3 @@
-"""
-Application — the heart of lumiview.
-
-Manages 2+N threads:
-
-1. **Main thread** — tao event loop + native window / webview operations.
-2. **Async thread** — asyncio event loop, runs user coroutines and hook handlers.
-3. **Thread pool** — ThreadPoolExecutor for sync ``task()`` calls.
-
-All cross-thread communication flows through ``app.call_on_main()``.
-
-Usage::
-
-    from lumiview import App
-
-    app = App(name="MyApp", exit_on_last_window=False)
-    app.run(main)
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -26,6 +7,7 @@ import logging
 import queue
 import signal
 import threading
+import time
 import uuid
 from collections.abc import Coroutine
 import concurrent.futures
@@ -53,10 +35,10 @@ log = logging.getLogger("lumiview.app")
 # would freeze it at None.
 _GUI_THREAD_ID: int | None = None
 
-# How long run() waits for AppHookEvent.Close handlers to finish before
-# stopping the asyncio loop.  Guards against a hanging handler blocking
-# app exit indefinitely.
-_CLOSE_HANDLER_TIMEOUT = 10.0
+# Overall budget for the exit cleanup sequence in run()'s finally block.
+# Every wait (Close handlers, asyncio thread join) shares this budget;
+# nothing waits indefinitely.
+_SHUTDOWN_TIMEOUT = 10.0
 
 if TYPE_CHECKING:
     from lumiview import Window
@@ -88,8 +70,13 @@ class App:
     Parameters:
         name: Application name (used for platform-specific identity).
         exit_on_last_window: If True (default), exit when the last window closes.
-           Set to False for tray-based apps like TimeFlow.
+           Set to False for tray-based apps.
         max_workers: Thread pool size for sync ``task()`` calls.
+
+    Lifecycle: register an entry via ``run(entry)`` (main flow) and/or
+    observe via ``app.on(AppHookEvent.Ready)``. Request exit with
+    ``app.exit(code)``; cleanup code goes in ``app.on(AppHookEvent.Close)``
+    handlers (awaited during shutdown).
     """
 
     _instance: App | None = None
@@ -137,8 +124,6 @@ class App:
         self._hooks: dict[AppHookEvent, list[_Handler]] = {
             evt: [] for evt in AppHookEvent
         }
-        self._before_run_callbacks: list[_Handler] = []
-        self._exit_callbacks: list[_Handler] = []
 
         # ── Windows ───────────────────────────────────────────────────────
         self._windows: dict[int, Window] = {}
@@ -146,9 +131,6 @@ class App:
         # Completion signal for the Close event dispatch (set by
         # _handle_exit_event, awaited in run()'s finally block).
         self._close_done: Future[None] | None = None
-
-        # ── Ctrl+C handler ────────────────────────────────────────────────
-        self._original_sigint = signal.getsignal(signal.SIGINT)
 
     # ── Singleton access ─────────────────────────────────────────────────
 
@@ -171,15 +153,6 @@ class App:
 
     # ═══ Hooks ═══
 
-    def before_run(self, callback: _Handler) -> _Handler:
-        """Register a callback to run on the main thread before the event loop starts.
-
-        Only use this for third-party integrations that MUST run on the main
-        thread before the GUI loop. The callback must be synchronous.
-        """
-        self._before_run_callbacks.append(callback)
-        return callback
-
     def on(self, event: AppHookEvent):
         """Register a handler for an app-level event.
 
@@ -192,16 +165,6 @@ class App:
             return fn
 
         return decorator
-
-    def on_ready(self, callback: _Handler) -> _Handler:
-        """Register a callback for when the app is ready (convenience)."""
-        self._hooks.setdefault(AppHookEvent.Ready, []).append(callback)
-        return callback
-
-    def on_exit(self, callback: _Handler) -> _Handler:
-        """Register a callback for graceful shutdown."""
-        self._exit_callbacks.append(callback)
-        return callback
 
     # ═══ Bridge: any thread → main thread ═══
 
@@ -241,6 +204,13 @@ class App:
     ) -> None:
         req_id = str(uuid.uuid4())
         self._pending[req_id] = handle
+        # Race: the main thread may have finished shutdown between our
+        # state check and this write — fail the handle ourselves.
+        if self._state in (AppState.STOPPING, AppState.STOPPED):
+            self._pending.pop(req_id, None)
+            if not handle.done():
+                handle.set_exception(AppClosedError(self._name))
+            return
         self._cmd_queue.put((req_id, fn, args, kwargs))
         if self._proxy is not None:
             self._proxy.send_event(json.dumps({"cmd": "wake", "id": req_id}))
@@ -288,13 +258,26 @@ class App:
         handle: Task[Any] = Task()
         loop = self._async_loop
         if loop is None:
+            # App never ran — nothing to schedule on.
             handle.set_exception(RuntimeError("App not running"))
+            return handle
+        if self._state in (AppState.STOPPING, AppState.STOPPED):
+            # Shutdown in progress — scheduling now would race the
+            # all_tasks() snapshot in run()'s finally block.
+            handle.set_exception(AppClosedError(self._name))
             return handle
 
         async def _run() -> None:
             try:
                 result = await fn(*args, **kwargs)
                 handle.set_result(result)
+            except asyncio.CancelledError as exc:
+                # CancelledError is a BaseException — the generic handler
+                # below cannot catch it.  Propagate it to the handle so
+                # await/.result() fail fast instead of hanging forever
+                # (e.g. tasks cancelled during app shutdown).
+                handle.set_exception(exc)
+                raise
             except Exception as exc:
                 handle.set_exception(exc)
 
@@ -312,7 +295,11 @@ class App:
         if pool is None:
             handle.set_exception(RuntimeError("App not running"))
             return handle
-
+        # Symmetric with _submit_async: reject new work once shutdown
+        # starts so all pending tasks settle as AppClosedError.
+        if self._state in (AppState.STOPPING, AppState.STOPPED):
+            handle.set_exception(AppClosedError(self._name))
+            return handle
         concurrent_future = pool.submit(lambda: fn(*args, **kwargs))
         return Task._from_future(concurrent_future)
 
@@ -388,19 +375,17 @@ class App:
             thread_name_prefix="lumiview-pool",
         )
 
-        # Install Ctrl+C handler.
+        # Install Ctrl+C handler.  signal.signal() only works on the
+        # main thread — background-thread runs (e.g. future test
+        # harness) skip it.
         def _sigint_handler(signum, frame):
             log.info("Ctrl+C received, shutting down...")
             self.exit()
+        
+        original_sigint = signal.getsignal(signal.SIGINT)
 
-        signal.signal(signal.SIGINT, _sigint_handler)
-
-        # Run before_run callbacks (on main thread, before event loop).
-        for cb in self._before_run_callbacks:
-            try:
-                cb()
-            except Exception:
-                log.exception(f"Error in before_run callback: {cb}")
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGINT, _sigint_handler)
 
         # Start asyncio thread.
         self._async_thread = threading.Thread(
@@ -425,39 +410,95 @@ class App:
         finally:
             self._state = AppState.STOPPED
 
-            # Restore original signal handler.
-            signal.signal(signal.SIGINT, self._original_sigint)
+            # Restore original signal handler (main thread only).
+            if threading.current_thread() is threading.main_thread():
+                signal.signal(signal.SIGINT, original_sigint)
+
+            # Single shared budget — every wait below slices from the
+            # same deadline rather than each taking a full
+            # _SHUTDOWN_TIMEOUT.
+            deadline = time.monotonic() + _SHUTDOWN_TIMEOUT
 
             # Wait for Close handlers to finish before stopping the
             # asyncio loop — they run on the asyncio thread, which is
             # still alive here.  Timeout guards against a hanging handler.
             if self._close_done is not None:
                 try:
-                    self._close_done.result(timeout=_CLOSE_HANDLER_TIMEOUT)
+                    self._close_done.result(
+                        timeout=max(0.0, deadline - time.monotonic())
+                    )
                 except concurrent.futures.TimeoutError:
                     log.warning(
                         "Close handlers did not finish within %.1fs",
-                        _CLOSE_HANDLER_TIMEOUT,
+                        _SHUTDOWN_TIMEOUT,
                     )
+                except KeyboardInterrupt:
+                    log.warning("interrupted while waiting for Close handlers")
                 except BaseException:
                     log.exception("Close handler wait failed")
 
-            # Shutdown asyncio.
-            if self._async_loop is not None:
-                self._async_loop.call_soon_threadsafe(self._async_loop.stop)
-            if self._async_thread is not None:
-                self._async_thread.join(timeout=3.0)
+            # Each cleanup step below is individually guarded: a second
+            # Ctrl+C (KeyboardInterrupt — the original handler is already
+            # restored) must not skip the remaining steps, so run() still
+            # returns cleanly and no handle is left hanging.
+            # 1. Cancel pending asyncio tasks so hung awaits fail fast
+            #    with CancelledError (Task.cancel() is thread-safe), then
+            #    stop the loop.  Tasks created after the all_tasks()
+            #    snapshot — only possible from Close handlers that
+            #    overran the timeout — are not cancelled; they are
+            #    abandoned with the daemon async thread below.
+            try:
+                if self._async_loop is not None:
+                    for t in asyncio.all_tasks(self._async_loop):
+                        t.cancel()
+                    self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+                if self._async_thread is not None:
+                    remaining = max(0.0, deadline - time.monotonic())
+                    self._async_thread.join(timeout=remaining)
+                    if self._async_thread.is_alive():
+                        log.warning(
+                            "async thread did not exit within remaining budget %.1fs",
+                            remaining,
+                        )
+            except BaseException:
+                log.exception("Interrupted during asyncio shutdown")
 
-            # Shutdown thread pool.
+            # 2. Fail pending main-thread command handles.  After the
+            #    event loop returns, the main thread no longer drains
+            #    the command queue — these would otherwise hang forever.
+            try:
+                for handle in list(self._pending.values()):
+                    if not handle.done():
+                        handle.set_exception(AppClosedError(self._name))
+                self._pending.clear()
+            except BaseException:
+                log.exception("Interrupted while failing pending handles")
+
+            # 3. Thread pool: cancel queued (not yet started) work.
+            #    Tasks already running on pool threads cannot be
+            #    interrupted — documented limitation.
             if self._threadpool is not None:
-                self._threadpool.shutdown(wait=False)
+                try:
+                    self._threadpool.shutdown(wait=False, cancel_futures=True)
+                except BaseException:
+                    log.exception("Interrupted while shutting down thread pool")
 
             _GUI_THREAD_ID = None
 
         return self._exit_code
 
     def exit(self, code: int = 0) -> None:
-        """Request a graceful shutdown."""
+        """Request a graceful shutdown; ``run()`` returns *code*.
+
+        Once shutdown has started (STOPPING/STOPPED), later calls are
+        ignored so the first requested exit code wins.
+        """
+        if self._state in (AppState.STOPPING, AppState.STOPPED):
+            # Shutdown already in progress — ignore the request.  Keeps
+            # _exit_code monotonic: a window closing during STOPPING
+            # (_remove_window, code 0) can no longer overwrite an
+            # explicit exit(code).
+            return
         self._exit_code = code
         self._state = AppState.STOPPING
         if self._proxy is not None:
@@ -483,17 +524,6 @@ class App:
 
         self._async_loop.create_task(_main())
         self._async_loop.run_forever()
-
-        # Run exit callbacks.
-        for cb in self._exit_callbacks:
-            try:
-
-                async def _run_cb():
-                    await _run_async(cb, pool=self._threadpool)
-
-                self._async_loop.run_until_complete(_run_cb())
-            except Exception:
-                log.exception(f"Error in exit callback: {cb}")
 
     # ── Window tracking ──────────────────────────────────────────────────
 

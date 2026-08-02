@@ -134,22 +134,16 @@ class WindowControls(Scope):
     # ── Lifecycle ───────────────────────────────────────────────────────
 
     def on_init(self, ctx: InitContext) -> InitContext:
-        # Only the scope path follows the mount (construction name +
-        # mount path); command local names are fixed. Substitute the path
-        # into {{scope}}.
         scope_path = self._full_name("")
         parts = [API_SCRIPT_TEMPLATE]
         if self._drag_regions:
             parts.append(DRAG_REGION_SCRIPT)
         if self._link_fullscreen:
             parts.append(FULLSCREEN_LINK_TEMPLATE)
-        # join() only separates parts — prefix "\n" to separate the
-        # assembled script block from the base inject_script.
         ctx.inject_script += "\n" + "\n".join(parts).replace("{{scope}}", scope_path)
         return ctx
 
     def on_ready(self, window: Window) -> None:
-        """Bind window hooks once the window is created (GUI thread)."""
         if not self._link_maximized:
             return
         self._window = window
@@ -191,11 +185,6 @@ class WindowControls(Scope):
         ctx.window.request_close().result()
 
     def start_dragging(self, ctx: BridgeContext) -> None:
-        # Native semantics, matching Tauri: the OS handles dragging a
-        # maximized window's titlebar itself — on Windows the system
-        # restores the window and re-positions it under the cursor.
-        # Restoring first (set_maximized(False)) would leave the window
-        # at its pre-maximize position while the cursor is elsewhere.
         ctx.window.start_dragging().result()
 
     def start_resize_dragging(self, ctx: BridgeContext, direction: str) -> None:
