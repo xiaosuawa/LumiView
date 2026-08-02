@@ -171,7 +171,6 @@ class WindowControls(Scope):
         )
 
     # Commands
-
     def minimize(self, ctx: BridgeContext) -> None:
         ctx.window.minimize().result()
 

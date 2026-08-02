@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, ParamSpec, TypeVar
 from urllib.parse import urlparse
 from concurrent.futures import Future
 
+from lumiview._scope import InitContext
 from wryview import DragDropEvent, PageLoadEvent, WebView
 from wryview._core import WindowHandleKind as WryKind
 
@@ -99,7 +100,9 @@ class Window:
             self._app: App
             self._win_id: int
             self._tao: TaoWindow | None
+            """Unsendable, main-thread bound. Never hold on other threads."""
             self._webview: WebView | None
+            """Unsendable, main-thread bound. Never hold on other threads."""
             self._bridge: Bridge
             self._hooks: dict[WindowHookEvent, list[Callable[..., Any]]]
             self._close_behavior: CloseBehavior
@@ -286,62 +289,70 @@ class Window:
             resolved_html = html
 
         # Tao window
-        builder = TaoWindowBuilder()
-        builder.with_title(title)
-        builder.with_inner_size(float(width), float(height))
-        if position is not None:
-            builder.with_position(float(position[0]), float(position[1]))
-        if min_size is not None:
-            builder.with_min_inner_size(float(min_size[0]), float(min_size[1]))
-        if max_size is not None:
-            builder.with_max_inner_size(float(max_size[0]), float(max_size[1]))
-        builder.with_visible(visible)
-        builder.with_resizable(resizable)
-        if not decorations:
-            builder.with_decorations(False)
-        if undecorated_shadow is not None:
-            builder.with_undecorated_shadow(undecorated_shadow)
-        if transparent:
-            builder.with_transparent(True)
-        if maximized:
-            builder.with_maximized(True)
-        if always_on_top:
-            builder.with_always_on_top(True)
-        builder.with_focused(focused)
-        if not focusable:
-            builder.with_focusable(False)
-        if not minimizable:
-            builder.with_minimizable(False)
-        if not maximizable:
-            builder.with_maximizable(False)
-        if not closable:
-            builder.with_closable(False)
-        if visible_on_all_workspaces:
-            builder.with_visible_on_all_workspaces(True)
-        if content_protection:
-            builder.with_content_protection(True)
-        if icon is not None:
-            rgba, iw, ih = _load_icon(icon)
-            builder.with_window_icon(iw, ih, rgba)
-        tao_win = builder.build()
+        builder = None
 
-        if sys.platform == "linux":
-            handle = tao_win.gtk_container()
-            kind = WryKind.Gtk
-        else:
-            handle = tao_win.native_handle()
-            our = tao_win.native_handle_kind()
-            kind = {
-                WindowHandleKind.Win32: WryKind.Win32,
-                WindowHandleKind.AppKit: WryKind.AppKit,
-                WindowHandleKind.X11: WryKind.X11,
-            }[our]
+        try:
+            builder = TaoWindowBuilder()
+
+            builder.with_title(title)
+            builder.with_inner_size(float(width), float(height))
+            if position is not None:
+                builder.with_position(float(position[0]), float(position[1]))
+            if min_size is not None:
+                builder.with_min_inner_size(float(min_size[0]), float(min_size[1]))
+            if max_size is not None:
+                builder.with_max_inner_size(float(max_size[0]), float(max_size[1]))
+            builder.with_visible(visible)
+            builder.with_resizable(resizable)
+            if not decorations:
+                builder.with_decorations(False)
+            if undecorated_shadow is not None:
+                builder.with_undecorated_shadow(undecorated_shadow)
+            if transparent:
+                builder.with_transparent(True)
+            if maximized:
+                builder.with_maximized(True)
+            if always_on_top:
+                builder.with_always_on_top(True)
+            builder.with_focused(focused)
+            if not focusable:
+                builder.with_focusable(False)
+            if not minimizable:
+                builder.with_minimizable(False)
+            if not maximizable:
+                builder.with_maximizable(False)
+            if not closable:
+                builder.with_closable(False)
+            if visible_on_all_workspaces:
+                builder.with_visible_on_all_workspaces(True)
+            if content_protection:
+                builder.with_content_protection(True)
+            if icon is not None:
+                rgba, iw, ih = _load_icon(icon)
+                builder.with_window_icon(iw, ih, rgba)
+            tao_win = builder.build()
+
+            if sys.platform == "linux":
+                handle = tao_win.gtk_container()
+                kind = WryKind.Gtk
+            else:
+                handle = tao_win.native_handle()
+                our = tao_win.native_handle_kind()
+                kind = {
+                    WindowHandleKind.Win32: WryKind.Win32,
+                    WindowHandleKind.AppKit: WryKind.AppKit,
+                    WindowHandleKind.X11: WryKind.X11,
+                }[our]
+
+        except Exception:
+            del builder
+            raise
+
+        del builder
 
         init_scripts: list[str] = []
         if not untrusted:
             if bridge is not None:
-                from lumiview._scope import InitContext
-
                 try:
                     ctx = bridge._run_on_init(InitContext(inject_script=BRIDGE_SCRIPT))
                 except Exception:
@@ -353,71 +364,75 @@ class Window:
                 init_scripts.append(ctx.inject_script)
             else:
                 init_scripts.append(BRIDGE_SCRIPT)
-        init_script = "\n".join(init_scripts) or None
 
         # WebView
-        webview = WebView(
-            handle,
-            width=width,
-            height=height,
-            url=resolved_url,
-            html=resolved_html,
-            transparent=transparent,
-            background_color=background_color,
-            devtools=devtools,
-            incognito=incognito,
-            user_agent=user_agent,
-            autoplay=autoplay,
-            javascript_enabled=javascript,
-            hotkeys_zoom=hotkeys_zoom,
-            initialization_script=init_script,
-            ipc_handler=self._make_ipc_handler(),
-            on_navigation=self._make_navigation_handler(on_navigation),
-            on_page_load=lambda ev, u: self._emit(_page_event(ev), u),
-            on_title_changed=lambda t: self._emit(WindowHookEvent.TitleChanged, t),
-            on_new_window=self._make_new_win_handler(on_new_window),
-            drag_drop_handler=drag_drop_handler,
-            custom_protocols=custom_protocols or None,
-            proxy=_parse_proxy(proxy) if proxy is not None else None,
-            back_forward_gestures=back_forward_gestures,
-            clipboard=clipboard,
-            data_directory=data_directory,
-            web_context=web_context,
-            headers=list(headers.items()) if headers is not None else None,
-            https_scheme=https_scheme,
-            default_context_menus=default_context_menus,
-            on_download_started=(
-                self._make_download_started_handler(on_download_started)
-                if on_download_started is not None
-                else None
-            ),
-            on_download_completed=(
-                self._make_download_completed_handler(on_download_completed)
-                if on_download_completed is not None
-                else None
-            ),
-            as_child=True,
-            parent_hwnd_kind=kind,
-        )
+        try:
+            webview = WebView(
+                handle,
+                width=width,
+                height=height,
+                url=resolved_url,
+                html=resolved_html,
+                transparent=transparent,
+                background_color=background_color,
+                devtools=devtools,
+                incognito=incognito,
+                user_agent=user_agent,
+                autoplay=autoplay,
+                javascript_enabled=javascript,
+                hotkeys_zoom=hotkeys_zoom,
+                initialization_script="\n".join(init_scripts) or None,
+                ipc_handler=self._make_ipc_handler(),
+                on_navigation=self._make_navigation_handler(on_navigation),
+                on_page_load=lambda ev, u: self._emit(_page_event(ev), u),
+                on_title_changed=lambda t: self._emit(WindowHookEvent.TitleChanged, t),
+                on_new_window=self._make_new_win_handler(on_new_window),
+                drag_drop_handler=drag_drop_handler,
+                custom_protocols=custom_protocols or None,
+                proxy=_parse_proxy(proxy) if proxy is not None else None,
+                back_forward_gestures=back_forward_gestures,
+                clipboard=clipboard,
+                data_directory=data_directory,
+                web_context=web_context,
+                headers=list(headers.items()) if headers is not None else None,
+                https_scheme=https_scheme,
+                default_context_menus=default_context_menus,
+                on_download_started=(
+                    self._make_download_started_handler(on_download_started)
+                    if on_download_started is not None
+                    else None
+                ),
+                on_download_completed=(
+                    self._make_download_completed_handler(on_download_completed)
+                    if on_download_completed is not None
+                    else None
+                ),
+                as_child=True,
+                parent_hwnd_kind=kind,
+            )
+        except Exception:
+            del tao_win
+            raise
 
         self._webview = webview
         self._tao = tao_win
-
-        if transparent:
-            # Wry creates its child HWND after Tao's parent surface. Refresh
-            # the retained transparent backing once more so the first
-            # composited frame cannot reuse Tao's opaque creation bitmap.
-            tao_win._redraw_transparent_surface()
 
         win_id = tao_win.id()
         self._win_id = win_id
         app._windows[win_id] = self
 
         try:
+            if transparent:
+                # Wry creates its child HWND after Tao's parent surface. Refresh
+                # the retained transparent backing once more so the first
+                # composited frame cannot reuse Tao's opaque creation bitmap.
+                tao_win._redraw_transparent_surface()
+
             if bridge is not None:
                 bridge._run_on_ready(self)
         except Exception:
             self.close()
+            del tao_win
             raise
 
         return self
