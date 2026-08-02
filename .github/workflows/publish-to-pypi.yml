@@ -11,7 +11,12 @@ permissions:
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-latest
+            target: x86_64
     steps:
       - uses: actions/checkout@v4
       - name: Install webkit2gtk
@@ -26,19 +31,42 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           args: --release --out dist
-      - name: Repair manylinux (exclude GTK3/GLib — system provides them)
+      - name: Repair manylinux (exclude system GTK/GLib/dbus — must not bundle)
         run: |
           pip install auditwheel
+          # GTK/GLib libraries can never be bundled into the wheel: the
+          # GObject type registry is process-global, so a second copy breaks
+          # any process that also links the system GTK (LumiView's own tao
+          # window and wryview both do). libdbus-1/libsystemd likewise exist
+          # on every desktop that can run GTK3 (the gtk .deb depends on
+          # them) — bundling them only adds weight and risks version skew.
           auditwheel repair \
-            --exclude 'libgtk-3.so.*' \
-            --exclude 'libgdk-3.so.*' \
-            --exclude 'libglib-2.0.so.*' \
-            --exclude 'libgobject-2.0.so.*' \
-            --exclude 'libgio-2.0.so.*' \
-            --exclude 'libgmodule-2.0.so.*' \
-            --exclude 'libgdk_pixbuf-2.0.so.*' \
-            --exclude 'libpango-1.0.so.*' \
-            --exclude 'libcairo.so.*' \
+            --exclude 'libgtk-3.*' \
+            --exclude 'libgdk-3.*' \
+            --exclude 'libglib-2.0.*' \
+            --exclude 'libgobject-2.0.*' \
+            --exclude 'libgio-2.0.*' \
+            --exclude 'libgmodule-2.0.*' \
+            --exclude 'libgdk_pixbuf-2.0.*' \
+            --exclude 'libpango-1.0.*' \
+            --exclude 'libpangocairo-1.0.*' \
+            --exclude 'libpangoft2-1.0.*' \
+            --exclude 'libatk-1.0.*' \
+            --exclude 'libharfbuzz.*' \
+            --exclude 'libfribidi.*' \
+            --exclude 'libepoxy.*' \
+            --exclude 'libcairo.*' \
+            --exclude 'libcairo-gobject.*' \
+            --exclude 'libxkbcommon.*' \
+            --exclude 'libwayland-client.*' \
+            --exclude 'libdbus-1.*' \
+            --exclude 'libsystemd.*' \
+            --exclude 'libgcrypt.*' \
+            --exclude 'libgpg-error.*' \
+            --exclude 'libcap.*' \
+            --exclude 'libzstd.*' \
+            --exclude 'liblz4.*' \
+            --exclude 'liblzma.*' \
             -w dist dist/lumiview-*.whl
           rm -f dist/*-linux_x86_64.whl
       - name: Upload wheels
@@ -48,20 +76,30 @@ jobs:
           path: dist
 
   windows:
-    runs-on: windows-latest
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: windows-latest
+            target: x64
+          - runner: windows-latest
+            target: x86
+            python-arch: x86
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: Build wheel
+          architecture: ${{ matrix.platform.python-arch || 'x64' }}
+      - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          args: --release --out dist
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist --find-interpreter
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-windows
+          name: wheels-windows-${{ matrix.platform.target }}
           path: dist
 
   macos:
