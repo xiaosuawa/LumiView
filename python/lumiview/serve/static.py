@@ -14,12 +14,12 @@ import time
 from pathlib import Path
 from urllib.parse import unquote
 
-from lumiview.serve.base import Request, RespondFn, _check_scheme
+from lumiview.serve.base import Request, RespondFn, Serve
 
 mimetypes.init()
 
 
-class Static:
+class Static(Serve):
     """Serve files from a local directory.
 
     Parameters:
@@ -43,11 +43,11 @@ class Static:
         spa: bool = True,
         scheme: str = "lumiview",
     ) -> None:
+        super().__init__(scheme=scheme)
         self._root = Path(root).resolve(strict=True)
         self._spa = spa
-        self.scheme = _check_scheme(scheme)
 
-    # Serve
+    # Serve interface
 
     def __call__(self, request: Request, respond: RespondFn) -> None:
         """Handle one request (sync — file I/O is fast enough for GUI thread)."""

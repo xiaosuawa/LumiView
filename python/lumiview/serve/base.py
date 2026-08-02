@@ -1,9 +1,10 @@
 """
-Typed request / response protocol for custom scheme handlers.
+Serve — request / response types and the handler base class for
+custom scheme handlers.
 
-A ``Serve`` callable receives a :class:`Request` and a ``respond`` callback.
+A :class:`Serve` receives a :class:`Request` and a ``respond`` callback.
 It must call ``respond(status, headers, body)`` exactly once to deliver the
-response. The callable may do so synchronously or from any thread / event loop
+response. The handler may do so synchronously or from any thread / event loop
 — the framework never blocks waiting for it.
 """
 
@@ -14,7 +15,6 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
 
 from lumiview._task import _run_async
 
@@ -74,32 +74,39 @@ class Response:
     body: bytes = b""
 
 
-# Serve protocol
+# Serve base class
 
 
-class Serve(Protocol):
-    """Protocol for custom scheme handlers.
+class Serve:
+    """Base class for custom scheme handlers.
 
     A ``Serve`` receives a :class:`Request` and a ``respond`` callback.
     It must call ``respond(status, headers, body)`` exactly once — the
     framework does **not** inspect the return value::
 
-        def my_handler(request: Request, respond: RespondFn) -> None:
-            respond(200, [], b"hello")
+        class MyHandler(Serve):
+            def __call__(self, request: Request, respond: RespondFn) -> None:
+                respond(200, [], b"hello")
 
-        async def my_async_handler(request, respond):
-            # dispatch to asyncio loop, call respond() when ready
-            ...
+    The ``scheme`` parameter names the custom protocol this handler is
+    registered under (default ``"lumiview"``). To serve a plain function
+    that returns a :class:`Response`, use :class:`Handler`.
     """
 
-    def __call__(self, request: Request, respond: RespondFn) -> None: ...
+    def __init__(self, *, scheme: str = "lumiview") -> None:
+        self.scheme = _check_scheme(scheme)
+
+    def __call__(self, request: Request, respond: RespondFn) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement __call__(request, respond)"
+        )
 
 
 # Convenience: Handler from a plain function
 
 
-class Handler:
-    """Adapt a plain function into a :class:`Serve` callable.
+class Handler(Serve):
+    """Adapt a plain function into a :class:`Serve` handler.
 
     The function receives a :class:`Request` and must return a
     :class:`Response`. Sync functions run on the App's thread pool;
@@ -131,8 +138,8 @@ class Handler:
         *,
         scheme: str = "lumiview",
     ) -> None:
+        super().__init__(scheme=scheme)
         self._fn = fn
-        self.scheme = _check_scheme(scheme)
 
     def __call__(self, request: Request, respond: RespondFn) -> None:
         """Handle one request — dispatched to the App's asyncio loop.

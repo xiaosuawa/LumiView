@@ -34,13 +34,13 @@ import logging
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from lumiview.serve.base import Request, RespondFn, _check_scheme
+from lumiview.serve.base import Request, RespondFn, Serve
 
 log = logging.getLogger("lumiview.serve.asgi")
 
 
-class ASGI:
-    """Adapt an ASGI application to the :class:`~lumiview.serve.Serve` protocol.
+class ASGI(Serve):
+    """Adapt an ASGI application to the :class:`~lumiview.serve.Serve` interface.
 
     Each request is dispatched to the App's asyncio event loop via
     ``asyncio.run_coroutine_threadsafe`` — the caller returns immediately
@@ -69,12 +69,12 @@ class ASGI:
         timeout: float = 30,
         scheme: str = "lumiview",
     ) -> None:
+        super().__init__(scheme=scheme)
         self._app = app
         self._max_body = max_body
         self._timeout = timeout
-        self.scheme = _check_scheme(scheme)
 
-    # Serve protocol
+    # Serve interface
 
     def __call__(self, request: Request, respond: RespondFn) -> None:
         """Handle one request — dispatches to the App's asyncio loop.

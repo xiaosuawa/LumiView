@@ -7,10 +7,8 @@ import logging
 import queue
 import signal
 import threading
-import time
 import uuid
 from collections.abc import Coroutine
-import concurrent.futures
 from concurrent.futures import Future, ThreadPoolExecutor
 from enum import Enum, auto
 from typing import Any, Callable, TypeVar, ParamSpec, TYPE_CHECKING
@@ -36,14 +34,10 @@ log = logging.getLogger("lumiview.app")
 _GUI_THREAD_ID: int | None = None
 
 # Overall budget for the exit cleanup sequence in run()'s finally block.
-# Every wait (Close handlers, asyncio thread join) shares this budget;
-# nothing waits indefinitely.
-_SHUTDOWN_TIMEOUT = 10.0
+_SHUTDOWN_TIMEOUT = 5
 
 if TYPE_CHECKING:
     from lumiview import Window
-
-# AppState
 
 
 class AppState(Enum):
@@ -52,9 +46,6 @@ class AppState(Enum):
     RUNNING = auto()  # Window/WebView operations allowed
     STOPPING = auto()  # Rejecting new tasks, closing windows
     STOPPED = auto()  # Resources released
-
-
-# App
 
 
 class App:
@@ -352,6 +343,9 @@ class App:
                 f"App already {'running' if self._state == AppState.RUNNING else 'finished'}. "
                 "Cannot run() twice."
             )
+        
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError("App.run() must be called from the main thread")
 
         self._state = AppState.STARTING
 
@@ -376,8 +370,7 @@ class App:
 
         original_sigint = signal.getsignal(signal.SIGINT)
 
-        if threading.current_thread() is threading.main_thread():
-            signal.signal(signal.SIGINT, _sigint_handler)
+        signal.signal(signal.SIGINT, _sigint_handler)
 
         self._async_thread = threading.Thread(
             target=self._run_asyncio,
@@ -401,27 +394,12 @@ class App:
         finally:
             self._state = AppState.STOPPED
 
-            if threading.current_thread() is threading.main_thread():
-                signal.signal(signal.SIGINT, original_sigint)
-
-            # Single shared budget — every wait below slices from the
-            # same deadline rather than each taking a full
-            # _SHUTDOWN_TIMEOUT.
-            deadline = time.monotonic() + _SHUTDOWN_TIMEOUT
+            signal.signal(signal.SIGINT, original_sigint)
 
             # Wait for Close handlers to finish before stopping the
-            # asyncio loop — they run on the asyncio thread, which is
-            # still alive here. Timeout guards against a hanging handler.
             if self._close_done is not None:
                 try:
-                    self._close_done.result(
-                        timeout=max(0.0, deadline - time.monotonic())
-                    )
-                except concurrent.futures.TimeoutError:
-                    log.warning(
-                        "Close handlers did not finish within %.1fs",
-                        _SHUTDOWN_TIMEOUT,
-                    )
+                    self._close_done.result()
                 except KeyboardInterrupt:
                     log.warning("interrupted while waiting for Close handlers")
                 except BaseException:
@@ -441,14 +419,12 @@ class App:
                 if self._async_loop is not None:
                     for t in asyncio.all_tasks(self._async_loop):
                         t.cancel()
-                    self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+                    self._async_loop.stop()
                 if self._async_thread is not None:
-                    remaining = max(0.0, deadline - time.monotonic())
-                    self._async_thread.join(timeout=remaining)
+                    self._async_thread.join(timeout=_SHUTDOWN_TIMEOUT)
                     if self._async_thread.is_alive():
                         log.warning(
-                            "async thread did not exit within remaining budget %.1fs",
-                            remaining,
+                            "async thread did not exit within remaining budget ({_SHUTDOWN_TIMEOUT}s)"
                         )
             except BaseException:
                 log.exception("Interrupted during asyncio shutdown")

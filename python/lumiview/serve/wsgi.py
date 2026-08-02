@@ -22,13 +22,13 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
-from lumiview.serve.base import Request, RespondFn, _check_scheme
+from lumiview.serve.base import Request, RespondFn, Serve
 
 log = logging.getLogger("lumiview.serve.wsgi")
 
 
-class WSGI:
-    """Adapt a WSGI application to the :class:`Serve` protocol.
+class WSGI(Serve):
+    """Adapt a WSGI application to the :class:`Serve` interface.
 
     Parameters:
         app: A WSGI callable (``environ, start_response -> body_iterable``).
@@ -57,12 +57,12 @@ class WSGI:
         max_workers: int = 4,
         scheme: str = "lumiview",
     ) -> None:
+        super().__init__(scheme=scheme)
         self._app = app
         self._pool = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="lumiview-wsgi",
         )
-        self.scheme = _check_scheme(scheme)
 
     def __call__(self, request: Request, respond: RespondFn) -> None:
         """Handle a request — offloads to the thread pool and returns immediately.

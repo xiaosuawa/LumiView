@@ -334,6 +334,36 @@ class Scope:
         return node._commands.get(parts[-1])
 
 
+# Plugin (lifecycle hooks)
+
+
+class Plugin(Scope):
+    """A Scope with window-lifecycle hooks.
+
+    Subclass and override ``on_init`` / ``on_ready`` to hook into
+    window creation::
+
+        class MyPlugin(Plugin):
+            def on_init(self, ctx: InitContext) -> InitContext:
+                ctx.inject_script += "// ..."
+                return ctx
+
+            def on_ready(self, window: Window) -> None:
+                ...
+
+    The Bridge dispatches hooks to every ``Plugin`` node found by the
+    tree walk (``isinstance`` check) — defining a method with the same
+    name on a plain :class:`Scope` is ignored.
+    """
+
+    def on_init(self, ctx: InitContext) -> InitContext:
+        """Pre-navigation hook, called at window creation."""
+        return ctx
+
+    def on_ready(self, window: "Window") -> None:
+        """Post-navigation hook, called once per window using this bridge."""
+
+
 # Module helpers
 
 

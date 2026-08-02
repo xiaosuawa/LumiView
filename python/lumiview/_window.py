@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from concurrent.futures import Future
 
 from lumiview._scope import InitContext
+from lumiview.serve.base import Serve
 from wryview import DragDropEvent, PageLoadEvent, WebView
 from wryview._core import WindowHandleKind as WryKind
 
@@ -40,7 +41,6 @@ if TYPE_CHECKING:
 
     from lumiview._app import App
     from lumiview._core import TaoWindow
-    from lumiview.serve.base import Serve
 else:
     _PILImage = object
 
@@ -274,13 +274,19 @@ class Window:
             serve_sources = []
 
         for serve in serve_sources:
-            scheme = getattr(serve, "scheme", "lumiview")
+            if not isinstance(serve, Serve):
+                raise TypeError(
+                    f"source entries must be Serve instances; got "
+                    f"{type(serve).__name__} — subclass Serve or use "
+                    "Handler(fn) to adapt a plain function"
+                )
+            scheme = serve.scheme
             if scheme in custom_protocols:
                 raise ValueError(f"Duplicate custom protocol scheme: {scheme!r}")
             custom_protocols[scheme] = _make_protocol_handler(serve)
 
         if serve_sources:
-            resolved_url = f"{getattr(serve_sources[0], 'scheme', 'lumiview')}://app/"
+            resolved_url = f"{serve_sources[0].scheme}://app/"
 
         if url is not None:
             resolved_url = url

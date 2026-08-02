@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from lumiview._bridge import BridgeError
 from lumiview._core import ResizeDirection
 from lumiview._events import WindowHookEvent
-from lumiview._scope import BridgeContext, InitContext, Scope
+from lumiview._scope import BridgeContext, InitContext, Plugin
 
 if TYPE_CHECKING:
     from lumiview._window import Window
@@ -101,12 +101,18 @@ _RESIZE_DIRECTIONS = {
 }
 
 
-class WindowControls(Scope):
+class WindowControls(Plugin):
     """Custom titlebar controls (window.* JS API + drag regions + fullscreen
     and maximize-state sync).
 
     All commands resolve their Task synchronously via ``.result()`` —
     they run on the thread pool, never on the GUI thread.
+    
+    NOTE: window-edge resizing needs no markup — for undecorated windows tao
+    already handles the 8 edge/corner hit-tests natively (WM_NCHITTEST) and
+    disables them when maximized/fullscreen. Use data-lumiview-resize-region
+    only for resize handles *inside* the client area (e.g. a splitter bar);
+    do not cover the window border with it.
     """
 
     def __init__(

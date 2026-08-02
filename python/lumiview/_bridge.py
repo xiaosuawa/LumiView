@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable, Sequence
 from lumiview._scope import (
     BridgeError,
     InitContext,
+    Plugin,
     Scope,
     ScopePermission,
     check_chain,
@@ -70,8 +71,8 @@ class Bridge:
 
         An instance can only be mounted once. Custom mount names are set
         at construction (``Scope(name=...)``). Instances always end up
-        on the tree, so their on_init/on_ready hooks are reachable via
-        tree walk — no extra hook list needed.
+        on the tree, so their lifecycle hooks (``Plugin``) are reachable
+        via tree walk — no extra hook list needed.
         """
         self._root.include(other)
 
@@ -84,19 +85,17 @@ class Bridge:
     # Plugin lifecycle (driven by Window.create)
 
     def _run_on_init(self, ctx: InitContext) -> InitContext:
-        """Run every on_init hook in tree order (root → leaves)."""
+        """Run every Plugin's on_init hook in tree order (root → leaves)."""
         for scope in iter_tree(self._root):
-            on_init = getattr(scope, "on_init", None)
-            if on_init is not None:
-                ctx = on_init(ctx) or ctx
+            if isinstance(scope, Plugin):
+                ctx = scope.on_init(ctx) or ctx
         return ctx
 
     def _run_on_ready(self, window: "Window") -> None:
-        """Run every on_ready hook (once per window using this bridge)."""
+        """Run every Plugin's on_ready hook (once per window using this bridge)."""
         for scope in iter_tree(self._root):
-            on_ready = getattr(scope, "on_ready", None)
-            if on_ready is not None:
-                on_ready(window)
+            if isinstance(scope, Plugin):
+                scope.on_ready(window)
 
     # IPC dispatch
 
