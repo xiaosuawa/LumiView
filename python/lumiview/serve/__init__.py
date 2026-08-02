@@ -2,7 +2,7 @@
 Serve — typed custom protocol handlers for ``lumiview://``.
 
 Each adapter's ``scheme`` parameter names its custom protocol
-(default ``"lumiview"``).  ``Window.create(source=...)`` accepts one
+(default ``"lumiview"``). ``Window.create(source=...)`` accepts one
 Serve or a list — multiple protocols can be registered on one window.
 
 Usage::

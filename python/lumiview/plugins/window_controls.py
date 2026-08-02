@@ -131,7 +131,7 @@ class WindowControls(Scope):
         self.command(self.start_resize_dragging)
         self.command(self.sync_fullscreen)
 
-    # ── Lifecycle ───────────────────────────────────────────────────────
+    # Lifecycle
 
     def on_init(self, ctx: InitContext) -> InitContext:
         scope_path = self._full_name("")
@@ -170,7 +170,7 @@ class WindowControls(Scope):
             {"maximized": self._maximized},
         )
 
-    # ── Commands ────────────────────────────────────────────────────────
+    # Commands
 
     def minimize(self, ctx: BridgeContext) -> None:
         ctx.window.minimize().result()

@@ -18,9 +18,7 @@ T = TypeVar("T")
 
 _UNSET: Any = object()
 
-# ═══════════════════════════════════════════════════════════════════════════
 # Deadlock detection
-# ═══════════════════════════════════════════════════════════════════════════
 class TaskDeadlockError(RuntimeError):
     """Raised when blocking the GUI thread on an incomplete Task."""
 
@@ -42,10 +40,7 @@ def _check_deadlock() -> None:
         raise TaskDeadlockError()
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 # Task[T] — a Future with __await__ and deadlock detection
-# ═══════════════════════════════════════════════════════════════════════════
-
 
 class Task(concurrent.futures.Future, Generic[T]):
     """A handle to a running (or completed) operation.
@@ -94,7 +89,7 @@ class Task(concurrent.futures.Future, Generic[T]):
 
         self.add_done_callback(_wrapper)
 
-    # ── Internal (called by App scheduler) ────────────────────────────────
+    # Internal (called by App scheduler)
 
     @classmethod
     def _from_future(cls, fut: concurrent.futures.Future) -> Task[T]:
@@ -130,10 +125,7 @@ class Task(concurrent.futures.Future, Generic[T]):
         return task
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 # Internal: lightweight async/sync dispatch (zero Task overhead)
-# ═══════════════════════════════════════════════════════════════════════════
-
 
 async def _run_async(
     fn: Callable[..., Any],
@@ -154,10 +146,7 @@ async def _run_async(
     return await loop.run_in_executor(pool, lambda: fn(*args, **kwargs))
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 # Public factory: task()
-# ═══════════════════════════════════════════════════════════════════════════
-
 
 def task(
     fn: Callable[P, T],

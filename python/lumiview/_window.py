@@ -63,7 +63,8 @@ class CloseBehavior(Enum):
     Hide = auto()
     Ignore = auto()
 
-# ═══ @main_thread — decorator ══════════════════════════════════════════════
+
+# @main_thread — decorator
 
 
 def main_thread(
@@ -83,7 +84,7 @@ def main_thread(
     return wrapper
 
 
-# ═══ Window ═════════════════════════════════════════════════════════════════
+# Window
 
 
 class Window:
@@ -121,13 +122,13 @@ class Window:
         url: str | None = None,
         html: str | None = None,
         source: Serve | list[Serve] | None = None,
-        # ── Geometry ──
+        # Geometry
         width: int = 800,
         height: int = 600,
         position: tuple[float, float] | None = None,
         min_size: tuple[float, float] | None = None,
         max_size: tuple[float, float] | None = None,
-        # ── Appearance ──
+        # Appearance
         visible: bool = True,
         decorations: bool = True,
         resizable: bool = True,
@@ -136,7 +137,7 @@ class Window:
         always_on_top: bool = False,
         undecorated_shadow: bool | None = None,
         icon: _IconSource | None = None,
-        # ── Behavior ──
+        # Behavior
         focused: bool = True,
         focusable: bool = True,
         minimizable: bool = True,
@@ -145,12 +146,12 @@ class Window:
         close_behavior: CloseBehavior = CloseBehavior.Close,
         visible_on_all_workspaces: bool = False,
         content_protection: bool = False,
-        # ── DevTools ──
+        # DevTools
         devtools: bool = False,
-        # ── Bridge ──
+        # Bridge
         bridge: Bridge | None = None,
         untrusted: bool = False,
-        # ── WebView profile ──
+        # WebView profile
         web_context: Any = None,
         data_directory: str | None = None,
         incognito: bool = False,
@@ -168,7 +169,7 @@ class Window:
         ) = None,
         background_color: tuple[int, int, int, int] | None = None,
         headers: dict[str, str] | None = None,
-        # ── Policy callbacks ──
+        # Policy callbacks
         on_navigation: Callable[[str], bool] | None = None,
         on_new_window: Callable[[str], str] | None = None,
         on_download_started: Callable[[str, str], bool | str] | None = None,
@@ -178,13 +179,13 @@ class Window:
 
         Parameters:
             title: Window title bar text.
-            url: URL to load.  Takes priority over *html* and *source*.
+            url: URL to load. Takes priority over *html* and *source*.
             html: HTML string to load (used when *url* is None).
             source: A :class:`~lumiview.serve.Serve` instance — or a list
-                of them — to register as custom protocol(s).  Each Serve's
+                of them — to register as custom protocol(s). Each Serve's
                 ``scheme`` attribute names its protocol (default
                 ``"lumiview"``); the first one is loaded as
-                ``<scheme>://app/``.  Lowest priority — *url* or *html*
+                ``<scheme>://app/``. Lowest priority — *url* or *html*
                 override it, but the protocols are still registered.
             width, height: Window size in logical pixels.
             devtools: Enable browser devtools (right-click → Inspect).
@@ -199,10 +200,10 @@ class Window:
             bridge: Optional :class:`Bridge` for JS↔Python IPC.
             untrusted: Do not inject any lumiview initialization scripts
                 (no ``window.lumiview`` — JS cannot call Python and
-                ``emit()`` events are not delivered).  Mutually exclusive
+                ``emit()`` events are not delivered). Mutually exclusive
                 with *bridge*.
             web_context: A shared :class:`wryview.WebContext` for cross-window
-                cookies, cache, and storage.  Takes priority over
+                cookies, cache, and storage. Takes priority over
                 *data_directory* and *incognito*.
             data_directory: Directory for persistent cookies/storage/cache.
                 Per-window — not shared with other windows.
@@ -251,7 +252,7 @@ class Window:
         self._bridge_enabled = bridge is not None
         self._untrusted = untrusted
 
-        # ── Resolve source → url / html / custom_protocols ─────────────────
+        # Resolve source → url / html / custom_protocols
         custom_protocols: dict[str, Any] = {}
         resolved_url: str | None = None
         resolved_html: str | None = None
@@ -284,7 +285,7 @@ class Window:
         elif html is not None:
             resolved_html = html
 
-        # ── Tao window ─────────────────────────────────────────────────────
+        # Tao window
         builder = TaoWindowBuilder()
         builder.with_title(title)
         builder.with_inner_size(float(width), float(height))
@@ -346,7 +347,7 @@ class Window:
                 except Exception:
                     # TaoWindow has no explicit close: dropping the last
                     # reference destroys the native window (same path as
-                    # Window.close()).  Don't leak it when on_init raises.
+                    # Window.close()). Don't leak it when on_init raises.
                     del tao_win
                     raise
                 init_scripts.append(ctx.inject_script)
@@ -354,7 +355,7 @@ class Window:
                 init_scripts.append(BRIDGE_SCRIPT)
         init_script = "\n".join(init_scripts) or None
 
-        # ── WebView ──────────────────────────────────────────────────────────
+        # WebView
         webview = WebView(
             handle,
             width=width,
@@ -421,7 +422,7 @@ class Window:
 
         return self
 
-    # ═══ Content ═══
+    # Content
 
     @main_thread
     def load_url(self, url: str) -> None:
@@ -438,7 +439,7 @@ class Window:
         assert self._webview is not None
         self._webview.reload()
 
-    # ═══ JavaScript ═══
+    # JavaScript
 
     def eval_js(self, script: str) -> Task[str]:
         from lumiview._app import App
@@ -461,7 +462,7 @@ class Window:
             )
         return handle
 
-    # ═══ Appearance ═══
+    # Appearance
 
     @main_thread
     def set_icon(self, icon: _IconSource) -> None:
@@ -495,7 +496,7 @@ class Window:
         assert self._tao is not None
         self._tao.clear_effect(effect)
 
-    # ═══ Geometry ═══
+    # Geometry
 
     @main_thread
     def set_bounds(self, x: float, y: float, w: float, h: float) -> None:
@@ -556,7 +557,7 @@ class Window:
         assert self._tao is not None
         self._tao.drag_resize_window(direction)
 
-    # ═══ Bridge ═══
+    # Bridge
 
     def emit(self, event: str, payload: Any = None) -> Task[None]:
         """Send an event to JavaScript listeners.
@@ -571,7 +572,7 @@ class Window:
 
             await win.emit("my-event", {"key": "value"})
 
-        Events are fire-and-forget — no return value.  The returned
+        Events are fire-and-forget — no return value. The returned
         :class:`Task` resolves when the script has been delivered to
         the WebView (not when listeners have finished processing).
         """
@@ -601,7 +602,7 @@ class Window:
             )
         return handle
 
-    # ═══ Events ═══
+    # Events
 
     def on(self, event: WindowHookEvent):
         """Register a per-window event handler."""
@@ -652,7 +653,7 @@ class Window:
 
         return done
 
-    # ═══ Lifecycle ═══
+    # Lifecycle
 
     def _on_tao_event(self, event: TaoEvent) -> None:
         """Handle a tao window event routed from the app (GUI thread)."""
@@ -732,7 +733,7 @@ class Window:
         self._webview = None
         self._app._remove_window(self._win_id)
 
-    # ═══ WebView capabilities (§11) ═══
+    # WebView capabilities (§11)
 
     @main_thread
     def open_devtools(self) -> None:
@@ -751,7 +752,7 @@ class Window:
 
     @main_thread
     def zoom(self, scale: float) -> None:
-        """Set the page zoom level.  1.0 = 100%, 1.5 = 150%."""
+        """Set the page zoom level. 1.0 = 100%, 1.5 = 150%."""
         assert self._webview is not None
         self._webview.zoom(scale)
 
@@ -826,7 +827,7 @@ class Window:
         assert self._webview is not None
         self._webview.clear_all_browsing_data()
 
-    # ═══ Policy setters (post-creation) ═══
+    # Policy setters (post-creation)
 
     @main_thread
     def set_on_navigation(self, handler: Callable[[str], bool]) -> None:
@@ -890,13 +891,13 @@ class Window:
                 self._make_download_completed_handler(handler)
             )
 
-    # ═══ Internal ═══
+    # Internal
 
     @property
     def _id(self) -> int:
         return self._win_id
 
-    # ── Callback factories ────────────────────────────────────────────────
+    # Callback factories
 
     def _make_navigation_handler(
         self,
@@ -966,7 +967,7 @@ class Window:
 
         return _handler
 
-    # ── IPC handler ───────────────────────────────────────────────────────
+    # IPC handler
 
     def _make_ipc_handler(self) -> Callable[[str], None]:
         """Create an IPC handler that forwards messages to the Bridge."""
@@ -986,9 +987,7 @@ class Window:
         return _handler
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 # Module-level helpers
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _page_event(ev: PageLoadEvent) -> WindowHookEvent:
@@ -1005,7 +1004,7 @@ def _propagate_dispatch_failure(
 ) -> None:
     """Propagate a failed main-thread dispatch into *handle*.
 
-    ``call_on_main`` returns its own Task.  If it fails (app already stopped,
+    ``call_on_main`` returns its own Task. If it fails (app already stopped,
     or the queued callable raised) before *handle* was resolved, the failure
     would otherwise be swallowed and *handle* would stay pending forever.
     """
@@ -1017,7 +1016,7 @@ def _propagate_dispatch_failure(
         handle.set_exception(exc)
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+# Helpers
 
 
 def _load_icon(icon: _IconSource) -> tuple[bytes, int, int]:
@@ -1070,7 +1069,7 @@ def _parse_proxy(proxy: str) -> dict[str, str]:
     return {"type": proxy_type, "host": host, "port": port}
 
 
-# ── Custom protocol handler ─────────────────────────────────────────────────
+# Custom protocol handler
 
 
 def _make_protocol_handler(serve: Serve) -> Callable[..., None]:

@@ -20,17 +20,13 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("lumiview.bridge")
 
-
-# ═══════════════════════════════════════════════════════════════════════════
 # Bridge
-# ═══════════════════════════════════════════════════════════════════════════
-
 
 class Bridge:
     """Registry of Python functions callable from JavaScript.
 
     Composes an anonymous root :class:`Scope`; tree operations are
-    forwarded to it.  ``bridge=None`` disables the bridge entirely for
+    forwarded to it. ``bridge=None`` disables the bridge entirely for
     a window.
 
     Convenience constructor arguments (equivalent to calling the methods
@@ -53,7 +49,7 @@ class Bridge:
             includes=includes
         )
 
-    # ── Tree facade ─────────────────────────────────────────────────────
+    # Tree facade
 
     def scope(self, name: str) -> Scope:
         return self._root.scope(name)
@@ -72,8 +68,8 @@ class Bridge:
     def include(self, other: Scope) -> None:
         """Mount a scope onto the tree (pure mounting, see Scope.include).
 
-        An instance can only be mounted once.  Custom mount names are set
-        at construction (``Scope(name=...)``).  Instances always end up
+        An instance can only be mounted once. Custom mount names are set
+        at construction (``Scope(name=...)``). Instances always end up
         on the tree, so their on_init/on_ready hooks are reachable via
         tree walk — no extra hook list needed.
         """
@@ -85,7 +81,7 @@ class Bridge:
     def deny(self, *patterns: str) -> None:
         self._root.deny(*patterns)
 
-    # ── Plugin lifecycle (driven by Window.create) ──────────────────────
+    # Plugin lifecycle (driven by Window.create)
 
     def _run_on_init(self, ctx: InitContext) -> InitContext:
         """Run every on_init hook in tree order (root → leaves)."""
@@ -102,13 +98,13 @@ class Bridge:
             if on_ready is not None:
                 on_ready(window)
 
-    # ── IPC dispatch ────────────────────────────────────────────────────
+    # IPC dispatch
 
     def _on_message(self, window: "Window", raw: str) -> None:
         """Called from the main thread by wryview's IPC handler.
 
         *window* is passed by the Window's own IPC handler (which closes
-        over ``self``) — no webview → Window mapping needed.  The unsendable
+        over ``self``) — no webview → Window mapping needed. The unsendable
         WebView is never captured into the asyncio coroutine below; it is
         only touched on the main thread (inside ``_respond``'s callback).
         """
@@ -149,7 +145,7 @@ class Bridge:
             )
             return
 
-        # ── Schedule on the asyncio loop (never the GUI thread) ─────────
+        # Schedule on the asyncio loop (never the GUI thread)
         from lumiview._app import App
 
         try:
@@ -190,7 +186,7 @@ class Bridge:
 
         loop.call_soon_threadsafe(lambda: asyncio.create_task(_run_async_cmd()))
 
-    # ── Response ────────────────────────────────────────────────────────
+    # Response
 
     @staticmethod
     def _respond(
@@ -231,9 +227,7 @@ class Bridge:
         app.call_on_main(_send)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 # Injected JavaScript
-# ═══════════════════════════════════════════════════════════════════════════
 
 BRIDGE_SCRIPT = """\
 (() => {

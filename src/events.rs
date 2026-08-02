@@ -9,7 +9,7 @@ use crate::types::{
     TouchPhase,
 };
 
-// ── WindowId → u64 ──────────────────────────────────────────────────────
+// WindowId → u64
 
 fn wid_to_u64(wid: &WindowId) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -38,7 +38,7 @@ mod tests {
     }
 }
 
-// ── TaoEvent (base) ─────────────────────────────────────────────────────
+// TaoEvent (base)
 
 /// Base class for all events dispatched by the event loop.
 ///
@@ -73,7 +73,7 @@ impl TaoEvent {
     }
 }
 
-// ── Event subclass boilerplate ──────────────────────────────────────────
+// Event subclass boilerplate
 
 macro_rules! empty_event {
     ($name:ident, $doc:expr) => {
@@ -86,7 +86,7 @@ macro_rules! empty_event {
     };
 }
 
-// ── Geometry events ─────────────────────────────────────────────────────
+// Geometry events
 
 /// Window client area size changed (physical pixels).
 ///
@@ -122,7 +122,7 @@ impl MovedEvent {
     }
 }
 
-// ── Lifecycle events ────────────────────────────────────────────────────
+// Lifecycle events
 
 empty_event!(
     CloseRequestedEvent,
@@ -162,7 +162,7 @@ impl ThemeChangedEvent {
     }
 }
 
-// ── Input events ────────────────────────────────────────────────────────
+// Input events
 
 /// Mouse button pressed or released.
 #[pyclass(extends = TaoEvent)]
@@ -277,19 +277,19 @@ impl ModifiersChangedEvent {
     }
 }
 
-// ── Cursor boundary events ──────────────────────────────────────────────
+// Cursor boundary events
 
 empty_event!(CursorEnteredEvent, "Cursor entered the window.");
 empty_event!(CursorLeftEvent, "Cursor left the window.");
 
-// ── Redraw event ────────────────────────────────────────────────────────
+// Redraw event
 
 empty_event!(
     RedrawRequestedEvent,
     "The system has requested a window redraw."
 );
 
-// ── User event ──────────────────────────────────────────────────────────
+// User event
 
 /// Custom event sent via :meth:`TaoEventLoopProxy.send_event`.
 #[pyclass(extends = TaoEvent)]
@@ -305,14 +305,14 @@ impl UserEvent {
     }
 }
 
-// ── Loop destroyed ──────────────────────────────────────────────────────
+// Loop destroyed
 
 empty_event!(
     LoopDestroyedEvent,
     "Sent once after the event loop has exited."
 );
 
-// ── build_event — type-driven factory ───────────────────────────────────
+// build_event — type-driven factory
 
 pub fn build_event(py: Python<'_>, event: &Event<'_, String>) -> Option<Py<PyAny>> {
     match event {

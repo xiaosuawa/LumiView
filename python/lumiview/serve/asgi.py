@@ -8,8 +8,8 @@ frameworks like FastAPI, Starlette, and Quart.
 
     **Do not use streaming responses.**  ``StreamingResponse``, SSE,
     chunked transfer encoding, WebSocket — none of these work through
-    the ``lumiview://`` custom protocol.  The protocol calls
-    ``respond()`` exactly once with the complete body.  A streaming
+    the ``lumiview://`` custom protocol. The protocol calls
+    ``respond()`` exactly once with the complete body. A streaming
     endpoint will appear to hang and may block the UI until timeout.
 
 Limitations (inherent to the custom protocol, not ASGI-specific):
@@ -51,7 +51,7 @@ class ASGI:
         max_body: Maximum response body size in bytes (default 10 MiB).
             Responses exceeding this limit return a 500 error.
         timeout: Seconds to wait for the ASGI app to produce a response
-            (default 30).  A 504 Gateway Timeout is returned on expiry.
+            (default 30). A 504 Gateway Timeout is returned on expiry.
         scheme: Name of the custom protocol this app is served under
             (default ``"lumiview"``).
 
@@ -74,13 +74,13 @@ class ASGI:
         self._timeout = timeout
         self.scheme = _check_scheme(scheme)
 
-    # ── Serve protocol ─────────────────────────────────────────────────
+    # Serve protocol
 
     def __call__(self, request: Request, respond: RespondFn) -> None:
         """Handle one request — dispatches to the App's asyncio loop.
 
         Returns immediately; ``respond()`` is called from the asyncio
-        thread when the ASGI app finishes (or times out).  ``respond``
+        thread when the ASGI app finishes (or times out). ``respond``
         is guaranteed to be invoked at most once — a duplicate call
         (e.g. an app that raises after sending its final body) is dropped.
         """
@@ -119,7 +119,7 @@ class ASGI:
 
         asyncio.run_coroutine_threadsafe(_run(), loop)
 
-    # ── ASGI protocol (runs on the asyncio loop) ───────────────────────
+    # ASGI protocol (runs on the asyncio loop)
 
     async def _execute(self, request: Request, respond: RespondFn) -> None:
         """Run the ASGI app and deliver the response via ``respond()``."""
@@ -130,7 +130,7 @@ class ASGI:
         body_chunks: list[bytes] = []
         finished = False
 
-        # ── ASGI receive callable ──────────────────────────────────────
+        # ASGI receive callable
         async def receive() -> dict[str, Any]:
             return {
                 "type": "http.request",
@@ -138,7 +138,7 @@ class ASGI:
                 "more_body": False,
             }
 
-        # ── ASGI send callable ─────────────────────────────────────────
+        # ASGI send callable
         async def send(message: dict[str, Any]) -> None:
             nonlocal status, headers, finished
 
@@ -158,18 +158,18 @@ class ASGI:
                     finished = True
                     self._finish(status, headers, body_chunks, respond)
 
-        # ── Invoke ─────────────────────────────────────────────────────
+        # Invoke
         await self._app(scope, receive, send)
 
         if not finished:
             # The app returned without sending a final body — the
-            # protocol callback would otherwise hang forever.  respond
+            # protocol callback would otherwise hang forever. respond
             # here is the deduped _once wrapper, so a late body from a
             # background task is dropped.
             log.error("ASGI app returned without sending a final http.response.body")
             respond(500, [("Content-Type", "text/plain")], b"Internal Server Error")
 
-    # ── Response assembly ──────────────────────────────────────────────
+    # Response assembly
 
     def _finish(
         self,
@@ -193,7 +193,7 @@ class ASGI:
 
         respond(status, headers, body)
 
-    # ── Scope builder ──────────────────────────────────────────────────
+    # Scope builder
 
     @staticmethod
     def _build_scope(request: Request) -> dict[str, Any]:

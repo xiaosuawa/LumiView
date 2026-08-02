@@ -30,11 +30,11 @@ fn interaction_error(error: tao::error::ExternalError) -> PyErr {
     }
 }
 
-// ── TaoWindowBuilder ──────────────────────────────────────────────────────
+// TaoWindowBuilder
 
 /// Configure a window before creation.
 ///
-/// All methods mutate the builder in-place (no chaining).  Call
+/// All methods mutate the builder in-place (no chaining). Call
 /// :meth:`build` once to create the :class:`TaoWindow`.
 ///
 /// Example::
@@ -210,17 +210,17 @@ impl TaoWindowBuilder {
     }
 }
 
-// ── TaoWindow ─────────────────────────────────────────────────────────────
+// TaoWindow
 
 /// A managed window created from :class:`TaoWindowBuilder`.
 ///
 /// .. warning::
-///    **Not sendable** to other Python threads.  All window operations
+///    **Not sendable** to other Python threads. All window operations
 ///    must happen on the event loop thread.
 #[pyclass(unsendable)]
 pub struct TaoWindow {
     inner: Arc<Window>,
-    /// Deterministic hash of the tao ``WindowId``.  Matches the
+    /// Deterministic hash of the tao ``WindowId``. Matches the
     /// ``window_id`` field on every window event, so the Python
     /// layer can route events to the correct ``Window`` without
     /// any additional mapping tables.
@@ -294,7 +294,7 @@ impl TaoWindow {
         self.id
     }
 
-    // ── Native handle ────────────────────────────────────────────────────
+    // Native handle
 
     /// Returns the native window/area handle as an integer:
     ///
@@ -349,7 +349,7 @@ impl TaoWindow {
         }
     }
 
-    // ── Geometry ─────────────────────────────────────────────────────────
+    // Geometry
 
     fn set_inner_size(&self, width: f64, height: f64) -> PyResult<()> {
         self.inner.set_inner_size(LogicalSize::new(width, height));
@@ -385,7 +385,7 @@ impl TaoWindow {
             .set_max_inner_size(Some(LogicalSize::new(width, height)));
     }
 
-    // ── Appearance ───────────────────────────────────────────────────────
+    // Appearance
 
     fn set_title(&self, title: &str) {
         self.inner.set_title(title);
@@ -449,7 +449,7 @@ impl TaoWindow {
         result.map_err(effect_error)
     }
 
-    // ── State ────────────────────────────────────────────────────────────
+    // State
 
     fn is_minimized(&self) -> bool {
         self.inner.is_minimized()
@@ -481,7 +481,7 @@ impl TaoWindow {
         }
     }
 
-    // ── Icon ─────────────────────────────────────────────────────────────
+    // Icon
 
     /// Set the window icon from raw RGBA pixel data.
     fn set_window_icon(&self, width: u32, height: u32, rgba: Vec<u8>) -> PyResult<()> {
@@ -492,7 +492,7 @@ impl TaoWindow {
         Ok(())
     }
 
-    // ── Focus ────────────────────────────────────────────────────────────
+    // Focus
 
     fn set_focused(&self, focused: bool) {
         if focused {
@@ -500,7 +500,7 @@ impl TaoWindow {
         }
     }
 
-    // ── Interaction ──────────────────────────────────────────────────────
+    // Interaction
 
     fn drag_window(&self) -> PyResult<()> {
         self.inner.drag_window().map_err(interaction_error)
@@ -527,7 +527,7 @@ impl TaoWindow {
         self.refresh_transparent_surface()
     }
 
-    // ── Linux GTK ────────────────────────────────────────────────────────
+    // Linux GTK
 
     /// Returns the raw pointer to the default ``gtk::Box`` container child
     /// of this window.

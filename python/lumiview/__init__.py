@@ -68,14 +68,14 @@ from lumiview._task import task, Task, TaskDeadlockError
 from lumiview import utils
 from lumiview import plugins
 
-# ── Serve subpackage (§10) ─────────────────────────────────────────────────
+# Serve subpackage (§10)
 
 from lumiview.serve import Request, Response, Serve, Static, WSGI, ASGI, Handler
 
 __version__ = "0.1.0.dev1"
 
 __all__ = [
-    # ── Application layer ──
+    # Application layer
     "App",
     "AppState",
     "CloseBehavior",
@@ -97,7 +97,7 @@ __all__ = [
     "TaskDeadlockError",
     "AppClosedError",
     "WindowClosedError",
-    # ── Serve ──
+    # Serve
     "Request",
     "Response",
     "Serve",
@@ -105,7 +105,7 @@ __all__ = [
     "WSGI",
     "ASGI",
     "Handler",
-    # ── Low-level bindings ──
+    # Low-level bindings
     "TaoEventLoop",
     "TaoEventLoopProxy",
     "TaoWindowBuilder",

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence
 if TYPE_CHECKING:
     from lumiview._window import Window
 
-# ── BridgeError ────────────────────────────────────────────────────────────
+# BridgeError
 # Defined here (the shared type module) to avoid an import cycle between
 # _scope and _bridge: _bridge re-exports it for backward compatibility.
 
@@ -34,7 +34,7 @@ class BridgeError(Exception):
         return result
 
 
-# ── Pattern matching (shared with lumiview.utils) ──────────────────────────
+# Pattern matching (shared with lumiview.utils)
 
 
 def pattern_to_regex(pattern: str) -> re.Pattern[str]:
@@ -56,18 +56,18 @@ def match_pattern(pattern: str, value: str) -> bool:
     return pattern_to_regex(pattern).match(value) is not None
 
 
-# ── Permissions ────────────────────────────────────────────────────────────
+# Permissions
 
 
 @dataclass
 class ScopePermission:
     """Allow/deny pattern lists for one scope node.
 
-    Empty by default (no rules configured).  ``check`` semantics:
+    Empty by default (no rules configured). ``check`` semantics:
     deny wins; an empty allow list means "no whitelist restriction"
-    (deny-only blacklist).  On the permission chain, unconfigured
+    (deny-only blacklist). On the permission chain, unconfigured
     nodes are skipped; if NO node on the chain has any rule, the
-    command is rejected by default (see ``check_chain``).  The Bridge
+    command is rejected by default (see ``check_chain``). The Bridge
     root is initialized with ``allow=("*",)`` unless overridden.
     """
 
@@ -84,7 +84,7 @@ class ScopePermission:
         return any(match_pattern(p, rel_path) for p in self.allow)
 
 
-# ── Command ────────────────────────────────────────────────────────────────
+# Command
 
 
 @dataclass
@@ -101,7 +101,7 @@ class Command:
         return self.scope._full_name(self.name)
 
 
-# ── Context types ──────────────────────────────────────────────────────────
+# Context types
 
 
 @dataclass
@@ -128,7 +128,7 @@ class InitContext:
     inject_script: str = ""
 
 
-# ── Scope ──────────────────────────────────────────────────────────────────
+# Scope
 
 
 class Scope:
@@ -157,7 +157,7 @@ class Scope:
         for scope in includes:
             self.include(scope)
 
-    # ── Naming ──────────────────────────────────────────────────────────
+    # Naming
 
     def _full_name(self, local: str) -> str:
         parts: list[str] = []
@@ -180,7 +180,7 @@ class Scope:
             node = node._parent
         return depth
 
-    # ── Tree building ───────────────────────────────────────────────────
+    # Tree building
 
     def scope(self, name: str) -> Scope:
         """Get or create a child scope (returns the existing node)."""
@@ -249,9 +249,9 @@ class Scope:
 
         An instance can be mounted exactly once — re-mounting it would
         rewrite its parent pointer and silently change the permission
-        chain of the tree it already belongs to.  Custom mount names are
+        chain of the tree it already belongs to. Custom mount names are
         set at construction (``Scope(name=...)``); ``include()`` has no
-        prefix argument.  Unnamed scopes cannot be mounted (ValueError).
+        prefix argument. Unnamed scopes cannot be mounted (ValueError).
         """
         if not isinstance(other, Scope):
             raise TypeError(
@@ -278,7 +278,7 @@ class Scope:
         other._parent = self
         self._children[other._name] = other
 
-    # ── Permissions ─────────────────────────────────────────────────────
+    # Permissions
 
     def allow(self, *patterns: str) -> None:
         """Append allow rules (paths relative to this scope)."""
@@ -300,7 +300,7 @@ class Scope:
         """Check a path relative to THIS scope node."""
         return self._permissions.check(rel_path)
 
-    # ── Events ──────────────────────────────────────────────────────────
+    # Events
 
     def emit(
         self,
@@ -311,7 +311,7 @@ class Scope:
     ) -> None:
         """Emit an event with this scope's namespace prefix.
 
-        Requires ``window=`` (the target window).  Inside commands:
+        Requires ``window=`` (the target window). Inside commands:
         ``ctx.scope.emit("changed", {...}, window=ctx.window)``.
         """
         if window is None:
@@ -320,7 +320,7 @@ class Scope:
         full = f"{prefix}.{event}" if prefix else event
         window.emit(full, payload)
 
-    # ── Lookup ──────────────────────────────────────────────────────────
+    # Lookup
 
     def lookup(self, full_name: str) -> Command | None:
         """Resolve a full command name by walking the tree."""
@@ -334,14 +334,14 @@ class Scope:
         return node._commands.get(parts[-1])
 
 
-# ── Module helpers ─────────────────────────────────────────────────────────
+# Module helpers
 
 
 def check_chain(scope: Scope, full_name: str) -> bool:
     """Walk from the command's registration node up to the tree root.
 
     Each layer checks the path relative to itself, so rule semantics
-    don't drift when a subtree is re-mounted (``include``).  Layers
+    don't drift when a subtree is re-mounted (``include``). Layers
     without any rules are skipped; if NO layer has any rule, the
     command is rejected by default (safe default — an unconfigured
     chain must not accidentally allow everything).

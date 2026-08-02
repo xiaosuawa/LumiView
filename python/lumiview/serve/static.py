@@ -47,7 +47,7 @@ class Static:
         self._spa = spa
         self.scheme = _check_scheme(scheme)
 
-    # ── Serve ──────────────────────────────────────────────────────────────
+    # Serve
 
     def __call__(self, request: Request, respond: RespondFn) -> None:
         """Handle one request (sync — file I/O is fast enough for GUI thread)."""
@@ -74,10 +74,10 @@ class Static:
 
         respond(404, [], b"Not Found")
 
-    # ── Internal ───────────────────────────────────────────────────────────
+    # Internal
 
     def _safe_path(self, path: str) -> str | None:
-        """Normalize and validate a request path.  Returns a relative path
+        """Normalize and validate a request path. Returns a relative path
         string like ``"index.html"`` or ``"js/app.js"``, or ``None``."""
         try:
             decoded = unquote(path)
@@ -92,7 +92,7 @@ class Static:
         return normalized
 
     def _read_file(self, rel_path: str) -> tuple[bytes | None, int | None]:
-        """Read a file from disk.  Returns ``(content, mtime)`` or ``(None, None)``."""
+        """Read a file from disk. Returns ``(content, mtime)`` or ``(None, None)``."""
         full = self._root / rel_path
         try:
             full = full.resolve(strict=False)
@@ -127,7 +127,7 @@ class Static:
         return 200, headers
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
+# Helpers
 
 
 def _is_spa_candidate(path: str) -> bool:

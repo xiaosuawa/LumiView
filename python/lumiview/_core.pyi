@@ -15,10 +15,10 @@ class EventLoopControl(Enum):
     """Stop the event loop cleanly."""
 
 class TaoEventLoop:
-    """Cross-platform event loop.  Create exactly one per application.
+    """Cross-platform event loop. Create exactly one per application.
 
     .. warning::
-        **Not sendable** to other Python threads.  Always create and run
+        **Not sendable** to other Python threads. Always create and run
         on the main thread, especially on macOS.
     """
 
@@ -31,10 +31,10 @@ class TaoEventLoop:
         ...
 
     def run(self, callback: Callable[["TaoEvent"], EventLoopControl | None]) -> None:
-        """Run the event loop.  Blocks the calling thread until stopped.
+        """Run the event loop. Blocks the calling thread until stopped.
 
         Calls ``callback(event)`` with a subclass of :class:`TaoEvent` for
-        each interesting event.  Use ``isinstance()`` to dispatch:
+        each interesting event. Use ``isinstance()`` to dispatch:
 
             def on_event(event):
                 if isinstance(event, ResizedEvent):
@@ -107,7 +107,7 @@ class TaoWindow:
     """A managed window created from :class:`TaoWindowBuilder`.
 
     .. warning::
-        **Not sendable** to other Python threads.  All window operations
+        **Not sendable** to other Python threads. All window operations
         must happen on the event loop thread.
     """
 

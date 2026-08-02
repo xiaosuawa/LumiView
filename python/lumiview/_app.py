@@ -29,8 +29,8 @@ _Command = tuple[str, Callable[..., Any], tuple, dict[str, Any]]
 
 log = logging.getLogger("lumiview.app")
 
-# tao/GUI thread identity for Task deadlock detection.  Assigned by
-# App.run() and reset on exit.  Lives in this module because _task's
+# tao/GUI thread identity for Task deadlock detection. Assigned by
+# App.run() and reset on exit. Lives in this module because _task's
 # _check_deadlock() reads it via deferred import — a by-value import
 # would freeze it at None.
 _GUI_THREAD_ID: int | None = None
@@ -43,10 +43,7 @@ _SHUTDOWN_TIMEOUT = 10.0
 if TYPE_CHECKING:
     from lumiview import Window
 
-
-# ═══════════════════════════════════════════════════════════════════════════
 # AppState
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 class AppState(Enum):
@@ -57,9 +54,7 @@ class AppState(Enum):
     STOPPED = auto()  # Resources released
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 # App
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 class App:
@@ -95,44 +90,44 @@ class App:
             )
         App._instance = self
 
-        # ── Configuration ────────────────────────────────────────────────
+        # Configuration
         self._name = name
         self._exit_on_last_window = exit_on_last_window
         self._max_workers = max_workers
 
-        # ── State ─────────────────────────────────────────────────────────
+        # State
         self._state = AppState.CREATED
         self._exit_code: int = 0
 
-        # ── Rust bindings (created in run()) ──────────────────────────────
+        # Rust bindings (created in run())
         self._event_loop: TaoEventLoop | None = None
         self._proxy = None  # TaoEventLoopProxy
 
-        # ── Thread identity ───────────────────────────────────────────────
+        # Thread identity
         self._main_tid: int | None = None
 
-        # ── Command queue (any thread → main thread) ──────────────────────
+        # Command queue (any thread → main thread)
         self._cmd_queue: queue.Queue[_Command] = queue.Queue()
         self._pending: dict[str, Task[Any]] = {}
 
-        # ── Async infrastructure ──────────────────────────────────────────
+        # Async infrastructure
         self._async_loop: asyncio.AbstractEventLoop | None = None
         self._async_thread: threading.Thread | None = None
         self._threadpool: ThreadPoolExecutor | None = None
 
-        # ── Hooks ─────────────────────────────────────────────────────────
+        # Hooks
         self._hooks: dict[AppHookEvent, list[_Handler]] = {
             evt: [] for evt in AppHookEvent
         }
 
-        # ── Windows ───────────────────────────────────────────────────────
+        # Windows
         self._windows: dict[int, Window] = {}
 
         # Completion signal for the Close event dispatch (set by
         # _handle_exit_event, awaited in run()'s finally block).
         self._close_done: Future[None] | None = None
 
-    # ── Singleton access ─────────────────────────────────────────────────
+    # Singleton access
 
     @classmethod
     def get(cls) -> App:
@@ -151,7 +146,7 @@ class App:
     def state(self) -> AppState:
         return self._state
 
-    # ═══ Hooks ═══
+    # Hooks
 
     def on(self, event: AppHookEvent):
         """Register a handler for an app-level event.
@@ -166,7 +161,7 @@ class App:
 
         return decorator
 
-    # ═══ Bridge: any thread → main thread ═══
+    # Bridge: any thread → main thread
 
     def is_main_thread(self) -> bool:
         """True if the caller is on the tao / native GUI thread."""
@@ -215,7 +210,7 @@ class App:
         if self._proxy is not None:
             self._proxy.send_event(json.dumps({"cmd": "wake", "id": req_id}))
 
-    # ── Main-thread command processing ───────────────────────────────────
+    # Main-thread command processing
 
     def _drain_commands(self) -> None:
         while not self._cmd_queue.empty():
@@ -235,7 +230,7 @@ class App:
         else:
             handle.set_result(value)
 
-    # ═══ Task scheduling ═══
+    # Task scheduling
 
     def _schedule_task(
         self,
@@ -273,7 +268,7 @@ class App:
                 handle.set_result(result)
             except asyncio.CancelledError as exc:
                 # CancelledError is a BaseException — the generic handler
-                # below cannot catch it.  Propagate it to the handle so
+                # below cannot catch it. Propagate it to the handle so
                 # await/.result() fail fast instead of hanging forever
                 # (e.g. tasks cancelled during app shutdown).
                 handle.set_exception(exc)
@@ -303,14 +298,14 @@ class App:
         concurrent_future = pool.submit(lambda: fn(*args, **kwargs))
         return Task._from_future(concurrent_future)
 
-    # ═══ Event dispatch (internal) ═══
+    # Event dispatch (internal)
 
     def _emit(self, event: AppHookEvent, *args: object) -> "Future[None] | None":
         """Dispatch an app event to registered handlers on the asyncio loop.
 
         Returns a completion signal (a plain ``concurrent.futures.Future``
         resolved when all handlers finish) or None when there is no loop
-        or no handlers.  Callers that don't need to wait may ignore the
+        or no handlers. Callers that don't need to wait may ignore the
         return value — only ``_handle_exit_event`` consumes it.
         """
         loop = self._async_loop
@@ -336,7 +331,7 @@ class App:
         loop.call_soon_threadsafe(lambda: asyncio.create_task(_dispatch()))
         return done
 
-    # ═══ Run loop ═══
+    # Run loop
 
     def run(
         self,
@@ -360,34 +355,30 @@ class App:
 
         self._state = AppState.STARTING
 
-        # Create Tao event loop on the main thread.
         self._event_loop = TaoEventLoop()
         self._proxy = self._event_loop.create_proxy()
         self._main_tid = threading.get_ident()
 
-        # Set deadlock detection globals.
         global _GUI_THREAD_ID
         _GUI_THREAD_ID = self._main_tid
 
-        # Start thread pool.
         self._threadpool = ThreadPoolExecutor(
             max_workers=self._max_workers,
             thread_name_prefix="lumiview-pool",
         )
 
-        # Install Ctrl+C handler.  signal.signal() only works on the
+        # Install Ctrl+C handler. signal.signal() only works on the
         # main thread — background-thread runs (e.g. future test
         # harness) skip it.
         def _sigint_handler(signum, frame):
             log.info("Ctrl+C received, shutting down...")
             self.exit()
-        
+
         original_sigint = signal.getsignal(signal.SIGINT)
 
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGINT, _sigint_handler)
 
-        # Start asyncio thread.
         self._async_thread = threading.Thread(
             target=self._run_asyncio,
             args=(entry,),
@@ -410,7 +401,6 @@ class App:
         finally:
             self._state = AppState.STOPPED
 
-            # Restore original signal handler (main thread only).
             if threading.current_thread() is threading.main_thread():
                 signal.signal(signal.SIGINT, original_sigint)
 
@@ -421,7 +411,7 @@ class App:
 
             # Wait for Close handlers to finish before stopping the
             # asyncio loop — they run on the asyncio thread, which is
-            # still alive here.  Timeout guards against a hanging handler.
+            # still alive here. Timeout guards against a hanging handler.
             if self._close_done is not None:
                 try:
                     self._close_done.result(
@@ -443,7 +433,7 @@ class App:
             # returns cleanly and no handle is left hanging.
             # 1. Cancel pending asyncio tasks so hung awaits fail fast
             #    with CancelledError (Task.cancel() is thread-safe), then
-            #    stop the loop.  Tasks created after the all_tasks()
+            #    stop the loop. Tasks created after the all_tasks()
             #    snapshot — only possible from Close handlers that
             #    overran the timeout — are not cancelled; they are
             #    abandoned with the daemon async thread below.
@@ -463,7 +453,7 @@ class App:
             except BaseException:
                 log.exception("Interrupted during asyncio shutdown")
 
-            # 2. Fail pending main-thread command handles.  After the
+            # 2. Fail pending main-thread command handles. After the
             #    event loop returns, the main thread no longer drains
             #    the command queue — these would otherwise hang forever.
             try:
@@ -494,7 +484,7 @@ class App:
         ignored so the first requested exit code wins.
         """
         if self._state in (AppState.STOPPING, AppState.STOPPED):
-            # Shutdown already in progress — ignore the request.  Keeps
+            # Shutdown already in progress — ignore the request. Keeps
             # _exit_code monotonic: a window closing during STOPPING
             # (_remove_window, code 0) can no longer overwrite an
             # explicit exit(code).
@@ -512,10 +502,8 @@ class App:
         asyncio.set_event_loop(self._async_loop)
 
         async def _main() -> None:
-            # Emit Ready event.
             self._emit(AppHookEvent.Ready)
 
-            # Run entry point.
             if entry is not None:
                 try:
                     await _run_async(entry, pool=self._threadpool)
@@ -525,7 +513,7 @@ class App:
         self._async_loop.create_task(_main())
         self._async_loop.run_forever()
 
-    # ── Window tracking ──────────────────────────────────────────────────
+    # Window tracking
 
     def _remove_window(self, win_id: int) -> None:
         """Called when a Window is closed — clean up tracking."""
@@ -533,7 +521,7 @@ class App:
         if self._exit_on_last_window and not self._windows:
             self.exit()
 
-    # ── Tao event callback ────────────────────────────────────────────────
+    # Tao event callback
 
     def _on_tao_event(self, event: TaoEvent) -> EventLoopControl | None:
         self._drain_commands()
@@ -559,7 +547,6 @@ class App:
         """Graceful shutdown sequence."""
         self._state = AppState.STOPPING
 
-        # Close all windows.
         for win in list(self._windows.values()):
             try:
                 if win._webview is not None:
@@ -571,7 +558,7 @@ class App:
 
         self._windows.clear()
 
-        # Emit Close for remaining handlers.  The completion signal is
+        # Emit Close for remaining handlers. The completion signal is
         # awaited in run()'s finally block before the asyncio loop stops,
         # so cleanup handlers actually run.
         self._close_done = self._emit(AppHookEvent.Close)
@@ -579,9 +566,7 @@ class App:
         return EventLoopControl.Exit
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 # Error types
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 class AppClosedError(RuntimeError):

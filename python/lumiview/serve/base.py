@@ -3,7 +3,7 @@ Typed request / response protocol for custom scheme handlers.
 
 A ``Serve`` callable receives a :class:`Request` and a ``respond`` callback.
 It must call ``respond(status, headers, body)`` exactly once to deliver the
-response.  The callable may do so synchronously or from any thread / event loop
+response. The callable may do so synchronously or from any thread / event loop
 — the framework never blocks waiting for it.
 """
 
@@ -74,7 +74,7 @@ class Response:
     body: bytes = b""
 
 
-# ── Serve protocol ───────────────────────────────────────────────────────────
+# Serve protocol
 
 
 class Serve(Protocol):
@@ -95,14 +95,14 @@ class Serve(Protocol):
     def __call__(self, request: Request, respond: RespondFn) -> None: ...
 
 
-# ── Convenience: Handler from a plain function ───────────────────────────────
+# Convenience: Handler from a plain function
 
 
 class Handler:
     """Adapt a plain function into a :class:`Serve` callable.
 
     The function receives a :class:`Request` and must return a
-    :class:`Response`.  Sync functions run on the App's thread pool;
+    :class:`Response`. Sync functions run on the App's thread pool;
     async functions run on the App's asyncio loop — both via the same
     ``_run_async`` dispatch used for bridge commands and hook handlers::
 

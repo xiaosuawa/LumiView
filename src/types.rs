@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 
-// ── EventLoopControl ──────────────────────────────────────────────────────
+// EventLoopControl
 
 /// Return this from your event callback to control the event loop.
 #[pyclass(eq, frozen, from_py_object)]
@@ -12,7 +12,7 @@ pub enum EventLoopControl {
     Exit,
 }
 
-// ── EventKind ─────────────────────────────────────────────────────────────
+// EventKind
 
 /// Discriminant for :class:`TaoEvent` — tells you what kind of event occurred.
 ///
@@ -43,7 +43,7 @@ pub enum EventKind {
     LoopDestroyed,
 }
 
-// ── ModifiersState ────────────────────────────────────────────────────────
+// ModifiersState
 
 /// Keyboard modifier key state snapshot.
 ///
@@ -101,7 +101,7 @@ impl ModifiersState {
     }
 }
 
-// ── Input type enums ──────────────────────────────────────────────────────
+// Input type enums
 
 macro_rules! simple_enum {
     ($name:ident, $doc:expr, { $($variant:ident => $str:literal),+ $(,)? }) => {
@@ -213,7 +213,7 @@ impl From<ResizeDirection> for tao::window::ResizeDirection {
     }
 }
 
-// ── From tao impls ────────────────────────────────────────────────────────
+// From tao impls
 
 impl From<tao::event::ElementState> for ElementState {
     fn from(s: tao::event::ElementState) -> Self {
@@ -375,7 +375,7 @@ impl From<tao::window::Theme> for Theme {
     }
 }
 
-// ── WindowHandleKind ──────────────────────────────────────────────────────
+// WindowHandleKind
 
 /// Identifies the native window handle type.
 #[pyclass(eq, frozen, hash, skip_from_py_object)]

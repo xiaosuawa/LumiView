@@ -1,14 +1,14 @@
 """
 WSGI adapter — run a WSGI application inside a ``lumiview://`` custom protocol.
 
-This is a compatibility adapter.  New projects should prefer :class:`Static`
+This is a compatibility adapter. New projects should prefer :class:`Static`
 + :class:`Bridge` for better performance and type safety.
 
 .. warning::
 
     Streaming responses (chunked transfer encoding, Server-Sent Events,
     long-polling, etc.) **will not work** through the ``lumiview://``
-    custom protocol.  The protocol delivers one complete response — the
+    custom protocol. The protocol delivers one complete response — the
     handler must call ``respond()`` exactly once with the full body.
     Streaming requires a real HTTP server.
 """
@@ -46,7 +46,7 @@ class WSGI:
         win = await Window.create(source=WSGI(flask_app))
 
     .. note::
-        WSGI is a synchronous protocol.  Async Python web frameworks
+        WSGI is a synchronous protocol. Async Python web frameworks
         are not supported through this adapter.
     """
 
@@ -94,14 +94,15 @@ class WSGI:
                 respond(code, list(response_headers), b"Internal Server Error")
             else:
                 respond(500, [("Content-Type", "text/plain")], b"Internal Server Error")
+
         status_line: list[str] = []
         response_headers: list[tuple[str, str]] = []
         body_chunks: list[bytes] = []
 
         def start_response(
-                status: str,
-                headers: list[tuple[str, str]],
-                exc_info: Any = None,
+            status: str,
+            headers: list[tuple[str, str]],
+            exc_info: Any = None,
         ) -> Callable[[bytes | str], None]:
             """PEP 3333 ``start_response`` — returns a ``write()`` callable."""
             nonlocal error_recalled
@@ -167,7 +168,7 @@ class WSGI:
 
         respond(status_code, response_headers, body)
 
-    # ── WSGI environ ───────────────────────────────────────────────────────
+    # WSGI environ
 
     @staticmethod
     def _build_environ(request: Request, scheme: str) -> dict[str, Any]:
@@ -219,10 +220,10 @@ class _BytesIO:
 
     def read(self, size: int = -1) -> bytes:
         if size < 0:
-            chunk = self._data[self._pos:]
+            chunk = self._data[self._pos :]
             self._pos = len(self._data)
             return chunk
-        chunk = self._data[self._pos: self._pos + size]
+        chunk = self._data[self._pos : self._pos + size]
         self._pos += size
         return chunk
 
