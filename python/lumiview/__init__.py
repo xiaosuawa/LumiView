@@ -72,7 +72,7 @@ from lumiview import plugins
 
 from lumiview.serve import Request, Response, Serve, Static, WSGI, ASGI, Handler
 
-__version__ = "0.1.0.dev1"
+__version__ = "0.1.0.dev2"
 
 __all__ = [
     # Application layer

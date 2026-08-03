@@ -107,7 +107,7 @@ class WindowControls(Plugin):
 
     All commands resolve their Task synchronously via ``.result()`` —
     they run on the thread pool, never on the GUI thread.
-    
+
     NOTE: window-edge resizing needs no markup — for undecorated windows tao
     already handles the 8 edge/corner hit-tests natively (WM_NCHITTEST) and
     disables them when maximized/fullscreen. Use data-lumiview-resize-region

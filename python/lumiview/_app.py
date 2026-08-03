@@ -343,7 +343,7 @@ class App:
                 f"App already {'running' if self._state == AppState.RUNNING else 'finished'}. "
                 "Cannot run() twice."
             )
-        
+
         if threading.current_thread() is not threading.main_thread():
             raise RuntimeError("App.run() must be called from the main thread")
 
