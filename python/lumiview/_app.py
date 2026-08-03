@@ -419,12 +419,12 @@ class App:
                 if self._async_loop is not None:
                     for t in asyncio.all_tasks(self._async_loop):
                         t.cancel()
-                    self._async_loop.stop()
+                    self._async_loop.call_soon_threadsafe(self._async_loop.stop)
                 if self._async_thread is not None:
                     self._async_thread.join(timeout=_SHUTDOWN_TIMEOUT)
                     if self._async_thread.is_alive():
                         log.warning(
-                            "async thread did not exit within remaining budget ({_SHUTDOWN_TIMEOUT}s)"
+                            f"async thread did not exit within remaining budget ({_SHUTDOWN_TIMEOUT}s)"
                         )
             except BaseException:
                 log.exception("Interrupted during asyncio shutdown")
