@@ -27,6 +27,7 @@ pub enum EventKind {
     Destroyed,
     Focused,
     Unfocused,
+    Reopen,
     ScaleFactorChanged,
     ThemeChanged,
     // Input events

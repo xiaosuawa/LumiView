@@ -14,7 +14,7 @@ Run:
 
 import sys
 
-from lumiview import App, Bridge, Window, WindowEffect
+from lumiview import App, Bridge, Window, WindowEffect, WindowOptions
 from lumiview.plugins import WindowControls
 
 app = App(name="CustomTitlebar")
@@ -54,7 +54,7 @@ HTML = """<!doctype html>
 
 
 async def main():
-    win = await Window.create(
+    win = await Window.create(WindowOptions(
         title="Custom Titlebar",
         html=HTML,
         width=760,
@@ -63,7 +63,7 @@ async def main():
         transparent=True,           # transparent window background
         bridge=bridge,
         background_color=(0, 0, 0, 0),
-    )
+    ))
 
     # Try to apply a native window effect
     effect = (

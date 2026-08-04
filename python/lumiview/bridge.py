@@ -5,8 +5,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
-from lumiview._scope import (
-    BridgeError,
+from lumiview.scope import (
     InitContext,
     Plugin,
     Scope,
@@ -14,12 +13,36 @@ from lumiview._scope import (
     check_chain,
     iter_tree,
 )
-from lumiview._task import _run_async
+from lumiview.task import run_async
 
 if TYPE_CHECKING:
-    from lumiview._window import Window
+    from lumiview.window import Window
 
 log = logging.getLogger("lumiview.bridge")
+
+# BridgeError
+
+
+class BridgeError(Exception):
+    """Structured error returned to JavaScript on bridge call failure.
+
+    Parameters:
+        code: Machine-readable error code (e.g. ``"invalid_argument"``).
+        message: Human-readable description.
+        data: Optional additional context (must be JSON-serializable).
+    """
+
+    def __init__(self, code: str, message: str, data: Any = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.data = data
+
+    def to_dict(self) -> dict:
+        result: dict = {"code": self.code, "message": str(self)}
+        if self.data is not None:
+            result["data"] = self.data
+        return result
+
 
 # Bridge
 
@@ -53,6 +76,9 @@ class Bridge:
     # Tree facade
 
     def scope(self, name: str) -> Scope:
+        """Get or create a child scope (forwarded to the root
+        :class:`Scope`)."""
+
         return self._root.scope(name)
 
     def command(
@@ -64,22 +90,31 @@ class Bridge:
         replace: bool = False,
         strict: bool = True,
     ) -> Callable[..., Any]:
+        """Register a command on the root scope (decorator or direct
+        call) — see :meth:`Scope.command`."""
+
         return self._root.command(fn, name=name, replace=replace, strict=strict)
 
     def include(self, other: Scope) -> None:
-        """Mount a scope onto the tree (pure mounting, see Scope.include).
+        """Mount a scope onto the tree (pure mounting, see
+        :meth:`Scope.include`).
 
         An instance can only be mounted once. Custom mount names are set
         at construction (``Scope(name=...)``). Instances always end up
-        on the tree, so their lifecycle hooks (``Plugin``) are reachable
-        via tree walk — no extra hook list needed.
+        on the tree, so their lifecycle hooks (:class:`Plugin`) are
+        reachable via tree walk — no extra hook list needed.
         """
         self._root.include(other)
 
     def allow(self, *patterns: str) -> None:
+        """Append allow rules on the root scope (see
+        :meth:`Scope.allow`)."""
+
         self._root.allow(*patterns)
 
     def deny(self, *patterns: str) -> None:
+        """Append deny rules on the root scope (see :meth:`Scope.deny`)."""
+
         self._root.deny(*patterns)
 
     # Plugin lifecycle (driven by Window.create)
@@ -145,7 +180,7 @@ class Bridge:
             return
 
         # Schedule on the asyncio loop (never the GUI thread)
-        from lumiview._app import App
+        from lumiview.app import App
 
         try:
             app = App.get()
@@ -171,7 +206,7 @@ class Bridge:
                 from lumiview._binding import bind_arguments  # avoid import cycle
 
                 kwargs = bind_arguments(cmd, payload, window)
-                result = await _run_async(cmd.fn, pool=app._threadpool, **kwargs)
+                result = await run_async(cmd.fn, pool=app._threadpool, **kwargs)
                 self._respond(window, call_id, result=result)
             except BridgeError as e:
                 self._respond(window, call_id, error=e)
@@ -201,7 +236,7 @@ class Bridge:
         so the unsendable object is only ever referenced on the main
         thread.
         """
-        from lumiview._app import App
+        from lumiview.app import App
 
         if error is not None:
             payload = json.dumps(

@@ -65,51 +65,44 @@ class TaoEventLoopProxy:
 
 # ── Window ─────────────────────────────────────────────────────────────────
 
-class TaoWindowBuilder:
-    """Configure a window before creation.
-
-    All methods mutate the builder in-place (no chaining).
-    """
-
-    def __init__(self) -> None: ...
-    def with_title(self, title: str) -> None: ...
-    def with_inner_size(self, width: float, height: float) -> None: ...
-    def with_min_inner_size(self, width: float, height: float) -> None: ...
-    def with_max_inner_size(self, width: float, height: float) -> None: ...
-    def with_position(self, x: float, y: float) -> None: ...
-    def with_resizable(self, resizable: bool) -> None: ...
-    def with_minimizable(self, minimizable: bool) -> None: ...
-    def with_maximizable(self, maximizable: bool) -> None: ...
-    def with_closable(self, closable: bool) -> None: ...
-    def with_maximized(self, maximized: bool) -> None: ...
-    def with_visible(self, visible: bool) -> None: ...
-    def with_transparent(self, transparent: bool) -> None: ...
-    def with_decorations(self, decorations: bool) -> None: ...
-    def with_undecorated_shadow(self, shadow: bool) -> None: ...
-    def with_always_on_top(self, always: bool) -> None: ...
-    def with_focused(self, focused: bool) -> None: ...
-    def with_focusable(self, focusable: bool) -> None: ...
-    def with_content_protection(self, protected: bool) -> None: ...
-    def with_visible_on_all_workspaces(self, visible: bool) -> None: ...
-    def with_window_icon(self, width: int, height: int, rgba: bytes) -> None:
-        """Set the window icon from raw RGBA pixel data.
-
-        *width* × *height* pixels, each pixel 4 bytes (R, G, B, A).
-        Raises ``ValueError`` if the data is invalid.
-        """
-        ...
-
-    def build(self) -> "TaoWindow":
-        """Create the window. Works both before and during ``el.run()``."""
-        ...
-
 class TaoWindow:
-    """A managed window created from :class:`TaoWindowBuilder`.
+    """A managed window.
+
+    Construct directly with ``TaoWindow(event_loop, **options)`` — all
+    options are keyword-only and ``None`` means "leave the platform
+    default".
 
     .. warning::
-        **Not sendable** to other Python threads. All window operations
-        must happen on the event loop thread.
+        **Not sendable** to other Python threads — all window operations
+        must happen on the main thread (the event loop thread).
     """
+
+    def __init__(
+        self,
+        event_loop: "TaoEventLoop",
+        *,
+        title: str | None = None,
+        width: float | None = None,
+        height: float | None = None,
+        min_size: tuple[float, float] | None = None,
+        max_size: tuple[float, float] | None = None,
+        position: tuple[float, float] | None = None,
+        resizable: bool | None = None,
+        minimizable: bool | None = None,
+        maximizable: bool | None = None,
+        closable: bool | None = None,
+        maximized: bool | None = None,
+        visible: bool | None = None,
+        decorations: bool | None = None,
+        undecorated_shadow: bool | None = None,
+        always_on_top: bool | None = None,
+        focused: bool | None = None,
+        focusable: bool | None = None,
+        content_protection: bool | None = None,
+        visible_on_all_workspaces: bool | None = None,
+        transparent: bool | None = None,
+        icon: tuple[int, int, bytes] | None = None,  # (width, height, rgba)
+    ) -> None: ...
 
     def id(self) -> int:
         """Return the unique integer identifier for this window.
@@ -177,7 +170,8 @@ class TaoWindow:
 
         Pass to wryview with ``parent_hwnd_kind=WindowHandleKind.Gtk``
         for Wayland-compatible WebView embedding.
-        Returns ``0`` on non-Linux platforms.
+        Only exists on Linux — on Windows/macOS this method is absent
+        (AttributeError).
         """
         ...
 
@@ -225,6 +219,7 @@ class EventKind(Enum):
     Destroyed: EventKind
     Focused: EventKind
     Unfocused: EventKind
+    Reopen: EventKind
     ScaleFactorChanged: EventKind
     ThemeChanged: EventKind
     MouseInput: EventKind
@@ -331,7 +326,7 @@ class TaoEvent:
         ...
 
 class ResizedEvent(TaoEvent):
-    """Window client area size changed (logical pixels)."""
+    """Window client area size changed (physical pixels)."""
 
     @property
     def width(self) -> float: ...
@@ -365,6 +360,17 @@ class UnfocusedEvent(TaoEvent):
     """Window lost keyboard focus."""
 
     pass
+
+class ReopenEvent(TaoEvent):
+    """The app was reopened via the macOS Dock icon (macOS only).
+
+    Not associated with a specific window — ``window_id`` is ``None``.
+    """
+
+    @property
+    def has_visible_windows(self) -> bool:
+        """Whether any window was visible when the app was reopened."""
+        ...
 
 class ScaleFactorChangedEvent(TaoEvent):
     """DPI scale factor changed."""

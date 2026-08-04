@@ -15,7 +15,7 @@ import tempfile
 
 from wryview import WebContext
 
-from lumiview import App, Window
+from lumiview import App, Window, WindowOptions
 
 app = App(name="MultiWindowDemo", exit_on_last_window=True)
 
@@ -29,22 +29,22 @@ async def main():
     print(f"Shared data dir: {SHARED_DIR}")
 
     # Window A — sets a cookie
-    win_a = await Window.create(
+    win_a = await Window.create(WindowOptions(
         title="Multi-Window — A",
         url="https://example.com",
         width=700,
         height=500,
         web_context=CTX,
-    )
+    ))
 
     # Window B — shares the same WebContext
-    win_b = await Window.create(
+    win_b = await Window.create(WindowOptions(
         title="Multi-Window — B",
         url="https://example.com",
         width=700,
         height=500,
         web_context=CTX,
-    )
+    ))
 
     await asyncio.sleep(0.5)
 

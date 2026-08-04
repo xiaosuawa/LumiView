@@ -6,84 +6,70 @@ powered by Rust under the hood.
 
 Application layer (default — start here)::
 
-    from lumiview import App, Window
+    from lumiview import App, Window, WindowOptions
 
     app = App(name="MyApp")
 
     async def main():
-        win = await Window.create(title="MyApp", url="https://example.com")
+        win = await Window.create(WindowOptions(title="MyApp", url="https://example.com"))
         app.exit()
 
     app.run(main)
 
-Low-level bindings (available when you need them)::
+Events::
 
-    from lumiview import TaoEventLoop, TaoWindowBuilder, ...
+    from lumiview import WindowEvent
+
+    @win.on(WindowEvent.TitleChangedEvent)
+    def on_title(evt):
+        print(evt.title)
+
+Low-level bindings live in :mod:`lumiview._core`.
 """
 
-from lumiview._core import (
-    TaoEventLoop,
-    TaoEventLoopProxy,
-    TaoWindowBuilder,
-    TaoWindow,
+from lumiview.app import App, AppState, AppClosedError, WindowClosedError
+from lumiview.window import (
+    CloseBehavior,
+    Window,
+    WindowOptions,
     WindowEffect,
     ResizeDirection,
-    WindowHandleKind,
-    EventLoopControl,
-    EventKind,
-    ModifiersState,
-    MouseButton,
-    ElementState,
-    ScrollDeltaKind,
-    TouchPhase,
-    KeyLocation,
-    Theme,
-    TaoEvent,
-    ResizedEvent,
-    MovedEvent,
-    CloseRequestedEvent,
-    DestroyedEvent,
-    FocusedEvent,
-    UnfocusedEvent,
-    ScaleFactorChangedEvent,
-    ThemeChangedEvent,
-    MouseInputEvent,
-    CursorMovedEvent,
-    MouseWheelEvent,
-    KeyboardInputEvent,
-    ModifiersChangedEvent,
-    CursorEnteredEvent,
-    CursorLeftEvent,
-    RedrawRequestedEvent,
-    UserEvent,
-    LoopDestroyedEvent,
 )
-
-from lumiview._app import App, AppState, AppClosedError, WindowClosedError
-from lumiview._events import WindowHookEvent, AppHookEvent
-from lumiview._bridge import Bridge, BridgeError
-from lumiview._scope import Plugin, Scope, ScopePermission, BridgeContext, InitContext
-from lumiview._window import CloseBehavior, Window
-from lumiview._task import task, Task, TaskDeadlockError
+from lumiview.bridge import Bridge, BridgeError
+from lumiview.scope import Plugin, Scope, ScopePermission, BridgeContext, InitContext
+from lumiview.task import task, Task, TaskDeadlockError
+from lumiview.events import (
+    Event,
+    WindowEvent,
+    WindowBaseEvent,
+    AppEvent,
+    AppBaseEvent,
+)
 from lumiview import utils
 from lumiview import plugins
+from lumiview import serve
 
-# Serve subpackage (§10)
-
-from lumiview.serve import Request, Response, Serve, Static, WSGI, ASGI, Handler
-
-__version__ = "0.1.0.dev2"
+__version__ = "0.1.0.dev3"
 
 __all__ = [
     # Application layer
     "App",
     "AppState",
-    "CloseBehavior",
+    "AppClosedError",
+    "WindowClosedError",
+    # Window layer
     "Window",
+    "WindowOptions",
+    "CloseBehavior",
     "WindowEffect",
     "ResizeDirection",
-    "WindowHookEvent",
-    "AppHookEvent",
+    # Events
+    "Event",
+    "WindowEvent",
+    "WindowBaseEvent",
+    "AppEvent",
+    "AppBaseEvent",
+    # IPC
     "Bridge",
     "BridgeError",
     "Scope",
@@ -91,53 +77,12 @@ __all__ = [
     "ScopePermission",
     "BridgeContext",
     "InitContext",
-    "utils",
-    "plugins",
+    # Concurrency
     "task",
     "Task",
     "TaskDeadlockError",
-    "AppClosedError",
-    "WindowClosedError",
-    # Serve
-    "Request",
-    "Response",
-    "Serve",
-    "Static",
-    "WSGI",
-    "ASGI",
-    "Handler",
-    # Low-level bindings
-    "TaoEventLoop",
-    "TaoEventLoopProxy",
-    "TaoWindowBuilder",
-    "TaoWindow",
-    "WindowHandleKind",
-    "EventLoopControl",
-    "EventKind",
-    "ModifiersState",
-    "MouseButton",
-    "ElementState",
-    "ScrollDeltaKind",
-    "TouchPhase",
-    "KeyLocation",
-    "Theme",
-    "TaoEvent",
-    "ResizedEvent",
-    "MovedEvent",
-    "CloseRequestedEvent",
-    "DestroyedEvent",
-    "FocusedEvent",
-    "UnfocusedEvent",
-    "ScaleFactorChangedEvent",
-    "ThemeChangedEvent",
-    "MouseInputEvent",
-    "CursorMovedEvent",
-    "MouseWheelEvent",
-    "KeyboardInputEvent",
-    "ModifiersChangedEvent",
-    "CursorEnteredEvent",
-    "CursorLeftEvent",
-    "RedrawRequestedEvent",
-    "UserEvent",
-    "LoopDestroyedEvent",
+    # Subpackages
+    "utils",
+    "plugins",
+    "serve",
 ]

@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from lumiview._bridge import BridgeError
+from lumiview.bridge import BridgeError
 from lumiview._core import ResizeDirection
-from lumiview._events import WindowHookEvent
-from lumiview._scope import BridgeContext, InitContext, Plugin
+from lumiview.events import WindowBaseEvent, WindowEvent
+from lumiview.scope import BridgeContext, InitContext, Plugin
 
 if TYPE_CHECKING:
-    from lumiview._window import Window
+    from lumiview.window import Window
 
 API_SCRIPT_TEMPLATE = """\
 (() => {
@@ -155,9 +155,9 @@ class WindowControls(Plugin):
         self._window = window
         self._maximized = window.is_maximized().result()
         self._emit_maximized()
-        window.on(WindowHookEvent.Resized)(self._sync_maximized)
+        window.on(WindowEvent.ResizedEvent)(self._sync_maximized)
 
-    async def _sync_maximized(self, *_: object) -> None:
+    async def _sync_maximized(self, _evt: WindowBaseEvent) -> None:
         """Hook handler: broadcast maximize-state changes to JS."""
         if self._window is None:
             return
@@ -176,23 +176,40 @@ class WindowControls(Plugin):
             {"maximized": self._maximized},
         )
 
-    # Commands
+    # Commands (called from JS via the bridge)
     def minimize(self, ctx: BridgeContext) -> None:
+        """Minimize the window."""
+
         ctx.window.minimize().result()
 
     def toggle_maximize(self, ctx: BridgeContext) -> bool:
+        """Toggle maximize state; returns True if now maximized."""
+
         return ctx.window.toggle_maximize().result()
 
     def is_maximized(self, ctx: BridgeContext) -> bool:
+        """True if the window is maximized."""
+
         return ctx.window.is_maximized().result()
 
     def close(self, ctx: BridgeContext) -> None:
+        """Apply the window's close behavior (request_close)."""
+
         ctx.window.request_close().result()
 
     def start_dragging(self, ctx: BridgeContext) -> None:
+        """Start an OS-level window drag."""
+
         ctx.window.start_dragging().result()
 
     def start_resize_dragging(self, ctx: BridgeContext, direction: str) -> None:
+        """Start an OS-level resize drag.
+
+        Parameters:
+            direction: One of ``"north"``, ``"south"``, ``"east"``,
+                ``"west"`` and their diagonal combinations.
+        """
+
         target = _RESIZE_DIRECTIONS.get(direction)
         if target is None:
             raise BridgeError(
@@ -202,4 +219,6 @@ class WindowControls(Plugin):
         ctx.window.start_resize_dragging(target).result()
 
     def sync_fullscreen(self, ctx: BridgeContext, fullscreen: bool) -> None:
+        """Sync the window's fullscreen state to the OS."""
+
         ctx.window.set_fullscreen(fullscreen).result()

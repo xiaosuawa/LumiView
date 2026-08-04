@@ -34,7 +34,7 @@ def _check_deadlock() -> None:
     """Raise TaskDeadlockError if called from the GUI thread."""
     # Deferred import: _app sets this global in App.run(); importing by value
     # at module load would freeze it at None (see App.run / _GUI_THREAD_ID).
-    from lumiview._app import _GUI_THREAD_ID
+    from lumiview.app import _GUI_THREAD_ID
 
     if _GUI_THREAD_ID is not None and threading.get_ident() == _GUI_THREAD_ID:
         raise TaskDeadlockError()
@@ -49,7 +49,7 @@ class Task(concurrent.futures.Future, Generic[T]):
 
         await task                    # async  — any event loop
         task.result()                 # sync   — any thread except GUI
-        task.on_done(lambda val: …)   # callback — any thread (alias for add_done_callback)
+        task.on_done(lambda val: ...) # callback — any thread (alias for add_done_callback)
     """
 
     def result(self, timeout: float | None = None) -> T:
@@ -76,11 +76,12 @@ class Task(concurrent.futures.Future, Generic[T]):
         return asyncio.wrap_future(self).__await__()
 
     def on_done(self, callback: Callable[[T], Any]) -> None:
-        """Register a callback — a convenience wrapper around ``add_done_callback``.
+        """Register a callback — a convenience wrapper around
+        :meth:`~concurrent.futures.Future.add_done_callback`.
 
         The callback receives the result value (not the Future).
-        Exceptions are NOT passed to the callback; use ``add_done_callback``
-        directly if you need to handle errors.
+        Exceptions are NOT passed to the callback; use
+        :meth:`add_done_callback` directly if you need to handle errors.
         """
 
         def _wrapper(fut: concurrent.futures.Future) -> None:
@@ -125,9 +126,9 @@ class Task(concurrent.futures.Future, Generic[T]):
         return task
 
 
-# Internal: lightweight async/sync dispatch (zero Task overhead)
+# Public: lightweight async/sync dispatch (no Task overhead)
 
-async def _run_async(
+async def run_async(
     fn: Callable[..., Any],
     *args: Any,
     pool: concurrent.futures.ThreadPoolExecutor | None = None,
@@ -137,6 +138,12 @@ async def _run_async(
 
     - async functions: awaited directly (zero overhead).
     - sync functions: dispatched to *pool* via ``loop.run_in_executor``.
+
+    Use inside async contexts when you need to run a mixed sync/async
+    callback without the full :func:`task` machinery::
+
+        from lumiview.task import run_async
+        await run_async(my_callback, key="x")
     """
     if inspect.iscoroutinefunction(fn):
         return await fn(*args, **kwargs)
@@ -164,6 +171,6 @@ def task(
     Raises:
         RuntimeError: If no :class:`App` instance has been created yet.
     """
-    from lumiview._app import App  # deferred import to avoid circular dep
+    from lumiview.app import App  # deferred import to avoid circular dep
 
     return App.get()._schedule_task(fn, args, kwargs)

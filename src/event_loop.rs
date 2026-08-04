@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 
 use pyo3::prelude::*;
@@ -9,43 +9,6 @@ use tao::platform::run_return::EventLoopExtRunReturn;
 
 use crate::events::build_event;
 use crate::types::EventLoopControl;
-
-// Thread-local ELWT pointer
-//
-// DURING run():
-//   The callback closure receives `&EventLoopWindowTarget`.
-//   We stash a NonNull in RUNNING_PTR before calling into Python,
-//   and clear it after. `build()` reads RUNNING_PTR.
-//
-// This pointer is only accessed from the main (GUI) thread.
-// It is cleared between callback invocations.
-
-thread_local! {
-    /// Valid only while the event callback is executing.
-    /// `TaoWindowBuilder::build()` reads this to obtain the ELWT reference.
-    static RUNNING_PTR: Cell<Option<NonNull<EventLoopWindowTarget<String>>>> =
-        const { Cell::new(None) };
-}
-
-/// Return a reference to the running EventLoopWindowTarget, if available.
-///
-/// Only valid **during** an event callback — i.e. while ``TaoEventLoop.run()``
-/// is executing a callback. Returns ``None`` at all other times.
-///
-/// # Safety
-///
-/// The returned reference must NOT outlive the current callback invocation.
-/// Callers must use the reference synchronously and not store it.
-pub(crate) fn event_loop_target() -> Option<&'static EventLoopWindowTarget<String>> {
-    if let Some(ptr) = RUNNING_PTR.with(|c| c.get()) {
-        // SAFETY: RUNNING_PTR is set immediately before the Python callback
-        // and cleared immediately after. The underlying ELWT lives for the
-        // duration of EventLoop::run(), which outlives any single callback.
-        Some(unsafe { ptr.as_ref() })
-    } else {
-        None
-    }
-}
 
 // SendPtr — private helper for detach()
 //
@@ -83,23 +46,48 @@ impl<T> Drop for SendPtr<T> {
     }
 }
 
+// TargetGuard — RAII cleanup for TaoEventLoop::target
+//
+// run() stores a pointer to the Box'd EventLoop's inline
+// EventLoopWindowTarget. The Box is freed when the detach closure ends —
+// normally when run_return returns, or during unwind if the closure panics.
+// Clearing the Cell must happen in both cases: a panic that crosses the
+// pyo3 boundary surfaces as a catchable PanicException, and a later
+// TaoWindow(event_loop, ...) call would dereference freed memory if the
+// pointer survived.
+
+/// Clears ``TaoEventLoop::target`` on drop — normal return and panic
+/// unwinds alike.
+struct TargetGuard<'a>(&'a Cell<Option<NonNull<EventLoopWindowTarget<String>>>>);
+
+impl Drop for TargetGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(None);
+    }
+}
+
 // run_event_loop_detached
 
 /// Run the event loop with the GIL released.
 ///
-/// We box the EventLoop, convert the Box to a raw pointer, and wrap it in
-/// ``SendPtr`` so the closure satisfies pyo3's ``Send`` bound. The Box is
-/// reconstructed on the other side of ``detach()`` — still on the same thread.
+/// The caller boxes the EventLoop first so the `EventLoopWindowTarget`
+/// pointer stored in ``TaoEventLoop::target`` points at stable heap memory
+/// (the ELWT lives inline inside the platform EventLoop). We take the Box,
+/// convert it to a raw pointer, and wrap it in ``SendPtr`` so the closure
+/// satisfies pyo3's ``Send`` bound. The Box is reconstructed on the other
+/// side of ``detach()`` — still on the same thread — and dropped when
+/// ``run_return`` returns, which keeps the heap allocation alive for the
+/// entire run.
 ///
 /// # Safety
 ///
 /// Caller must ensure this runs on the main thread.
 unsafe fn run_event_loop_detached(
     py: Python<'_>,
-    event_loop: EventLoop<String>,
+    event_loop: Box<EventLoop<String>>,
     callback: Py<PyAny>,
 ) {
-    let el_ptr: *mut EventLoop<String> = Box::into_raw(Box::new(event_loop));
+    let el_ptr: *mut EventLoop<String> = Box::into_raw(event_loop);
     let send_ptr = SendPtr(el_ptr);
 
     py.detach(move || {
@@ -113,18 +101,14 @@ unsafe fn run_event_loop_detached(
         // during OS modal loops (e.g. window resize on Windows/macOS)
         // tao defers returning until the gesture ends — events keep
         // flowing, only the return is delayed. Known limitation.
-        el.run_return(move |event, elwt, control_flow| {
+        el.run_return(move |event, _elwt, control_flow| {
             *control_flow = ControlFlow::Wait;
-
-            // Stash ELWT pointer for build() during this callback.
-            RUNNING_PTR.with(|c| c.set(Some(NonNull::from(elwt))));
 
             // Re-acquire the GIL to create Python event objects.
             Python::attach(|py| {
                 let evt = match build_event(py, &event) {
                     Some(e) => e,
                     None => {
-                        RUNNING_PTR.with(|c| c.set(None));
                         return;
                     }
                 };
@@ -144,16 +128,10 @@ unsafe fn run_event_loop_detached(
                 }
                 *control_flow = cf.get();
             });
-
-            // Clear the pointer — no longer valid after callback returns.
-            RUNNING_PTR.with(|c| c.set(None));
         });
 
         // Box<EventLoop> is dropped here after run_return() returns.
     });
-
-    // Paranoia: clear the pointer after run() returns.
-    RUNNING_PTR.with(|c| c.set(None));
 }
 
 // TaoEventLoop
@@ -166,7 +144,18 @@ unsafe fn run_event_loop_detached(
 ///    requires it.
 #[pyclass(unsendable)]
 pub struct TaoEventLoop {
-    pub inner: Option<EventLoop<String>>,
+    /// RefCell so ``run(&self)`` can consume the EventLoop without holding
+    /// a mutable pyclass borrow: the detach closure re-enters Python while
+    /// the loop runs (e.g. ``TaoWindow(event_loop, ...)`` from an event
+    /// callback), and pyo3 rejects that under an outstanding ``&mut self``.
+    inner: RefCell<Option<EventLoop<String>>>,
+    /// The `EventLoopWindowTarget` pointer: set when `run()` starts,
+    /// cleared when it returns. `run()` boxes the EventLoop first, so the
+    /// pointer points at the Box's heap allocation — the Box stays alive
+    /// inside the detach closure for the whole run_return, keeping the
+    /// heap address stable. Accessed only from the main thread
+    /// (TaoEventLoop is unsendable).
+    target: Cell<Option<NonNull<EventLoopWindowTarget<String>>>>,
 }
 
 #[pymethods]
@@ -174,7 +163,10 @@ impl TaoEventLoop {
     #[new]
     fn new() -> Self {
         let el = EventLoopBuilder::<String>::with_user_event().build();
-        TaoEventLoop { inner: Some(el) }
+        TaoEventLoop {
+            inner: RefCell::new(Some(el)),
+            target: Cell::new(None),
+        }
     }
 
     /// Run the event loop. Calls ``callback(event)`` for each interesting event.
@@ -186,28 +178,69 @@ impl TaoEventLoop {
     /// or ``EventLoopControl.Continue`` (or ``None``) to keep running.
     ///
     /// .. warning::
-    ///    ``TaoWindowBuilder.build()`` **only** works during event callbacks
-    ///    (i.e. while ``run()`` is active). Call it from within your event
-    ///    handler or a ``call_on_main`` dispatch.
-    fn run(&mut self, py: Python<'_>, callback: Py<PyAny>) {
-        let event_loop = self.inner.take().expect("EventLoop already consumed");
+    ///    ``TaoWindow(event_loop, ...)`` **only** works while ``run()`` is
+    ///    active (the ``EventLoopWindowTarget`` pointer is valid only for
+    ///    its duration). Call it from within your event handler or a
+    ///    ``call_on_main`` dispatch.
+    fn run(&self, py: Python<'_>, callback: Py<PyAny>) {
+        // Box the EventLoop FIRST, then take the ELWT pointer from the box.
+        // The `EventLoopWindowTarget` lives inline inside the platform
+        // EventLoop (e.g. `window_target: RootELW<T>` on Windows), so a
+        // pointer taken from `self.inner` would dangle as soon as `take()`
+        // moves the EventLoop out of the slot. Boxing puts the EventLoop
+        // at a stable heap address for the whole run; moving the Box itself
+        // does not move the heap allocation.
+        let event_loop = self.inner.borrow_mut().take().expect("EventLoop already consumed");
+        let boxed = Box::new(event_loop);
+        // `EventLoop` derefs to `EventLoopWindowTarget` (tao's API for
+        // obtaining the target reference); the annotation coerces through
+        // `Deref`.
+        let target: &EventLoopWindowTarget<String> = &boxed;
+        self.target.set(Some(NonNull::from(target)));
+        // RAII: clears the Cell on drop — normal return AND panic unwinds
+        // (the Box is freed during unwind, so the pointer must not survive
+        // into a catchable PanicException).
+        let _guard = TargetGuard(&self.target);
 
         // SAFETY: We are on the main thread (enforced by pyo3's unsendable
-        // guard on TaoEventLoop). The EventLoop is converted to a raw pointer
+        // guard on TaoEventLoop). The Box is converted to a raw pointer
         // and reconstructed inside the detach closure on the same thread.
         unsafe {
-            run_event_loop_detached(py, event_loop, callback);
+            run_event_loop_detached(py, boxed, callback);
         }
+
+        // _guard drops here — after the detach closure has freed the Box.
     }
 
     /// Create a thread-safe proxy for sending events from other threads.
     fn create_proxy(&self) -> PyResult<TaoEventLoopProxy> {
-        let inner = self.inner.as_ref().ok_or_else(|| {
+        let guard = self.inner.borrow();
+        let inner = guard.as_ref().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("EventLoop already consumed")
         })?;
         Ok(TaoEventLoopProxy {
             proxy: inner.create_proxy(),
         })
+    }
+}
+
+impl TaoEventLoop {
+    /// The current `EventLoopWindowTarget` (valid while `run()` is active).
+    pub(crate) fn target(&self) -> Option<&'static EventLoopWindowTarget<String>> {
+        if let Some(ptr) = self.target.get() {
+            // SAFETY: The pointer refers to the Box's heap allocation
+            // (moving the Box does not change the heap address). The
+            // allocation stays alive in the detach closure for the whole
+            // run_return, so the pointer is valid while the closure lives.
+            // TargetGuard clears the Cell on drop — on normal return
+            // (after the Box is freed) and on panic unwinds (the Box is
+            // freed during unwind) — so a dangling pointer can never be
+            // read. TaoEventLoop is unsendable, so the pointer is only
+            // accessed on the main thread.
+            Some(unsafe { ptr.as_ref() })
+        } else {
+            None
+        }
     }
 }
 

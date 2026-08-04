@@ -12,7 +12,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<event_loop::TaoEventLoopProxy>()?;
 
     // Window
-    m.add_class::<window::TaoWindowBuilder>()?;
     m.add_class::<window::TaoWindow>()?;
 
     // Types
@@ -37,6 +36,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<events::DestroyedEvent>()?;
     m.add_class::<events::FocusedEvent>()?;
     m.add_class::<events::UnfocusedEvent>()?;
+    m.add_class::<events::ReopenEvent>()?;
     m.add_class::<events::ScaleFactorChangedEvent>()?;
     m.add_class::<events::ThemeChangedEvent>()?;
     m.add_class::<events::MouseInputEvent>()?;

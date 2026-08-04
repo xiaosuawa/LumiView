@@ -17,7 +17,7 @@ Run:
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
-from lumiview import App, Window
+from lumiview import App, Window, WindowOptions
 from lumiview.serve import ASGI
 
 # ── FastAPI app ─────────────────────────────────────────────────────────────
@@ -84,13 +84,13 @@ app = App(name="ASGIDemo")
 
 
 async def main():
-    await Window.create(
+    await Window.create(WindowOptions(
         title="FastAPI + LumiView",
         source=ASGI(fastapi_app),
         width=760,
         height=600,
         devtools=True,
-    )
+    ))
     print("FastAPI app running at lumiview://app/")
     print("Open DevTools → Network tab to see requests flowing through the custom protocol.")
 

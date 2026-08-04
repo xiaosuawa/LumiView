@@ -132,6 +132,27 @@ empty_event!(DestroyedEvent, "Window has been fully destroyed.");
 empty_event!(FocusedEvent, "Window gained keyboard focus.");
 empty_event!(UnfocusedEvent, "Window lost keyboard focus.");
 
+/// macOS only — the app was reopened (user clicked the Dock icon).
+///
+/// Not associated with a specific window: ``window_id`` is ``None`` and
+/// :attr:`has_visible_windows` reports whether any window was visible at
+/// reopen time.
+#[pyclass(extends = TaoEvent)]
+pub struct ReopenEvent {
+    #[pyo3(get)]
+    pub has_visible_windows: bool,
+}
+
+#[pymethods]
+impl ReopenEvent {
+    fn __repr__(&self) -> String {
+        format!(
+            "ReopenEvent(has_visible_windows={})",
+            self.has_visible_windows
+        )
+    }
+}
+
 /// DPI scale factor changed.
 #[pyclass(extends = TaoEvent)]
 pub struct ScaleFactorChangedEvent {
@@ -546,6 +567,19 @@ pub fn build_event(py: Python<'_>, event: &Event<'_, String>) -> Option<Py<PyAny
                 window_id: None,
             };
             let init = PyClassInitializer::from(base).add_subclass(LoopDestroyedEvent {});
+            Py::new(py, init).ok().map(|p| p.into_any())
+        }
+        Event::Reopen {
+            has_visible_windows,
+            ..
+        } => {
+            let base = TaoEvent {
+                kind: EventKind::Reopen,
+                window_id: None,
+            };
+            let init = PyClassInitializer::from(base).add_subclass(ReopenEvent {
+                has_visible_windows: *has_visible_windows,
+            });
             Py::new(py, init).ok().map(|p| p.into_any())
         }
         _ => None,

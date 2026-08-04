@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING, Any, get_type_hints
 from cattrs import Converter
 from cattrs.errors import ClassValidationError, StructureHandlerNotFoundError
 
-from lumiview._scope import BridgeContext, BridgeError, Command
+from lumiview.bridge import BridgeError
+from lumiview.scope import BridgeContext, Command
 
 if TYPE_CHECKING:
-    from lumiview._window import Window
+    from lumiview.window import Window
 
 INJECTED_TYPES = {BridgeContext}
 
@@ -35,7 +36,8 @@ def bind_arguments(
 ) -> dict[str, Any]:
     """Bind *payload* to *cmd*'s signature; returns kwargs for ``fn(**kw)``.
 
-    Raises BridgeError("invalid_argument") on any binding failure.
+    Raises :class:`~lumiview.bridge.BridgeError` (``"invalid_argument"``)
+    on any binding failure.
     """
     if not isinstance(payload, dict):
         raise BridgeError(

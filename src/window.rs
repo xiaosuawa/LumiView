@@ -3,12 +3,13 @@ use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError};
+use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use tao::dpi::{LogicalPosition, LogicalSize};
-use tao::window::{Window, WindowBuilder};
+use tao::window::{Icon, Window, WindowBuilder};
 use window_vibrancy::{NSVisualEffectMaterial, NSVisualEffectState};
 
+use crate::event_loop::TaoEventLoop;
 use crate::types::{ResizeDirection, WindowEffect, WindowHandleKind};
 
 fn effect_error(error: window_vibrancy::Error) -> PyErr {
@@ -30,193 +31,18 @@ fn interaction_error(error: tao::error::ExternalError) -> PyErr {
     }
 }
 
-// TaoWindowBuilder
-
-/// Configure a window before creation.
-///
-/// All methods mutate the builder in-place (no chaining). Call
-/// :meth:`build` once to create the :class:`TaoWindow`.
-///
-/// Example::
-///
-///     builder = TaoWindowBuilder()
-///     builder.with_title("My Window")
-///     builder.with_inner_size(800, 600)
-///     window = builder.build(event_loop)
-#[pyclass(unsendable)]
-pub struct TaoWindowBuilder {
-    builder: WindowBuilder,
-    #[cfg(target_os = "windows")]
-    transparent: bool,
-}
-
-#[pymethods]
-impl TaoWindowBuilder {
-    #[new]
-    fn new() -> Self {
-        TaoWindowBuilder {
-            builder: WindowBuilder::new(),
-            #[cfg(target_os = "windows")]
-            transparent: false,
-        }
-    }
-
-    fn with_title(&mut self, title: &str) {
-        self.builder = self.builder.clone().with_title(title);
-    }
-
-    fn with_inner_size(&mut self, width: f64, height: f64) {
-        self.builder = self
-            .builder
-            .clone()
-            .with_inner_size(LogicalSize::new(width, height));
-    }
-
-    fn with_min_inner_size(&mut self, width: f64, height: f64) {
-        self.builder = self
-            .builder
-            .clone()
-            .with_min_inner_size(LogicalSize::new(width, height));
-    }
-
-    fn with_max_inner_size(&mut self, width: f64, height: f64) {
-        self.builder = self
-            .builder
-            .clone()
-            .with_max_inner_size(LogicalSize::new(width, height));
-    }
-
-    fn with_position(&mut self, x: f64, y: f64) {
-        self.builder = self
-            .builder
-            .clone()
-            .with_position(LogicalPosition::new(x, y));
-    }
-
-    fn with_resizable(&mut self, resizable: bool) {
-        self.builder = self.builder.clone().with_resizable(resizable);
-    }
-
-    fn with_minimizable(&mut self, minimizable: bool) {
-        self.builder = self.builder.clone().with_minimizable(minimizable);
-    }
-
-    fn with_maximizable(&mut self, maximizable: bool) {
-        self.builder = self.builder.clone().with_maximizable(maximizable);
-    }
-
-    fn with_closable(&mut self, closable: bool) {
-        self.builder = self.builder.clone().with_closable(closable);
-    }
-
-    fn with_maximized(&mut self, maximized: bool) {
-        self.builder = self.builder.clone().with_maximized(maximized);
-    }
-
-    fn with_visible(&mut self, visible: bool) {
-        self.builder = self.builder.clone().with_visible(visible);
-    }
-
-    fn with_transparent(&mut self, transparent: bool) {
-        #[cfg(target_os = "windows")]
-        {
-            self.transparent = transparent;
-        }
-        self.builder = self.builder.clone().with_transparent(transparent);
-    }
-
-    fn with_decorations(&mut self, decorations: bool) {
-        self.builder = self.builder.clone().with_decorations(decorations);
-    }
-
-    /// Enable or disable Tao's native shadow for an undecorated Windows window.
-    ///
-    /// Transparent custom-chrome windows generally want this disabled because
-    /// DWM's hidden non-client border can leave a stale edge while resizing.
-    fn with_undecorated_shadow(&mut self, shadow: bool) {
-        #[cfg(target_os = "windows")]
-        {
-            use tao::platform::windows::WindowBuilderExtWindows;
-            self.builder = self.builder.clone().with_undecorated_shadow(shadow);
-        }
-        #[cfg(not(target_os = "windows"))]
-        let _ = shadow;
-    }
-
-    fn with_always_on_top(&mut self, always: bool) {
-        self.builder = self.builder.clone().with_always_on_top(always);
-    }
-
-    fn with_focused(&mut self, focused: bool) {
-        self.builder = self.builder.clone().with_focused(focused);
-    }
-
-    fn with_focusable(&mut self, focusable: bool) {
-        self.builder = self.builder.clone().with_focusable(focusable);
-    }
-
-    fn with_content_protection(&mut self, protected: bool) {
-        self.builder = self.builder.clone().with_content_protection(protected);
-    }
-
-    fn with_visible_on_all_workspaces(&mut self, visible: bool) {
-        self.builder = self.builder.clone().with_visible_on_all_workspaces(visible);
-    }
-
-    /// Set the window icon from raw RGBA pixel data.
-    ///
-    /// *width* × *height* pixels, each pixel 4 bytes (R, G, B, A).
-    /// The total length of *rgba* must be ``width * height * 4``.
-    fn with_window_icon(&mut self, width: u32, height: u32, rgba: Vec<u8>) -> PyResult<()> {
-        let icon = tao::window::Icon::from_rgba(rgba, width, height).map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("invalid icon: {e}"))
-        })?;
-        self.builder = self.builder.clone().with_window_icon(Some(icon));
-        Ok(())
-    }
-
-    /// Create the ``TaoWindow``.
-    ///
-    /// Works both before and during ``el.run()`` — the underlying
-    /// ``EventLoopWindowTarget`` pointer is captured at construction
-    /// time via a thread-local, so no event-loop reference is needed.
-    fn build(&self) -> PyResult<TaoWindow> {
-        let elwt = crate::event_loop::event_loop_target().ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("EventLoop not available")
-        })?;
-        let window = Arc::new(
-            self.builder
-                .clone()
-                .build(elwt)
-                .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?,
-        );
-        let id: u64 = {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            window.id().hash(&mut h);
-            h.finish()
-        };
-        #[cfg(target_os = "windows")]
-        let transparent_surface = if self.transparent {
-            Some(create_transparent_surface(window.clone())?)
-        } else {
-            None
-        };
-        Ok(TaoWindow {
-            inner: window,
-            id,
-            #[cfg(target_os = "windows")]
-            transparent_surface: RefCell::new(transparent_surface),
-        })
-    }
-}
-
 // TaoWindow
 
-/// A managed window created from :class:`TaoWindowBuilder`.
+/// A native window.
+///
+/// Construct directly with ``TaoWindow(event_loop, **options)`` — all
+/// options are keyword-only and ``None`` means "leave the platform
+/// default". *event_loop* must be the running :class:`TaoEventLoop`.
 ///
 /// .. warning::
-///    **Not sendable** to other Python threads. All window operations
-///    must happen on the event loop thread.
+///    **Not sendable** to other Python threads — all window operations
+///    must happen on the main thread (the event loop thread). The Python
+///    layer's ``call_on_main`` bridge dispatches operations there.
 #[pyclass(unsendable)]
 pub struct TaoWindow {
     inner: Arc<Window>,
@@ -282,6 +108,155 @@ impl TaoWindow {
 
 #[pymethods]
 impl TaoWindow {
+    /// Create a window. All options are keyword-only; ``None`` means
+    /// "leave the platform default".
+    #[new]
+    // Deliberate consequence of builder deletion: all options are keyword-only.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        event_loop,
+        *,
+        title = None, width = None, height = None,
+        min_size = None, max_size = None, position = None,
+        resizable = None, minimizable = None, maximizable = None,
+        closable = None, maximized = None, visible = None,
+        decorations = None, undecorated_shadow = None,
+        always_on_top = None, focused = None, focusable = None,
+        content_protection = None, visible_on_all_workspaces = None,
+        transparent = None, icon = None,
+    ))]
+    fn new(
+        event_loop: &TaoEventLoop,
+        title: Option<String>,
+        width: Option<f64>,
+        height: Option<f64>,
+        min_size: Option<(f64, f64)>,
+        max_size: Option<(f64, f64)>,
+        position: Option<(f64, f64)>,
+        resizable: Option<bool>,
+        minimizable: Option<bool>,
+        maximizable: Option<bool>,
+        closable: Option<bool>,
+        maximized: Option<bool>,
+        visible: Option<bool>,
+        decorations: Option<bool>,
+        undecorated_shadow: Option<bool>,
+        always_on_top: Option<bool>,
+        focused: Option<bool>,
+        focusable: Option<bool>,
+        content_protection: Option<bool>,
+        visible_on_all_workspaces: Option<bool>,
+        transparent: Option<bool>,
+        icon: Option<(u32, u32, Vec<u8>)>,
+    ) -> PyResult<TaoWindow> {
+        let elwt = event_loop.target().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "EventLoop is not running — create windows while el.run() is active",
+            )
+        })?;
+
+        // width/height must come in pairs — a lone value would be silently
+        // ignored by the builder below (keyword-only API).
+        if width.is_some() != height.is_some() {
+            return Err(PyValueError::new_err(
+                "width and height must be specified together",
+            ));
+        }
+
+        let mut b = WindowBuilder::new();
+        if let Some(title) = title {
+            b = b.with_title(title);
+        }
+        if let (Some(w), Some(h)) = (width, height) {
+            b = b.with_inner_size(LogicalSize::new(w, h));
+        }
+        if let Some((w, h)) = min_size {
+            b = b.with_min_inner_size(LogicalSize::new(w, h));
+        }
+        if let Some((w, h)) = max_size {
+            b = b.with_max_inner_size(LogicalSize::new(w, h));
+        }
+        if let Some((x, y)) = position {
+            b = b.with_position(LogicalPosition::new(x, y));
+        }
+        if let Some(v) = resizable {
+            b = b.with_resizable(v);
+        }
+        if let Some(v) = minimizable {
+            b = b.with_minimizable(v);
+        }
+        if let Some(v) = maximizable {
+            b = b.with_maximizable(v);
+        }
+        if let Some(v) = closable {
+            b = b.with_closable(v);
+        }
+        if let Some(v) = maximized {
+            b = b.with_maximized(v);
+        }
+        if let Some(v) = visible {
+            b = b.with_visible(v);
+        }
+        if let Some(v) = decorations {
+            b = b.with_decorations(v);
+        }
+        if let Some(v) = transparent {
+            b = b.with_transparent(v);
+        }
+        // Windows only: DWM's hidden non-client border can leave a stale
+        // edge while resizing transparent custom-chrome windows.
+        #[cfg(target_os = "windows")]
+        if let Some(shadow) = undecorated_shadow {
+            use tao::platform::windows::WindowBuilderExtWindows;
+            b = b.with_undecorated_shadow(shadow);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = undecorated_shadow;
+        if let Some(v) = always_on_top {
+            b = b.with_always_on_top(v);
+        }
+        if let Some(v) = focused {
+            b = b.with_focused(v);
+        }
+        if let Some(v) = focusable {
+            b = b.with_focusable(v);
+        }
+        if let Some(v) = content_protection {
+            b = b.with_content_protection(v);
+        }
+        if let Some(v) = visible_on_all_workspaces {
+            b = b.with_visible_on_all_workspaces(v);
+        }
+        if let Some((iw, ih, rgba)) = icon {
+            let ic = Icon::from_rgba(rgba, iw, ih).map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("invalid icon: {e}"))
+            })?;
+            b = b.with_window_icon(Some(ic));
+        }
+
+        let window = Arc::new(
+            b.build(elwt)
+                .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?,
+        );
+        let id: u64 = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            window.id().hash(&mut h);
+            h.finish()
+        };
+        #[cfg(target_os = "windows")]
+        let transparent_surface = if transparent.unwrap_or(false) {
+            Some(create_transparent_surface(window.clone())?)
+        } else {
+            None
+        };
+        Ok(TaoWindow {
+            inner: window,
+            id,
+            #[cfg(target_os = "windows")]
+            transparent_surface: RefCell::new(transparent_surface),
+        })
+    }
+
     /// Returns the unique identifier for this window.
     ///
     /// Use this to match events to windows in multi-window applications:
@@ -485,7 +460,7 @@ impl TaoWindow {
 
     /// Set the window icon from raw RGBA pixel data.
     fn set_window_icon(&self, width: u32, height: u32, rgba: Vec<u8>) -> PyResult<()> {
-        let icon = tao::window::Icon::from_rgba(rgba, width, height).map_err(|e| {
+        let icon = Icon::from_rgba(rgba, width, height).map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("invalid icon: {e}"))
         })?;
         self.inner.set_window_icon(Some(icon));
@@ -542,8 +517,7 @@ impl TaoWindow {
     ///     else:
     ///         wv = WebView(window.native_handle())
     ///
-    /// Returns ``0`` if the default box was disabled at window creation
-    /// (via ``WindowBuilderExtUnix::with_default_vbox(false)``).
+    /// Returns ``0`` if no default box is present.
     #[cfg(all(unix, not(target_os = "macos")))]
     fn gtk_container(&self) -> isize {
         use gtk::glib::ObjectType;

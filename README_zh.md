@@ -50,6 +50,14 @@ flowchart TB
 
 **线程模型：** 主线程（事件循环 + 原生操作）→ 异步线程（asyncio + 用户协程）→ 线程池（同步代码）。
 
+## 文档
+
+- [快速入门](docs/getting-started.md)
+- [架构与线程模型](docs/architecture.md)
+- [自定义插件](docs/plugins.md)
+- [第三方集成](docs/integrations.md)
+- [Serve 协议](docs/serve.md)
+
 ## 安装
 
 ```bash
@@ -59,17 +67,17 @@ pip install --pre lumiview
 ## 快速开始
 
 ```python
-from lumiview import App, Window
+from lumiview import App, Window, WindowOptions
 
 app = App(name="HelloLumiView")
 
 async def main():
-    win = await Window.create(
+    win = await Window.create(WindowOptions(
         title="Hello LumiView!",
         url="https://example.com",
         width=900, height=640,
         devtools=True,
-    )
+    ))
     title = await win.eval_js("document.title")
     print(f"Page title: {title}")
 
@@ -103,7 +111,7 @@ app.run(main)
 - [x] 窗口管理 (TaoWindow + Window)
 - [x] WebView 嵌入 (wryview)
 - [x] JS ↔ Python Bridge (invoke/listen IPC)
-- [x] 钩子事件系统 (AppHookEvent / WindowHookEvent)
+- [x] 事件类体系 (WindowEvent / AppEvent)
 - [x] 统一 async/sync `Task` 接口
 - [x] 静态文件服务 + WSGI 代理
 - [x] ASGI 适配 (FastAPI, Starlette 等)

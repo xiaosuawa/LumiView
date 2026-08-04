@@ -1,60 +1,14 @@
 from __future__ import annotations
 
 import inspect
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence
 
 if TYPE_CHECKING:
-    from lumiview._window import Window
+    from lumiview.window import Window
+    from lumiview.window import WindowOptions
 
-# BridgeError
-# Defined here (the shared type module) to avoid an import cycle between
-# _scope and _bridge: _bridge re-exports it for backward compatibility.
-
-
-class BridgeError(Exception):
-    """Structured error returned to JavaScript on bridge call failure.
-
-    Parameters:
-        code: Machine-readable error code (e.g. ``"invalid_argument"``).
-        message: Human-readable description.
-        data: Optional additional context (must be JSON-serializable).
-    """
-
-    def __init__(self, code: str, message: str, data: Any = None) -> None:
-        super().__init__(message)
-        self.code = code
-        self.data = data
-
-    def to_dict(self) -> dict:
-        result: dict = {"code": self.code, "message": str(self)}
-        if self.data is not None:
-            result["data"] = self.data
-        return result
-
-
-# Pattern matching (shared with lumiview.utils)
-
-
-def pattern_to_regex(pattern: str) -> re.Pattern[str]:
-    """Convert a ``*`` glob pattern to a compiled regex.
-
-    ``*`` matches any sequence (including ``/``, ``.``, ``?``); every
-    other character matches literally.
-    """
-    parts = pattern.split("*")
-    source = "^" + re.escape(parts[0])
-    for part in parts[1:]:
-        source += ".*" + re.escape(part)
-    source += "$"
-    return re.compile(source)
-
-
-def match_pattern(pattern: str, value: str) -> bool:
-    """Match *value* against a ``*`` glob pattern."""
-    return pattern_to_regex(pattern).match(value) is not None
-
+from lumiview.utils import match_pattern
 
 # Permissions
 
@@ -67,8 +21,9 @@ class ScopePermission:
     deny wins; an empty allow list means "no whitelist restriction"
     (deny-only blacklist). On the permission chain, unconfigured
     nodes are skipped; if NO node on the chain has any rule, the
-    command is rejected by default (see ``check_chain``). The Bridge
-    root is initialized with ``allow=("*",)`` unless overridden.
+    command is rejected by default (see :func:`check_chain`). The
+    :class:`Bridge` root is initialized with ``allow=("*",)`` unless
+    overridden.
     """
 
     allow: tuple[str, ...] = ()
@@ -106,13 +61,14 @@ class Command:
 
 @dataclass
 class BridgeContext:
-    """System-injected parameter — see ``_binding.INJECTED_TYPES``.
+    """System-injected parameter — see
+    :data:`~lumiview._binding.INJECTED_TYPES`.
 
-    Fields:
-        window: The Window that made this call.
+    Attributes:
+        window: The :class:`~lumiview.window.Window` that made this call.
         payload: The raw payload (when no regular parameters exist).
         command: The full command name.
-        scope: The scope node the command is registered on.
+        scope: The :class:`Scope` node the command is registered on.
     """
 
     window: "Window"
@@ -123,9 +79,22 @@ class BridgeContext:
 
 @dataclass
 class InitContext:
-    """Context threaded through the on_init chain at window creation."""
+    """Context passed to :meth:`Plugin.on_init` (and
+    ``Bridge._run_on_init``).
+
+    Attributes:
+        inject_script: JavaScript to inject into the page.
+        window: The :class:`~lumiview.window.Window` shell under
+            construction (before tao/webview creation).
+        options: The :class:`~lumiview.window.WindowOptions` being
+            applied. Injected by ``Window.create`` — plugins may
+            register event hooks here so early events
+            (``PageLoadStarted`` etc.) are not lost.
+    """
 
     inject_script: str = ""
+    window: Window | None = None
+    options: WindowOptions | None = None
 
 
 # Scope
@@ -171,15 +140,6 @@ class Scope:
             parts.append(local)
         return ".".join(parts)
 
-    @property
-    def _depth(self) -> int:
-        depth = 0
-        node = self._parent
-        while node is not None:
-            depth += 1
-            node = node._parent
-        return depth
-
     # Tree building
 
     def scope(self, name: str) -> Scope:
@@ -203,8 +163,16 @@ class Scope:
         """Register a command — decorator or direct call.
 
         ``@scope.command`` / ``@scope.command(name=...)`` /
-        ``scope.command(fn)`` all work; inside ``Scope.__init__`` use
-        ``self.command(self.minimize)``.
+        ``scope.command(fn)`` all work; inside a subclass constructor
+        use ``self.command(self.minimize)``.
+
+        Parameters:
+            fn: The callable to register.
+            name: Override the command name (defaults to the function
+                name).
+            replace: Allow overwriting an existing command with the
+                same name.
+            strict: Reject unexpected payload keys on bridge calls.
         """
         if fn is None:
 
@@ -231,8 +199,6 @@ class Scope:
                     f"Command {fn.__name__!r} cannot use *args or **kwargs"
                 )
         local = name or fn.__name__
-        if "." in local:
-            raise ValueError(f"Command name {local!r} must not contain '.'")
         if local in self._commands and not replace:
             raise ValueError(
                 f"Command {local!r} already registered in scope "
@@ -250,8 +216,9 @@ class Scope:
         An instance can be mounted exactly once — re-mounting it would
         rewrite its parent pointer and silently change the permission
         chain of the tree it already belongs to. Custom mount names are
-        set at construction (``Scope(name=...)``); ``include()`` has no
-        prefix argument. Unnamed scopes cannot be mounted (ValueError).
+        set at construction (``Scope(name=...)``); :meth:`include` has
+        no prefix argument. Unnamed scopes cannot be mounted
+        (:class:`ValueError`).
         """
         if not isinstance(other, Scope):
             raise TypeError(
@@ -323,15 +290,37 @@ class Scope:
     # Lookup
 
     def lookup(self, full_name: str) -> Command | None:
-        """Resolve a full command name by walking the tree."""
+        """Resolve a full command name by walking the tree.
+
+        Scope and command names may contain dots: at each step the
+        longest matching scope name wins, then the longest matching
+        command name — names without dots resolve exactly as before.
+        """
         parts = full_name.split(".")
         node = self
-        for part in parts[:-1]:
-            child = node._children.get(part)
+        i = 0
+        # Descend: at each level try the longest scope-name prefix
+        # (so dotted scope names like "a.b" resolve from "a.b.cmd").
+        while i < len(parts) - 1:
+            child = None
+            for j in range(len(parts), i, -1):
+                name = ".".join(parts[i:j])
+                if name and name in node._children:
+                    child = node._children[name]
+                    i = j
+                    break
             if child is None:
-                return
+                break
             node = child
-        return node._commands.get(parts[-1])
+        # Command lookup: longest remaining name first (dotted command
+        # names like "read.log" resolve before single segments).
+        for j in range(len(parts), i, -1):
+            name = ".".join(parts[i:j])
+            if name:
+                cmd = node._commands.get(name)
+                if cmd is not None:
+                    return cmd
+        return None
 
 
 # Plugin (lifecycle hooks)
@@ -340,8 +329,8 @@ class Scope:
 class Plugin(Scope):
     """A Scope with window-lifecycle hooks.
 
-    Subclass and override ``on_init`` / ``on_ready`` to hook into
-    window creation::
+    Subclass and override :meth:`on_init` / :meth:`on_ready` to hook
+    into window creation::
 
         class MyPlugin(Plugin):
             def on_init(self, ctx: InitContext) -> InitContext:
@@ -351,9 +340,9 @@ class Plugin(Scope):
             def on_ready(self, window: Window) -> None:
                 ...
 
-    The Bridge dispatches hooks to every ``Plugin`` node found by the
-    tree walk (``isinstance`` check) — defining a method with the same
-    name on a plain :class:`Scope` is ignored.
+    The :class:`Bridge` dispatches hooks to every ``Plugin`` node found
+    by the tree walk (``isinstance`` check) — defining a method with
+    the same name on a plain :class:`Scope` is ignored.
     """
 
     def on_init(self, ctx: InitContext) -> InitContext:
@@ -371,22 +360,34 @@ def check_chain(scope: Scope, full_name: str) -> bool:
     """Walk from the command's registration node up to the tree root.
 
     Each layer checks the path relative to itself, so rule semantics
-    don't drift when a subtree is re-mounted (``include``). Layers
-    without any rules are skipped; if NO layer has any rule, the
+    don't drift when a subtree is re-mounted (:meth:`Scope.include`).
+    Layers without any rules are skipped; if NO layer has any rule, the
     command is rejected by default (safe default — an unconfigured
     chain must not accidentally allow everything).
     """
     parts = full_name.split(".")
+    # Node chain (root → registration node).
+    chain: list[Scope] = []
     node: Scope | None = scope
-    configured = False
     while node is not None:
-        perms = node._permissions
+        chain.append(node)
+        node = node._parent
+    chain.reverse()
+    # A node name may span multiple path segments when it contains
+    # dots — track the segment offset per layer, so each layer's
+    # relative path covers everything below it (the command's own
+    # name is the tail).
+    offset = 0
+    configured = False
+    for nd in chain:
+        if nd._name:
+            offset += len(nd._name.split("."))
+        perms = nd._permissions
         if perms.allow or perms.deny:
             configured = True
-            rel = ".".join(parts[node._depth:])
+            rel = ".".join(parts[offset:])
             if not perms.check(rel):
                 return False
-        node = node._parent
     return configured
 
 

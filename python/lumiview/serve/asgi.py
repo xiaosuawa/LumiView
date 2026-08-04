@@ -84,7 +84,7 @@ class ASGI(Serve):
         is guaranteed to be invoked at most once — a duplicate call
         (e.g. an app that raises after sending its final body) is dropped.
         """
-        from lumiview._app import App
+        from lumiview.app import App
 
         loop = App.get()._async_loop
         if loop is None:

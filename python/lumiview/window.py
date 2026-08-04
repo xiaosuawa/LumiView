@@ -1,0 +1,1434 @@
+from __future__ import annotations
+
+import asyncio
+import functools
+import json
+import logging
+import sys
+import time
+import webbrowser
+from enum import Enum, auto
+from typing import TYPE_CHECKING, Any, Callable, ParamSpec, TypeVar, overload
+from urllib.parse import urlparse
+from concurrent.futures import Future
+from dataclasses import dataclass
+
+from lumiview.app import App, WindowClosedError
+from lumiview.scope import InitContext
+from lumiview.serve.base import Serve
+from wryview import DragDropEvent, PageLoadEvent, WebView
+from wryview._core import NewWindowResponse, WindowHandleKind as WryKind
+
+from lumiview.bridge import BRIDGE_SCRIPT, Bridge
+from lumiview._core import (
+    CloseRequestedEvent,
+    DestroyedEvent,
+    FocusedEvent,
+    MovedEvent,
+    RedrawRequestedEvent,
+    ResizeDirection,
+    ResizedEvent,
+    ScaleFactorChangedEvent,
+    TaoEvent,
+    TaoWindow,
+    ThemeChangedEvent,
+    UnfocusedEvent,
+    WindowEffect,
+    WindowHandleKind,
+)
+from lumiview.events import WindowBaseEvent, WindowEvent
+from lumiview.task import Task, run_async
+
+if TYPE_CHECKING:
+    from PIL.Image import Image as _PILImage
+
+    from lumiview._core import TaoWindow
+else:
+    _PILImage = object
+
+_IconSource = str | tuple[bytes, int, int] | _PILImage
+
+P = ParamSpec("P")
+R = TypeVar("R")
+TEvent = TypeVar("TEvent", bound=WindowBaseEvent)
+
+log = logging.getLogger("lumiview.window")
+
+
+class CloseBehavior(Enum):
+    """
+    What happens when the window receives a close request.
+
+    - ``Close`` — destroy the window (default).
+    - ``Hide`` — hide the window instead of destroying it.
+    - ``Ignore`` — do nothing.
+    """
+    Close = auto()
+    Hide = auto()
+    Ignore = auto()
+
+
+def main_thread(
+    fn: Callable[P, R],
+) -> Callable[P, Task[R]]:
+    """
+    Decorate a sync ``def`` method to run on the main thread.
+
+    Returns a :class:`Task` — ``await`` in async code, ``.result()``
+    in sync code.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> Task[R]:
+        app = App.get()
+        return app.call_on_main(fn, *args, **kwargs)
+
+    return wrapper
+
+
+# Window
+@dataclass(kw_only=True)
+class WindowOptions:
+    """Options for creating a :class:`Window`.
+
+    Passed to :meth:`Window.create` either as a single object
+    (``await Window.create(WindowOptions(...))``) or as keyword
+    arguments (``await Window.create(title=..., url=...)``).
+
+    Attributes:
+        title: Window title shown in the titlebar.
+        url: URL to load as the initial page.
+        html: HTML string to show instead of a URL.
+        source: One or more :class:`~lumiview.serve.Serve` handlers
+            registered as ``lumiview://`` custom protocols.
+        width: Initial inner width in logical pixels.
+        height: Initial inner height in logical pixels.
+        position: Initial outer position ``(x, y)``.
+        min_size: Minimum inner size ``(width, height)``.
+        max_size: Maximum inner size ``(width, height)``.
+        visible: Whether the window starts visible.
+        decorations: Whether the window has a native titlebar.
+        resizable: Whether the user can resize the window.
+        transparent: Whether the window background is transparent
+            (may need ``undecorated_shadow`` on some platforms).
+        maximized: Whether the window starts maximized.
+        always_on_top: Whether the window floats above other windows.
+        undecorated_shadow: Shadow for undecorated windows — ``None``
+            lets the platform decide.
+        icon: Window icon — a file path, ``(rgba_bytes, width, height)``
+            tuple, or ``PIL.Image.Image`` object.
+        focused: Whether the window starts focused.
+        focusable: Whether the window can receive focus.
+        minimizable: Whether the user can minimize the window.
+        maximizable: Whether the user can maximize the window.
+        closable: Whether the user can close the window.
+        close_behavior: The :class:`CloseBehavior` applied on close
+            request.
+        visible_on_all_workspaces: Whether the window appears on all
+            workspaces (Linux).
+        content_protection: Whether window content is hidden from
+            screenshots (Windows).
+        bridge: The :class:`~lumiview.bridge.Bridge` for IPC. ``None``
+            isolates the window — raw messages still surface as
+            :class:`~lumiview.events.WindowEvent.WebMessageReceivedEvent`.
+        untrusted: Skip bridge-script injection entirely; ``emit()``
+            events are never delivered to the page.
+        web_context: Shared WebView context passed to wryview.
+        data_directory: WebView user-data folder.
+        incognito: Start with no persistent data.
+        proxy: Proxy URL string (e.g. ``"http://host:port"``).
+        user_agent: Custom user agent for the WebView.
+        autoplay: Allow autoplaying media.
+        hotkeys_zoom: Enable the browser zoom shortcuts.
+        clipboard: Enable clipboard access.
+        javascript: Enable JavaScript execution.
+        back_forward_gestures: Enable swipe back/forward navigation
+            (Windows).
+        https_scheme: Treat the custom protocol as secure from https
+            pages (Windows WebView2).
+        default_context_menus: Show the default right-click context
+            menu.
+        background_color: WebView background ``(r, g, b, a)``.
+        headers: Extra HTTP headers for the initial load.
+        devtools: Whether developer tools are available.
+        prepare: Called with the :class:`Window` shell before the
+            native window and WebView are created — the earliest point
+            to register event handlers.
+    """
+    # Content
+    title: str = "lumiview"
+    url: str | None = None
+    html: str | None = None
+    source: Serve | list[Serve] | None = None
+    # Geometry
+    width: int = 800
+    height: int = 600
+    position: tuple[float, float] | None = None
+    min_size: tuple[float, float] | None = None
+    max_size: tuple[float, float] | None = None
+    # Appearance
+    visible: bool = True
+    decorations: bool = True
+    resizable: bool = True
+    transparent: bool = False
+    maximized: bool = False
+    always_on_top: bool = False
+    undecorated_shadow: bool | None = None
+    icon: _IconSource | None = None
+    # Behavior
+    focused: bool = True
+    focusable: bool = True
+    minimizable: bool = True
+    maximizable: bool = True
+    closable: bool = True
+    close_behavior: CloseBehavior = CloseBehavior.Close
+    visible_on_all_workspaces: bool = False
+    content_protection: bool = False
+    # Bridge
+    bridge: Bridge | None = None
+    untrusted: bool = False
+    # WebView
+    web_context: Any = None
+    data_directory: str | None = None
+    incognito: bool = False
+    proxy: str | None = None
+    user_agent: str | None = None
+    autoplay: bool = False
+    hotkeys_zoom: bool = True
+    clipboard: bool = True
+    javascript: bool = True
+    back_forward_gestures: bool = False
+    https_scheme: bool = True
+    default_context_menus: bool = True
+    background_color: tuple[int, int, int, int] | None = None
+    headers: dict[str, str] | None = None
+    devtools: bool = False
+    # Pre-creation hook
+    prepare: Callable[[Window], None] | None = None
+
+    def __post_init__(self) -> None:
+        if self.bridge is not None and self.untrusted:
+            raise ValueError("bridge and untrusted are mutually exclusive")
+
+
+class Window:
+    """A window with an embedded WebView.
+
+    Create instances with ``await Window.create(...)`` — the plain
+    constructor raises :class:`RuntimeError`, because windows can only
+    be created on the main thread inside ``app.run()``.
+
+    Every operation that touches the native window or WebView runs on
+    the main thread and returns a :class:`~lumiview.task.Task` —
+    ``await`` it in async code, or use ``.result()`` in sync code.
+    """
+    def __init__(self) -> None:
+        if TYPE_CHECKING:
+            self._app: App
+            self._win_id: int
+            self._window: TaoWindow | None
+            """Unsendable, main-thread bound. Never hold on other threads."""
+            self._webview: WebView | None
+            """Unsendable, main-thread bound. Never hold on other threads."""
+            self._bridge: Bridge
+            self._hooks: dict[type[WindowBaseEvent], list[Callable[..., Any]]]
+            self._close_behavior: CloseBehavior
+            self._bridge_enabled: bool
+            self._untrusted: bool
+            self._drag_handler_installed: bool
+            self._drag_handler_pending: bool
+        raise RuntimeError("Use 'await Window.create(...)' instead")
+    
+    @overload
+    @classmethod
+    def create(cls, _options: WindowOptions, /) -> Task[Window]: ...
+
+    @overload
+    @classmethod
+    def create(cls, **kwargs: Any) -> Task[Window]: ...
+
+    @classmethod
+    @main_thread
+    def create(
+        cls,
+        _options: WindowOptions | None = None,
+        /,
+        **kwargs: Any,
+    ) -> Window:
+        """Create a new :class:`Window`.
+
+        Two calling forms::
+
+            win = await Window.create(WindowOptions(title="MyApp", url=...))
+            win = await Window.create(title="MyApp", url=...)
+
+        The ``options.prepare`` hook (if set) receives the window shell
+        before the native window and WebView are created, so early
+        events are not lost. Returns a :class:`Task` resolving to the
+        window; must be awaited (or ``.result()``-blocked) from a
+        non-GUI thread.
+
+        Parameters:
+            _options: A prebuilt :class:`WindowOptions` object
+                (mutually exclusive with keyword arguments).
+            **kwargs: :class:`WindowOptions` fields as keyword
+                arguments.
+        """
+        app = App.get()
+        
+        if _options is not None:
+            if kwargs:
+                raise TypeError(
+                    "Cannot specify both a WindowOptions object and keyword arguments"
+                )
+            options = _options
+
+        else:
+            options = WindowOptions(**kwargs)
+
+        if options.untrusted and options.bridge is not None:
+            raise ValueError(
+                "untrusted mode cannot be combined with a bridge "
+                "(no scripts are injected)"
+            )
+
+        self = cls.__new__(cls)
+        self._app = app
+        self._window = None
+        self._webview = None
+        self._hooks = {}
+
+        ctx = InitContext(inject_script=BRIDGE_SCRIPT, window=self, options=options)
+        if not options.untrusted and options.bridge is not None:
+            ctx = options.bridge._run_on_init(ctx)
+
+        self._close_behavior = options.close_behavior
+        self._bridge = options.bridge or Bridge()
+        self._bridge_enabled = options.bridge is not None
+        self._untrusted = options.untrusted
+        self._drag_handler_installed = False
+        self._drag_handler_pending = False
+
+        # Resolve source → url / html / custom_protocols
+        custom_protocols: dict[str, Any] = {}
+        resolved_url: str | None = None
+        resolved_html: str | None = None
+
+        serve_sources: list[Serve]
+        if isinstance(options.source, (list, tuple)):
+            serve_sources = [s for s in options.source]
+        elif isinstance(options.source, str):
+            raise TypeError(
+                "source must be a Serve instance or a list of them; "
+                "use url= for a URL string"
+            )
+        elif options.source is not None:
+            serve_sources = [options.source]
+        else:
+            serve_sources = []
+
+        for serve in serve_sources:
+            if not isinstance(serve, Serve):
+                raise TypeError(
+                    f"source entries must be Serve instances; got "
+                    f"{type(serve).__name__} — subclass Serve or use "
+                    "Handler(fn) to adapt a plain function"
+                )
+            scheme = serve.scheme
+            if scheme in custom_protocols:
+                raise ValueError(f"Duplicate custom protocol scheme: {scheme!r}")
+            custom_protocols[scheme] = _make_protocol_handler(serve)
+
+        if serve_sources:
+            resolved_url = f"{serve_sources[0].scheme}://app/"
+
+        if options.url is not None:
+            resolved_url = options.url
+
+        elif options.html is not None:
+            resolved_html = options.html
+            # html takes precedence over the source's initial load;
+            # custom_protocols are still registered.
+            resolved_url = None
+
+        if options.prepare is not None:
+            options.prepare(self)
+
+        # Tao window
+        if options.icon is not None:
+            rgba, iw, ih = _load_icon(options.icon)
+            icon_data = (iw, ih, rgba)  # (width, height, rgba) per _core
+        else:
+            icon_data = None
+
+        if app._event_loop is None:
+            raise RuntimeError(
+                "App is not running — create windows inside app.run(entry)"
+            )
+
+        tao_win = TaoWindow(
+            app._event_loop,
+            title=options.title,
+            width=float(options.width),
+            height=float(options.height),
+            position=options.position,
+            min_size=options.min_size,
+            max_size=options.max_size,
+            resizable=options.resizable,
+            minimizable=options.minimizable,
+            maximizable=options.maximizable,
+            closable=options.closable,
+            maximized=options.maximized,
+            visible=options.visible,
+            decorations=options.decorations,
+            undecorated_shadow=options.undecorated_shadow,
+            always_on_top=options.always_on_top,
+            focused=options.focused,
+            focusable=options.focusable,
+            content_protection=options.content_protection,
+            visible_on_all_workspaces=options.visible_on_all_workspaces,
+            transparent=options.transparent,
+            icon=icon_data,
+        )
+
+        try:
+            # WebView
+
+            if sys.platform == "linux":
+                handle = tao_win.gtk_container()
+                kind = WryKind.Gtk
+            else:
+                handle = tao_win.native_handle()
+                our = tao_win.native_handle_kind()
+                kind = {
+                    WindowHandleKind.Win32: WryKind.Win32,
+                    WindowHandleKind.AppKit: WryKind.AppKit,
+                    WindowHandleKind.X11: WryKind.X11,
+                }[our]
+
+            webview = WebView(
+                handle,
+                width=options.width,
+                height=options.height,
+                url=resolved_url,
+                html=resolved_html,
+                transparent=options.transparent,
+                background_color=options.background_color,
+                devtools=options.devtools,
+                incognito=options.incognito,
+                user_agent=options.user_agent,
+                autoplay=options.autoplay,
+                javascript_enabled=options.javascript,
+                hotkeys_zoom=options.hotkeys_zoom,
+                initialization_script=None if self._untrusted else ctx.inject_script,
+                ipc_handler=self._make_ipc_handler(),
+                on_navigation=self._dispatch_navigation,
+                on_page_load=self._dispatch_page_load,
+                on_title_changed=lambda t: self._emit(
+                    WindowEvent.TitleChangedEvent(title=t)
+                ),
+                on_new_window=self._dispatch_new_window,
+                custom_protocols=custom_protocols or None,
+                proxy=(
+                    _parse_proxy(options.proxy) if options.proxy is not None else None
+                ),
+                back_forward_gestures=options.back_forward_gestures,
+                clipboard=options.clipboard,
+                data_directory=options.data_directory,
+                web_context=options.web_context,
+                headers=(
+                    list(options.headers.items())
+                    if options.headers is not None
+                    else None
+                ),
+                https_scheme=options.https_scheme,
+                default_context_menus=options.default_context_menus,
+                on_download_started=self._dispatch_download_started,
+                on_download_completed=self._dispatch_download_completed,
+                as_child=True,
+                parent_hwnd_kind=kind,
+            )
+        except Exception:
+            del tao_win
+            raise
+
+        self._webview = webview
+        self._window = tao_win
+
+        win_id = tao_win.id()
+        self._win_id = win_id
+        app._windows[win_id] = self
+
+        try:
+            if options.transparent:
+                # Wry creates its child HWND after Tao's parent surface. Refresh
+                # the retained transparent backing once more so the first
+                # composited frame cannot reuse Tao's opaque creation bitmap.
+                tao_win._redraw_transparent_surface()
+
+            if options.bridge is not None:
+                options.bridge._run_on_ready(self)
+        except Exception:
+            self.close()
+            del tao_win
+            raise
+
+        if self._drag_handler_pending:
+            self._install_drag_handler()
+
+        return self
+
+    # Content
+
+    @main_thread
+    def load_url(self, url: str) -> None:
+        """Navigate the WebView to *url*."""
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.load_url(url)
+
+    @main_thread
+    def load_html(self, html: str) -> None:
+        """Render *html* as the current page."""
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.load_html(html)
+
+    @main_thread
+    def reload(self) -> None:
+        """Reload the current page."""
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.reload()
+
+    # JavaScript
+
+    def eval_js(self, script: str) -> Task[str]:
+        """
+        Evaluate JavaScript in the page and return its value.
+
+        Unlike wryview's fire-and-forget ``eval_js``, this captures the
+        script's return value (as a string) into the returned
+        :class:`~lumiview.task.Task`.
+        """
+        app = App.get()
+        handle: Task[str] = Task()
+
+        def _do():
+            if self._webview is not None:
+                self._webview.eval_js_with_callback(
+                    script, lambda result: handle.set_result(result)
+                )
+            else:
+                handle.set_exception(WindowClosedError(self._win_id))
+
+        dispatched = app.call_on_main(_do)
+        if not handle.done():
+            dispatched.add_done_callback(
+                lambda d: _propagate_dispatch_failure(handle, d)
+            )
+        return handle
+
+    # Appearance
+
+    @main_thread
+    def set_icon(self, icon: _IconSource) -> None:
+        """
+        Set the window icon.
+
+        *icon* can be a file path (requires Pillow) or raw RGBA data::
+
+            win.set_icon("path/to/icon.png")
+            win.set_icon((rgba_bytes, 64, 64))
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        rgba, w, h = _load_icon(icon)
+        self._window.set_window_icon(w, h, rgba)
+
+    @main_thread
+    def apply_effect(
+        self,
+        effect: WindowEffect,
+        color: tuple[int, int, int, int] | None = None,
+    ) -> None:
+        """
+        Apply a native window background material.
+
+        Unsupported platforms or OS versions raise
+        :class:`NotImplementedError`.
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.apply_effect(effect, color)
+
+    @main_thread
+    def clear_effect(self, effect: WindowEffect) -> None:
+        """
+        Clear a native material previously applied to this window.
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.clear_effect(effect)
+
+    # Geometry
+
+    @main_thread
+    def set_bounds(self, x: float, y: float, w: float, h: float) -> None:
+        """Resize and position the WebView inside the window."""
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.set_bounds(x, y, w, h)
+
+    @main_thread
+    def set_size(self, width: float, height: float) -> None:
+        """Set the window's inner size in logical pixels."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_inner_size(width, height)
+
+    @main_thread
+    def show(self) -> None:
+        """Show the window (and un-minimize it if needed)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_visible(True)
+        self._window.set_minimized(False)
+
+    @main_thread
+    def hide(self) -> None:
+        """Hide the window."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_visible(False)
+
+    @main_thread
+    def focus(self, flag: bool = True) -> None:
+        """Give or remove keyboard focus (``flag`` = focus)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_focused(flag)
+
+    @main_thread
+    def minimize(self, flag: bool = True) -> None:
+        """Minimize or restore the window (``flag`` = minimize)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_minimized(flag)
+
+    @main_thread
+    def toggle_maximize(self) -> bool:
+        """Toggle maximize state.
+
+        Returns:
+            True if the window is now maximized.
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        maximized = not self._window.is_maximized()
+        self._window.set_maximized(maximized)
+        return maximized
+
+    @main_thread
+    def set_fullscreen(self, fullscreen: bool) -> None:
+        """
+        Enter or exit fullscreen.
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_fullscreen(fullscreen)
+
+    @main_thread
+    def is_maximized(self) -> bool:
+        """True if the window is maximized."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.is_maximized()
+
+    @main_thread
+    def start_dragging(self) -> None:
+        """Start an OS-level window drag (for custom titlebars)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.drag_window()
+
+    @main_thread
+    def start_resize_dragging(self, direction: ResizeDirection) -> None:
+        """Start an OS-level resize drag from *direction* (for custom
+        titlebars)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.drag_resize_window(direction)
+
+    @main_thread
+    def set_title(self, title: str) -> None:
+        """Set the window title."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_title(title)
+
+    @main_thread
+    def inner_size(self) -> tuple[float, float]:
+        """Return the inner size ``(width, height)`` in logical pixels."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.inner_size()
+
+    @main_thread
+    def outer_size(self) -> tuple[int, int]:
+        """Return the outer size ``(width, height)`` in logical pixels."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.outer_size()
+
+    @main_thread
+    def scale_factor(self) -> float:
+        """Return the window's DPI scale factor."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.scale_factor()
+
+    @main_thread
+    def set_outer_position(self, x: float, y: float) -> None:
+        """Move the window so its top-left corner is at ``(x, y)``."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_outer_position(x, y)
+
+    @main_thread
+    def set_min_inner_size(self, width: float, height: float) -> None:
+        """Set the minimum inner size in logical pixels."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_min_inner_size(width, height)
+
+    @main_thread
+    def set_max_inner_size(self, width: float, height: float) -> None:
+        """Set the maximum inner size in logical pixels."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_max_inner_size(width, height)
+
+    @main_thread
+    def set_resizable(self, flag: bool) -> None:
+        """Allow or disallow resizing the window."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_resizable(flag)
+
+    @main_thread
+    def set_minimizable(self, flag: bool) -> None:
+        """Allow or disallow minimizing the window."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_minimizable(flag)
+
+    @main_thread
+    def set_maximizable(self, flag: bool) -> None:
+        """Allow or disallow maximizing the window."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_maximizable(flag)
+
+    @main_thread
+    def set_closable(self, flag: bool) -> None:
+        """Allow or disallow closing the window."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_closable(flag)
+
+    @main_thread
+    def set_always_on_top(self, flag: bool) -> None:
+        """Float the window above (or below) other windows."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_always_on_top(flag)
+
+    @main_thread
+    def set_decorations(self, flag: bool) -> None:
+        """Show or hide the native titlebar and window frame."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_decorations(flag)
+
+    @main_thread
+    def set_cursor_visible(self, flag: bool) -> None:
+        """Show or hide the cursor over the window."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_cursor_visible(flag)
+
+    @main_thread
+    def set_focused(self, flag: bool) -> None:
+        """Give or remove keyboard focus."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_focused(flag)
+
+    @main_thread
+    def set_minimized(self, flag: bool) -> None:
+        """Minimize or restore the window."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_minimized(flag)
+
+    @main_thread
+    def is_minimized(self) -> bool:
+        """True if the window is minimized."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.is_minimized()
+
+    @main_thread
+    def is_visible(self) -> bool:
+        """True if the window is visible."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.is_visible()
+
+    @main_thread
+    def request_redraw(self) -> None:
+        """Ask the compositor to redraw the window."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.request_redraw()
+
+    @main_thread
+    def native_handle(self) -> int:
+        """Return the raw OS window handle (HWND / NSView / X11 window).
+
+        See :meth:`native_handle_kind` for the handle type.
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.native_handle()
+
+    @main_thread
+    def native_handle_kind(self) -> WindowHandleKind:
+        """
+        Return the OS handle type (Win32 / AppKit / X11 / Wayland / Gtk).
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.native_handle_kind()
+
+    @main_thread
+    def gtk_container(self) -> int:
+        """Return the raw GTK container widget pointer (Linux only).
+
+        Raises :class:`AttributeError` on other platforms.
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.gtk_container()
+
+    # Bridge
+
+    def emit(self, event: str, payload: Any = None) -> Task[None]:
+        """
+        Send an event to JavaScript ``window.lumiview.listen`` listeners.
+
+        JS side::
+
+            const unlisten = window.lumiview.listen("my-event", (payload) => {
+                console.log(payload);
+            });
+
+        Python side::
+
+            await win.emit("my-event", {"key": "value"})
+
+        The returned :class:`Task` resolves when the script has been
+        delivered to the WebView (not when listeners have processed it).
+        """
+        if self._untrusted:
+            # untrusted mode injects no bridge script — nothing can
+            # receive the event, so complete immediately.
+            return Task._done(None)
+
+        app = App.get()
+        handle: Task[None] = Task()
+
+        payload_json = json.dumps(
+            {"event": event, "payload": payload},
+            default=str,
+        )
+        script = f"window.lumiview._dispatchEvent({payload_json})"
+
+        def _do():
+            if self._webview is not None:
+                self._webview.eval_js_with_callback(
+                    script, lambda _result: handle.set_result(None)
+                )
+            else:
+                handle.set_exception(WindowClosedError(self._win_id))
+
+        dispatched = app.call_on_main(_do)
+        if not handle.done():
+            dispatched.add_done_callback(
+                lambda d: _propagate_dispatch_failure(handle, d)
+            )
+        return handle
+
+    # Events
+
+    def on(self, event: type[WindowBaseEvent]):
+        """
+        Register a handler for an event class::
+
+            win.on(WindowEvent.TitleChangedEvent)(handler)
+
+        The handler receives the event object.
+        """
+        if event is WindowEvent.DragEvent:
+            if self._webview is not None:
+                if not self._drag_handler_installed:
+                    self._install_drag_handler()
+            else:
+                # Registered before the WebView exists (e.g. the
+                # ``prepare`` hook) — install once creation completes.
+                self._drag_handler_pending = True
+
+        def decorator(fn):
+            self._hooks.setdefault(event, []).append(fn)
+            return fn
+
+        return decorator
+
+    @main_thread
+    def _install_drag_handler(self) -> None:
+        """
+        Install the wryview drag-drop handler (lazy, main thread).
+
+        Wiring it at creation unconditionally would disable WebView2's
+        built-in external-file drops on Windows.
+        """
+        if self._drag_handler_installed or self._webview is None:
+            return
+        self._webview.set_drag_drop_handler(self._dispatch_drag_drop)
+        self._drag_handler_installed = True
+
+    def _emit(self, evt: WindowBaseEvent) -> Future[None] | None:
+        """
+        Dispatch *evt* to handlers registered for its class.
+
+        Returns a completion :class:`Future` or ``None`` when there is
+        no loop or no handlers. ``evt.window`` is set to this window.
+        """
+        evt.window = self
+        if self._app._async_loop is None:
+            return
+
+        handlers = self._hooks.get(type(evt), [])
+
+        if not handlers:
+            return
+
+        done: Future[None] = Future()
+
+        async def _dispatch() -> None:
+            try:
+                for fn in handlers:
+                    try:
+                        await run_async(fn, evt, pool=self._app._threadpool)
+                    except Exception:
+                        logging.getLogger("lumiview.window").exception(
+                            f"Error in {type(evt).__name__} handler: {fn}",
+                        )
+            finally:
+                done.set_result(None)
+
+        loop = self._app._async_loop
+        assert loop is not None
+
+        loop.call_soon_threadsafe(lambda: asyncio.create_task(_dispatch()))
+
+        return done
+
+    def _dispatch_preventable(self, evt: TEvent) -> TEvent:
+        """
+        Dispatch *evt* and wait for handlers to finish.
+
+        Callers need ``prevent()`` / ``open_in()`` / ``save_to()``
+        outcomes to decide the native default behavior. On the main
+        thread, queued commands are drained while waiting to avoid
+        deadlock.
+        """
+        done = self._emit(evt)
+        if done is None:
+            return evt
+        if self._app.is_main_thread():
+            # Unbounded wait: the asyncio loop must stay alive while a
+            # preventable dispatch is in flight — if the loop stops
+            # mid-dispatch (shutdown race), this wait never terminates.
+            while not done.done():
+                self._app._drain_commands()
+        else:
+            done.result()
+        return evt
+
+    # wryview callback dispatch
+
+    def _dispatch_page_load(self, ev: PageLoadEvent, url: str) -> None:
+        """
+        wryview ``on_page_load`` callback — dispatch a page event.
+        """
+        if ev == PageLoadEvent.Started:
+            self._emit(WindowEvent.PageLoadStartedEvent(url=url))
+        else:
+            self._emit(WindowEvent.PageLoadFinishedEvent(url=url))
+
+    def _dispatch_navigation(self, url: str) -> bool:
+        """
+        wryview ``on_navigation`` callback — ``False`` blocks.
+        """
+        evt = self._dispatch_preventable(WindowEvent.NavigationRequestedEvent(url=url))
+        return not evt.prevented
+
+    def _dispatch_new_window(self, url: str) -> NewWindowResponse:
+        """
+        wryview ``on_new_window`` callback — decide the response.
+
+        wry only supports ``Allow``/``Deny`` (no URL redirect), so
+        ``open_in(url)`` opens *url* in the system browser. Default:
+        deny the in-webview window and open it externally.
+        """
+        evt = self._dispatch_preventable(WindowEvent.NewWindowRequestedEvent(url=url))
+        open_url = evt._open_url
+        if open_url is not None:
+            try:
+                webbrowser.open(open_url)
+            except Exception:
+                pass
+        elif not evt.prevented:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+        return NewWindowResponse.Deny
+
+    def _dispatch_download_started(self, url: str, suggested_path: str) -> bool | str:
+        """
+        wryview ``on_download_started`` callback.
+
+        Returns ``True`` to allow, ``False`` to cancel, or a string
+        path to redirect the download.
+        """
+        evt = self._dispatch_preventable(
+            WindowEvent.DownloadStartedEvent(url=url, suggested_path=suggested_path)
+        )
+        save_path = evt._save_path
+        if save_path is not None:
+            return save_path
+        if evt.prevented:
+            return False
+        return True
+
+    def _dispatch_download_completed(
+        self, url: str, saved_path: str | None, success: bool
+    ) -> None:
+        """
+        wryview ``on_download_completed`` callback — fire the event.
+        """
+        self._emit(
+            WindowEvent.DownloadCompletedEvent(
+                url=url, saved_path=saved_path, success=success
+            )
+        )
+
+    def _dispatch_drag_drop(
+        self, ev: DragDropEvent, paths: list[str], position: tuple[int, int]
+    ) -> bool:
+        """
+        wryview ``drag_drop_handler`` callback — dispatch the event.
+
+        Returns whether at least one handler received the event.
+        """
+        if ev == DragDropEvent.Unknown:  # future variants
+            return False
+        return (
+            self._emit(WindowEvent.DragEvent(kind=ev, paths=paths, position=position))
+            is not None
+        )
+
+    # Lifecycle
+
+    def _on_tao_event(self, event: TaoEvent) -> None:
+        """
+        Handle a tao window event routed from the app (GUI thread).
+        """
+        if isinstance(event, ResizedEvent):
+            if self._webview is not None and self._window is not None:
+                sf = self._window.scale_factor()
+                self._webview.set_bounds(0, 0, event.width / sf, event.height / sf)
+                # Resize the child HWND first, then replace the parent
+                # backing surface. This prevents either old edge from
+                # surviving into the newly composed frame.
+                self._window._redraw_transparent_surface()
+            self._emit(
+                WindowEvent.ResizedEvent(
+                    width=int(event.width), height=int(event.height)
+                )
+            )
+
+        elif isinstance(event, MovedEvent):
+            self._emit(WindowEvent.MovedEvent(x=int(event.x), y=int(event.y)))
+
+        elif isinstance(event, FocusedEvent):
+            self._emit(WindowEvent.FocusedEvent())
+
+        elif isinstance(event, UnfocusedEvent):
+            self._emit(WindowEvent.UnfocusedEvent())
+
+        elif isinstance(event, ScaleFactorChangedEvent):
+            self._emit(
+                WindowEvent.ScaleFactorChangedEvent(
+                    scale_factor=event.scale_factor,
+                    new_scale_factor=event.new_scale_factor,
+                )
+            )
+
+        elif isinstance(event, ThemeChangedEvent):
+            self._emit(WindowEvent.ThemeChangedEvent(theme=event.theme))
+
+        elif isinstance(event, RedrawRequestedEvent):
+            if self._window is not None:
+                self._window._redraw_transparent_surface()
+
+        elif isinstance(event, CloseRequestedEvent):
+            self._request_close_now()
+
+        elif isinstance(event, DestroyedEvent):
+            # Safety net: if the OS destroys the window independently
+            # (e.g. user kills the process, or platform-specific behavior),
+            # ensure we clean up tracking and WebView resources.
+            if self._webview is not None:
+                try:
+                    self._webview.close()
+                except Exception:
+                    pass
+            self._window = None
+            self._webview = None
+            self._app._remove_window(self._win_id)
+
+    @main_thread
+    def request_close(self) -> None:
+        """
+        Apply this window's configured ``close_behavior``.
+        """
+        self._request_close_now()
+
+    def _request_close_now(self) -> None:
+        """
+        Apply ``close_behavior`` immediately on the GUI thread.
+
+        Dispatches the preventable
+        :class:`~lumiview.events.WindowEvent.CloseRequestedEvent` first —
+        a handler may call :meth:`~lumiview.events.WindowBaseEvent.prevent`
+        to cancel the close.
+        """
+        evt = self._dispatch_preventable(WindowEvent.CloseRequestedEvent())
+        if evt.prevented:
+            return
+
+        behavior = self._close_behavior
+        if behavior == CloseBehavior.Ignore:
+            return
+        if behavior == CloseBehavior.Hide:
+            if self._window is not None:
+                self._window.set_visible(False)
+            return
+        self.close()
+
+    @main_thread
+    def close(self) -> None:
+        """
+        Close the window and destroy its resources.
+        """
+        if self._webview is not None:
+            self._webview.close()
+        self._window = None
+        self._webview = None
+        self._app._remove_window(self._win_id)
+
+    # WebView capabilities (§11)
+
+    @main_thread
+    def open_devtools(self) -> None:
+        """Open the developer tools window."""
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.open_devtools()
+
+    @main_thread
+    def close_devtools(self) -> None:
+        """Close the developer tools window."""
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.close_devtools()
+
+    @main_thread
+    def is_devtools_open(self) -> bool:
+        """True if the developer tools window is open."""
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        return self._webview.is_devtools_open()
+
+    @main_thread
+    def zoom(self, scale: float) -> None:
+        """
+        Set the page zoom level. 1.0 = 100%, 1.5 = 150%.
+        """
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.zoom(scale)
+
+    @main_thread
+    def print(self) -> None:
+        """
+        Open the system print dialog for the current page.
+        """
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.print()
+
+    @main_thread
+    def set_background_color(self, r: int, g: int, b: int, a: int = 255) -> None:
+        """
+        Set the WebView background colour before content loads.
+        """
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.set_background_color(r, g, b, a)
+
+    @main_thread
+    def cookies(self) -> list[dict]:
+        """
+        Return all cookies as dicts with name, value, domain, path, etc.
+        """
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        raw = self._webview.cookies()
+        return [
+            {
+                "name": c.name,
+                "value": c.value,
+                "domain": c.domain,
+                "path": c.path,
+                "secure": c.secure,
+                "http_only": c.http_only,
+            }
+            for c in raw
+        ]
+
+    @main_thread
+    def cookies_for_url(self, url: str) -> list[dict]:
+        """
+        Return cookies applicable to *url*.
+        """
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        raw = self._webview.cookies_for_url(url)
+        return [
+            {
+                "name": c.name,
+                "value": c.value,
+                "domain": c.domain,
+                "path": c.path,
+                "secure": c.secure,
+                "http_only": c.http_only,
+            }
+            for c in raw
+        ]
+
+    @main_thread
+    def set_cookie(
+        self,
+        name: str,
+        value: str,
+        *,
+        domain: str | None = None,
+        path: str | None = None,
+    ) -> None:
+        """
+        Set a cookie.
+        """
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.set_cookie(name, value, domain, path)
+
+    @main_thread
+    def delete_cookie(self, name: str, url: str) -> None:
+        """
+        Delete a cookie by name for a specific URL.
+        """
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.delete_cookie(name, url)
+
+    @main_thread
+    def clear_all_browsing_data(self) -> None:
+        """
+        Clear all browsing data (cache, cookies, storage).
+        """
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.clear_all_browsing_data()
+
+    # Internal
+
+    @property
+    def _id(self) -> int:
+        return self._win_id
+
+    # IPC handler
+
+    def _make_ipc_handler(self) -> Callable[[str], None]:
+        """
+        Create an IPC handler that forwards messages to the Bridge.
+        """
+        def _handler(raw: str) -> None:
+            if self._untrusted:
+                self._emit(WindowEvent.WebMessageReceivedEvent(message=raw))
+            else:
+                try:
+                    if self._webview is not None:
+                        self._bridge._on_message(self, raw)
+                except Exception:
+                    log.exception("IPC handler raised an unexpected exception")
+                finally:
+                    self._emit(WindowEvent.WebMessageReceivedEvent(message=raw))
+
+        return _handler
+
+
+# Module-level helpers
+
+
+def _propagate_dispatch_failure(
+    handle: Task[Any],
+    dispatched: Future[Any],
+) -> None:
+    """
+    Propagate a failed main-thread dispatch into *handle*.
+
+    Without this, a failed ``call_on_main`` would be swallowed and
+    *handle* would stay pending forever.
+    """
+    if handle.done():
+        return
+    if dispatched.cancelled():
+        handle.cancel()
+    elif (exc := dispatched.exception()) is not None:
+        handle.set_exception(exc)
+
+
+# Helpers
+
+
+def _load_icon(icon: _IconSource) -> tuple[bytes, int, int]:
+    """
+    Resolve icon input to ``(rgba_bytes, width, height)``.
+
+    Accepts a ``(bytes, w, h)`` tuple, a file path (requires Pillow),
+    or a ``PIL.Image.Image`` object.
+    """
+    if isinstance(icon, tuple):
+        rgba, w, h = icon
+        if len(rgba) != w * h * 4:
+            raise ValueError(f"Icon data size mismatch: {len(rgba)} != {w}*{h}*4")
+        return rgba, w, h
+
+    try:
+        from PIL import Image
+
+        if isinstance(icon, Image.Image):
+            img = icon.convert("RGBA")
+
+        elif isinstance(icon, str):
+            img = Image.open(icon).convert("RGBA")
+
+        else:
+            raise TypeError(
+                f"icon must be a file path, (bytes, width, height) tuple, "
+                f"or PIL.Image.Image, got {type(icon).__name__}"
+            )
+
+        return img.tobytes(), img.width, img.height
+
+    except ImportError:
+        raise RuntimeError(
+            "Pillow is required to load icon from file path or PIL.Image.Image"
+        )
+
+
+def _parse_proxy(proxy: str) -> dict[str, str]:
+    """
+    Parse a proxy URL into the dict wryview expects.
+
+    Handles ``user:pass@`` credentials (stripped), IPv6 literals
+    (``[::1]:8080``), and type-specific default ports.
+    """
+    proxy_type = "http"
+    rest = proxy
+    if "://" in proxy:
+        proxy_type, rest = proxy.split("://", 1)
+
+    # Strip credentials — wryview's config has no user/password fields.
+    host_part = rest.rsplit("@", 1)[-1]
+
+    if host_part.startswith("["):
+        # IPv6 literal: [addr] or [addr]:port
+        if "]" in host_part:
+            host, _, tail = host_part.partition("]")
+            host += "]"
+            port = tail[1:] if tail.startswith(":") else ""
+        else:
+            host, port = host_part, ""
+    else:
+        host, sep, tail = host_part.rpartition(":")
+        if sep:
+            host, port = host, tail
+        else:
+            host, port = host_part, ""
+
+    if not port:
+        port = "443" if proxy_type == "https" else "80"
+    return {"type": proxy_type, "host": host, "port": port}
+
+
+# Custom protocol handler
+
+
+def _make_protocol_handler(serve: Serve) -> Callable[..., None]:
+    """
+    Create a wryview custom protocol handler from a Serve instance.
+    """
+    from lumiview.serve.base import Request
+
+    def _handler(
+        method: str,
+        uri: str,
+        headers: list[tuple[str, str]],
+        body: bytes,
+        respond: Callable[[int, list[tuple[str, str]], bytes], None],
+    ) -> None:
+        parsed = urlparse(uri)
+        path = parsed.path or "/"
+        query = parsed.query or ""
+
+        request = Request(
+            method=method,
+            url=uri,
+            path=path,
+            query=query,
+            headers=list(headers),
+            body=body,
+        )
+
+        try:
+            serve(request, respond)
+        except Exception:
+            log.exception("Serve handler raised an exception")
+            respond(500, [("Content-Type", "text/plain")], b"Internal Server Error")
+
+    return _handler

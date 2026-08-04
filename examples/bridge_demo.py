@@ -14,7 +14,7 @@ Run:
     python examples/bridge_demo.py
 """
 
-from lumiview import App, Bridge, BridgeError, Window
+from lumiview import App, Bridge, BridgeError, Window, WindowOptions
 
 app = App(name="BridgeDemo")
 
@@ -72,14 +72,14 @@ HTML = """<!doctype html>
 
 
 async def main():
-    await Window.create(
+    await Window.create(WindowOptions(
         title="LumiView Bridge Demo",
         html=HTML,
         width=650,
         height=450,
         devtools=True,
         bridge=bridge,
-    )
+    ))
     print("Bridge ready — click the buttons to call Python from JS.")
 
 

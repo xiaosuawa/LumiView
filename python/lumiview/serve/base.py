@@ -16,8 +16,10 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from lumiview._task import _run_async
+from lumiview.task import run_async
 
+# (status, headers, body) — must be called exactly once to deliver a
+# response; may be called synchronously or from any thread.
 RespondFn = Callable[[int, list[tuple[str, str]], bytes], None]
 
 log = logging.getLogger("lumiview.serve.base")
@@ -111,7 +113,7 @@ class Handler(Serve):
     The function receives a :class:`Request` and must return a
     :class:`Response`. Sync functions run on the App's thread pool;
     async functions run on the App's asyncio loop — both via the same
-    ``_run_async`` dispatch used for bridge commands and hook handlers::
+    ``run_async`` dispatch used for bridge commands and hook handlers::
 
         def my_handler(request: Request) -> Response:
             return Response(200, body=b"OK")
@@ -147,7 +149,7 @@ class Handler(Serve):
         Returns immediately; ``respond()`` is called from the asyncio
         thread when the handler finishes (or fails).
         """
-        from lumiview._app import App
+        from lumiview.app import App
 
         app = App.get()
         loop = app._async_loop
@@ -157,7 +159,7 @@ class Handler(Serve):
 
         async def _run() -> None:
             try:
-                result = await _run_async(self._fn, request, pool=app._threadpool)
+                result = await run_async(self._fn, request, pool=app._threadpool)
                 respond(result.status, result.headers, result.body)
             except Exception:
                 log.exception("Serve handler raised an exception")

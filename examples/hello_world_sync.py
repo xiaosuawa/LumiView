@@ -9,20 +9,20 @@ Run:
 """
 
 import time
-from lumiview import App, Window
+from lumiview import App, Window, WindowOptions
 
 app = App(name="HelloWorld")
 
 
 def main():
     # Create a window — returns Task[Window], so we await it.
-    win = Window.create(
+    win = Window.create(WindowOptions(
         title="Hello LumiView!",
         url="https://example.com",
         width=900,
         height=640,
         devtools=True,
-    ).result()
+    )).result()
 
     # eval_js returns Task[str] — await to get the result.
     title = win.eval_js("document.title").result()

@@ -13,10 +13,17 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from enum import Enum, auto
 from typing import Any, Callable, TypeVar, ParamSpec, TYPE_CHECKING
 
-from lumiview._core import TaoEventLoop, TaoEvent, EventLoopControl, UserEvent
+from lumiview._core import (
+    TaoEventLoop,
+    TaoEvent,
+    EventLoopControl,
+    LoopDestroyedEvent,
+    ReopenEvent,
+    UserEvent,
+)
 
-from lumiview._events import AppHookEvent
-from lumiview._task import Task, _run_async
+from lumiview.events import AppBaseEvent, AppEvent
+from lumiview.task import Task, run_async
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -51,18 +58,20 @@ class AppState(Enum):
 class App:
     """Desktop application.
 
-    Create one instance, configure it, then call ``app.run(entry)``.
+    Create one instance, configure it, then call :meth:`run`.
 
     Parameters:
         name: Application name (used for platform-specific identity).
         exit_on_last_window: If True (default), exit when the last window closes.
            Set to False for tray-based apps.
-        max_workers: Thread pool size for sync ``task()`` calls.
+        max_workers: Thread pool size for sync :func:`~lumiview.task.task`
+           calls.
 
-    Lifecycle: register an entry via ``run(entry)`` (main flow) and/or
-    observe via ``app.on(AppHookEvent.Ready)``. Request exit with
-    ``app.exit(code)``; cleanup code goes in ``app.on(AppHookEvent.Close)``
-    handlers (awaited during shutdown).
+    Lifecycle: register an entry via :meth:`run` (main flow) and/or
+    observe via :meth:`on` with :class:`AppEvent.ReadyEvent`. Request
+    exit with :meth:`exit`; cleanup code goes in
+    ``app.on(AppEvent.AppCloseEvent)`` handlers (awaited during
+    shutdown).
     """
 
     _instance: App | None = None
@@ -104,12 +113,11 @@ class App:
         # Async infrastructure
         self._async_loop: asyncio.AbstractEventLoop | None = None
         self._async_thread: threading.Thread | None = None
+        self._async_ready: threading.Event = threading.Event()
         self._threadpool: ThreadPoolExecutor | None = None
 
         # Hooks
-        self._hooks: dict[AppHookEvent, list[_Handler]] = {
-            evt: [] for evt in AppHookEvent
-        }
+        self._hooks: dict[type[AppBaseEvent], list[_Handler]] = {}
 
         # Windows
         self._windows: dict[int, Window] = {}
@@ -131,19 +139,27 @@ class App:
 
     @property
     def name(self) -> str:
+        """The application name (as passed to :class:`App`)."""
+
         return self._name
 
     @property
     def state(self) -> AppState:
+        """The current :class:`AppState` of the application."""
+
         return self._state
 
     # Hooks
 
-    def on(self, event: AppHookEvent):
-        """Register a handler for an app-level event.
+    def on(self, event: type[AppBaseEvent]):
+        """Register a handler for an app event class.
 
-        Handler can be sync or async — auto-detected.
-        Runs on the asyncio loop (NOT the GUI thread).
+        ``app.on(AppEvent.ReadyEvent)(handler)`` — the handler receives
+        the event object. Can be sync or async — auto-detected. Runs on
+        the asyncio loop (NOT the GUI thread).
+
+        Parameters:
+            event: The :class:`AppBaseEvent` subclass to handle.
         """
 
         def decorator(fn: F) -> F:
@@ -170,6 +186,14 @@ class App:
         """
         if self._state in (AppState.STOPPING, AppState.STOPPED):
             return Task._failed(AppClosedError(self._name))
+        if self._state == AppState.CREATED:
+            # Not running yet — a queued command would never be consumed
+            # (no tao loop, no proxy wake) and the handle would hang
+            # silently. Mirrors the not-running behavior of
+            # _submit_async/_submit_sync.
+            return Task._failed(
+                RuntimeError("App is not running — call App.run() first")
+            )
 
         if self.is_main_thread():
             try:
@@ -214,7 +238,7 @@ class App:
 
     def _respond(self, req_id: str, value: object, exc: BaseException | None) -> None:
         handle = self._pending.pop(req_id, None)
-        if handle is None:
+        if handle is None or handle.cancelled():
             return
         if exc is not None:
             handle.set_exception(exc)
@@ -256,16 +280,19 @@ class App:
         async def _run() -> None:
             try:
                 result = await fn(*args, **kwargs)
-                handle.set_result(result)
+                if not handle.cancelled():
+                    handle.set_result(result)
             except asyncio.CancelledError as exc:
                 # CancelledError is a BaseException — the generic handler
                 # below cannot catch it. Propagate it to the handle so
                 # await/.result() fail fast instead of hanging forever
                 # (e.g. tasks cancelled during app shutdown).
-                handle.set_exception(exc)
+                if not handle.cancelled():
+                    handle.set_exception(exc)
                 raise
             except Exception as exc:
-                handle.set_exception(exc)
+                if not handle.cancelled():
+                    handle.set_exception(exc)
 
         loop.call_soon_threadsafe(lambda: asyncio.create_task(_run()))
         return handle
@@ -291,19 +318,20 @@ class App:
 
     # Event dispatch (internal)
 
-    def _emit(self, event: AppHookEvent, *args: object) -> "Future[None] | None":
+    def _emit(self, event: AppBaseEvent) -> "Future[None] | None":
         """Dispatch an app event to registered handlers on the asyncio loop.
 
-        Returns a completion signal (a plain ``concurrent.futures.Future``
-        resolved when all handlers finish) or None when there is no loop
-        or no handlers. Callers that don't need to wait may ignore the
-        return value — only ``_handle_exit_event`` consumes it.
+        Returns a completion signal (a plain
+        :class:`concurrent.futures.Future` resolved when all handlers
+        finish) or None when there is no loop or no handlers. Callers
+        that don't need to wait may ignore the return value — only
+        ``_handle_exit_event`` consumes it.
         """
         loop = self._async_loop
         if loop is None:
             return
 
-        handlers = self._hooks.get(event, [])
+        handlers = self._hooks.get(type(event), [])
         if not handlers:
             return
 
@@ -313,9 +341,9 @@ class App:
             try:
                 for fn in handlers:
                     try:
-                        await _run_async(fn, *args, pool=self._threadpool)
+                        await run_async(fn, event, pool=self._threadpool)
                     except Exception:
-                        log.exception(f"Error in {event.name} handler: {fn}")
+                        log.exception(f"Error in {type(event).__name__} handler: {fn}")
             finally:
                 done.set_result(None)
 
@@ -331,6 +359,9 @@ class App:
         ) = None,
     ) -> int:
         """Start the application. Blocks until exit.
+
+        Must be called from the main thread; create windows inside
+        *entry* (or in :class:`AppEvent.ReadyEvent` handlers).
 
         Parameters:
             entry: An async or sync function to call once the app is ready.
@@ -380,14 +411,17 @@ class App:
         )
         self._async_thread.start()
 
-        # Wait for asyncio loop to be ready.
-        while self._async_loop is None:
-            pass  # busy-wait — very brief
-
-        self._state = AppState.RUNNING
-
-        # Run the Tao event loop (blocks main thread).
         try:
+            # Wait for the asyncio loop to be ready. _run_asyncio always
+            # signals the event (also on startup failure), so this cannot
+            # hang; a failed startup is reported below.
+            self._async_ready.wait()
+            if self._async_loop is None:
+                raise RuntimeError("Failed to start the asyncio thread")
+
+            self._state = AppState.RUNNING
+
+            # Run the Tao event loop (blocks main thread).
             self._event_loop.run(self._on_tao_event)
         except Exception:
             log.exception("Event loop crashed")
@@ -397,6 +431,7 @@ class App:
             signal.signal(signal.SIGINT, original_sigint)
 
             # Wait for Close handlers to finish before stopping the
+            # asyncio loop, so cleanup code actually runs.
             if self._close_done is not None:
                 try:
                     self._close_done.result()
@@ -465,6 +500,10 @@ class App:
             # (_remove_window, code 0) can no longer overwrite an
             # explicit exit(code).
             return
+        if self._state == AppState.CREATED:
+            # Not running yet — nothing to shut down. Ignore the request,
+            # or run() would later misreport "App already finished".
+            return
         self._exit_code = code
         self._state = AppState.STOPPING
         if self._proxy is not None:
@@ -474,20 +513,30 @@ class App:
                 pass
 
     def _run_asyncio(self, entry: Callable[..., Any] | None) -> None:
-        self._async_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._async_loop)
+        try:
+            self._async_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._async_loop)
 
-        async def _main() -> None:
-            self._emit(AppHookEvent.Ready)
+            async def _main() -> None:
+                self._emit(AppEvent.ReadyEvent())
 
-            if entry is not None:
-                try:
-                    await _run_async(entry, pool=self._threadpool)
-                except Exception:
-                    log.exception("Error in entry point")
+                if entry is not None:
+                    try:
+                        await run_async(entry, pool=self._threadpool)
+                    except Exception:
+                        log.exception("Error in entry point")
 
-        self._async_loop.create_task(_main())
-        self._async_loop.run_forever()
+            self._async_loop.create_task(_main())
+        except BaseException:
+            log.exception("Failed to start the asyncio loop")
+            self._async_ready.set()
+            return
+
+        self._async_ready.set()
+        try:
+            self._async_loop.run_forever()
+        except BaseException:
+            log.exception("Asyncio loop crashed")
 
     # Window tracking
 
@@ -511,6 +560,23 @@ class App:
                 pass  # just woke us to drain commands
             return EventLoopControl.Continue
 
+        if isinstance(event, ReopenEvent):
+            # macOS Dock reopen — app-scoped, not tied to a window.
+            # Fire-and-forget: handlers restore/create windows as they see fit.
+            self._emit(
+                AppEvent.ReopenEvent(has_visible_windows=event.has_visible_windows)
+            )
+            return EventLoopControl.Continue
+
+        if isinstance(event, LoopDestroyedEvent):
+            # The event loop is stopping. On macOS this is the only
+            # signal for Cmd+Q / app termination (tao does not intercept
+            # `applicationWillTerminate`, so windows never see a
+            # CloseRequested) — run the graceful shutdown so
+            # AppCloseEvent handlers actually execute. Idempotent via
+            # _handle_exit_event's state check.
+            return self._handle_exit_event()
+
         # Every other tao event is window-scoped — route it to the window.
         if (wid := event.window_id) is not None:
             win = self._windows.get(wid)
@@ -521,13 +587,19 @@ class App:
 
     def _handle_exit_event(self) -> EventLoopControl:
         """Graceful shutdown sequence."""
+        if self._state == AppState.STOPPING:
+            # Already shutting down — a second trigger (e.g.
+            # LoopDestroyed following an exit() request, or a window
+            # closing mid-cleanup) must not re-run handlers or re-emit
+            # AppCloseEvent.
+            return EventLoopControl.Exit
         self._state = AppState.STOPPING
 
         for win in list(self._windows.values()):
             try:
                 if win._webview is not None:
                     win._webview.close()
-                win._tao = None
+                win._window = None
                 win._webview = None
             except Exception:
                 log.exception("Error closing window")
@@ -537,7 +609,7 @@ class App:
         # Emit Close for remaining handlers. The completion signal is
         # awaited in run()'s finally block before the asyncio loop stops,
         # so cleanup handlers actually run.
-        self._close_done = self._emit(AppHookEvent.Close)
+        self._close_done = self._emit(AppEvent.AppCloseEvent())
 
         return EventLoopControl.Exit
 

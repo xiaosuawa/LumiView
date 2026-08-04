@@ -50,6 +50,14 @@ flowchart TB
 
 **Threading model:** Main thread (event loop + native ops) → Async thread (asyncio + user coroutines) → Thread pool (synchronous code).
 
+## Documentation
+
+- [Getting Started](docs/getting-started.md)
+- [Architecture & Threading Model](docs/architecture.md)
+- [Custom Plugins](docs/plugins.md)
+- [Third-Party Integrations](docs/integrations.md)
+- [Serve Protocol](docs/serve.md)
+
 ## Installation
 
 ```bash
@@ -59,17 +67,17 @@ pip install --pre lumiview
 ## Quick Start
 
 ```python
-from lumiview import App, Window
+from lumiview import App, Window, WindowOptions
 
 app = App(name="HelloLumiView")
 
 async def main():
-    win = await Window.create(
+    win = await Window.create(WindowOptions(
         title="Hello LumiView!",
         url="https://example.com",
         width=900, height=640,
         devtools=True,
-    )
+    ))
     title = await win.eval_js("document.title")
     print(f"Page title: {title}")
 
@@ -103,7 +111,7 @@ For runnable code, see the [`examples/`](examples/) directory.
 - [x] Window management (TaoWindow + Window)
 - [x] WebView embedding (wryview)
 - [x] JS ↔ Python Bridge (invoke/listen IPC)
-- [x] Hook event system (AppHookEvent / WindowHookEvent)
+- [x] Event class system (WindowEvent / AppEvent)
 - [x] Unified async/sync `Task` interface
 - [x] Static file serving + WSGI proxy
 - [x] ASGI adapter (FastAPI, Starlette, etc.)
