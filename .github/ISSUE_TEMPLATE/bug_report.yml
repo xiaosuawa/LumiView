@@ -51,7 +51,7 @@ body:
       description: |
         Run `pip show lumiview` to check. LumiView is still in pre-release (0.1.0-dev), so please always test with the latest version first.
         运行 `pip show lumiview` 查看。LumiView 仍处于预发布阶段（0.1.0-dev），请务必先测试最新版本再提交。
-      placeholder: 0.1.0-dev3
+      placeholder: 0.1.0-dev4
     validations:
       required: true
 
