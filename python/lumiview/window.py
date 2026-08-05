@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 import logging
 import sys
@@ -15,7 +14,7 @@ from dataclasses import dataclass
 from lumiview.app import App, WindowClosedError
 from lumiview.scope import InitContext
 from lumiview.serve.base import Serve
-from lumiview.utils import copy_signature_for_classmethod
+from lumiview.utils import copy_signature_for_classmethod, main_thread
 from wryview import DragDropEvent, PageLoadEvent, WebView
 from wryview._core import NewWindowResponse, WindowHandleKind as WryKind
 
@@ -82,23 +81,6 @@ class CloseBehavior(Enum):
     Close = auto()
     Hide = auto()
     Ignore = auto()
-
-
-def main_thread(
-    fn: Callable[P, R],
-) -> Callable[P, Task[R]]:
-    """
-    Decorate a sync ``def`` method to run on the main thread.
-
-    Returns a :class:`Task` — ``await`` in async code, ``.result()``
-    in sync code.
-    """
-    @functools.wraps(fn)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> Task[R]:
-        app = App.get()
-        return app.call_on_main(fn, *args, **kwargs)
-
-    return wrapper
 
 
 # Window
@@ -1032,6 +1014,22 @@ class Window:
         if self._window is None:
             raise WindowClosedError(self._win_id)
         return self._window.is_visible()
+
+    @main_thread
+    def toggle_visibility(self) -> None:
+        """Toggle the window between shown and hidden.
+
+        Visible (and not minimized) → hidden; otherwise → shown and
+        un-minimized. A single main-thread round trip — the natural fit
+        for "click the tray icon to toggle the window".
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        if self._window.is_visible() and not self._window.is_minimized():
+            self._window.set_visible(False)
+        else:
+            self._window.set_visible(True)
+            self._window.set_minimized(False)
 
     @main_thread
     def request_redraw(self) -> None:

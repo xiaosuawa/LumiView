@@ -59,6 +59,26 @@ class TaoEventLoop:
         """The monitor that contains the given physical screen point."""
         ...
 
+    # macOS only
+    def set_activation_policy(self, policy: ActivationPolicy) -> None:
+        """Set the app activation policy (macOS only).
+
+        Must be called **before** :meth:`run` — the EventLoop is consumed
+        by ``run()``. Mirrors ``App(activation_policy=...)``.
+        """
+        ...
+    def hide_application(self) -> None:
+        """Hide the entire application (all windows, removed from the
+        switcher); typically Cmd+H. Requires a running loop."""
+        ...
+    def show_application(self) -> None:
+        """Show the entire application again. Requires a running loop."""
+        ...
+    def hide_other_applications(self) -> None:
+        """Hide every other running application; typically Cmd+Option+H.
+        Requires a running loop."""
+        ...
+
 class TaoEventLoopProxy:
     """Thread-safe handle for sending user events into the event loop.
 
@@ -926,9 +946,269 @@ class DeviceTextEvent(TaoEvent):
         """The Unicode code point of the character."""
         ...
 
+# ── Menus (muda) ────────────────────────────────────────────────────────────
+
+class ActivationPolicy(Enum):
+    """App activation policy — macOS only (regular app, accessory/agent
+    app, or prohibited). Passed to :meth:`TaoEventLoop.set_activation_policy`
+    **before** the event loop runs."""
+
+    Regular: ActivationPolicy
+    """Regular app with a Dock icon and a menu bar."""
+
+    Accessory: ActivationPolicy
+    """Accessory app: no Dock icon, no menu bar (agent/menu bar apps)."""
+
+    Prohibited: ActivationPolicy
+    """The app cannot be activated at all."""
+
+class MenuItemActivatedEvent(TaoEvent):
+    """A menu item was activated (app menu, window menu bar, or tray menu).
+
+    Lightweight and thread-safe — the Python dispatcher resolves the id
+    against the registered menu item wrappers.
+    """
+
+    @property
+    def id(self) -> str:
+        """The item's id string (as passed at construction)."""
+        ...
+
+class TaoMenuItem:
+    """A plain menu item. Unsendable — created and used on the main thread."""
+
+    def __init__(
+        self,
+        id: str,
+        text: str,
+        enabled: bool = True,
+        accelerator: str | None = None,
+    ) -> None:
+        """Create a menu item. *accelerator* uses muda syntax
+        (``"CmdOrCtrl+Shift+K"``); a malformed string raises ``ValueError``.
+        """
+        ...
+
+    @property
+    def id(self) -> str: ...
+    def set_text(self, text: str) -> None: ...
+    def set_enabled(self, enabled: bool) -> None: ...
+    def is_enabled(self) -> bool: ...
+    def set_accelerator(self, accelerator: str | None) -> None:
+        """Replace the accelerator (``None`` removes it)."""
+        ...
+
+class TaoCheckMenuItem:
+    """A checkable menu item (toggle with a checkmark). Unsendable."""
+
+    def __init__(
+        self,
+        id: str,
+        text: str,
+        enabled: bool = True,
+        checked: bool = False,
+        accelerator: str | None = None,
+    ) -> None: ...
+
+    @property
+    def id(self) -> str: ...
+    def set_text(self, text: str) -> None: ...
+    def set_enabled(self, enabled: bool) -> None: ...
+    def is_enabled(self) -> bool: ...
+    def set_checked(self, checked: bool) -> None: ...
+    def is_checked(self) -> bool: ...
+    def set_accelerator(self, accelerator: str | None) -> None: ...
+
+class TaoSubmenu:
+    """A submenu: a menu item that contains other items. Unsendable."""
+
+    def __init__(self, id: str, text: str, enabled: bool = True) -> None: ...
+
+    @property
+    def id(self) -> str: ...
+    def set_text(self, text: str) -> None: ...
+    def set_enabled(self, enabled: bool) -> None: ...
+    def is_enabled(self) -> bool: ...
+
+    def append(self, item: "TaoMenuItem | TaoSubmenu | TaoCheckMenuItem | TaoPredefinedMenuItem") -> None: ...
+    def prepend(self, item: "TaoMenuItem | TaoSubmenu | TaoCheckMenuItem | TaoPredefinedMenuItem") -> None: ...
+    def insert(self, item: "TaoMenuItem | TaoSubmenu | TaoCheckMenuItem | TaoPredefinedMenuItem", position: int) -> None: ...
+    def remove(self, item: "TaoMenuItem | TaoSubmenu | TaoCheckMenuItem | TaoPredefinedMenuItem") -> None: ...
+
+    def set_as_windows_menu_for_nsapp(self) -> None:
+        """macOS: register this submenu as the app's "Window" menu."""
+        ...
+    def set_as_help_menu_for_nsapp(self) -> None:
+        """macOS: register this submenu as the app's Help menu."""
+        ...
+
+class TaoPredefinedMenuItem:
+    """A system-behavior menu item (copy, quit, separator, ...).
+
+    Predefined items perform their OS action natively and **do not**
+    generate activation events.
+    """
+
+    def __init__(
+        self,
+        kind: str,
+        text: str | None = None,
+        name: str | None = None,
+        version: str | None = None,
+    ) -> None:
+        """*kind* selects the system behavior; *name*/*version* feed the
+        "About" dialog only. Raises ``ValueError`` for an unknown kind.
+        """
+        ...
+
+class TaoMenu:
+    """A root menu — app menu bar (macOS), window menu bar (Windows), or
+    the menu attached to a tray icon. Unsendable.
+
+    Requires a running app (the event loop must exist to deliver events).
+    """
+
+    def __init__(self) -> None:
+        """Create an empty root menu. Raises ``RuntimeError`` before
+        ``App.run()``."""
+        ...
+
+    def append(self, item: "TaoMenuItem | TaoSubmenu | TaoCheckMenuItem | TaoPredefinedMenuItem") -> None: ...
+    def append_items(self, items: list["TaoMenuItem | TaoSubmenu | TaoCheckMenuItem | TaoPredefinedMenuItem"]) -> None: ...
+    def prepend(self, item: "TaoMenuItem | TaoSubmenu | TaoCheckMenuItem | TaoPredefinedMenuItem") -> None: ...
+    def insert(self, item: "TaoMenuItem | TaoSubmenu | TaoCheckMenuItem | TaoPredefinedMenuItem", position: int) -> None: ...
+    def remove(self, item: "TaoMenuItem | TaoSubmenu | TaoCheckMenuItem | TaoPredefinedMenuItem") -> None: ...
+
+    def init_for_nsapp(self) -> None:
+        """macOS: install this menu as the application menu bar."""
+        ...
+    def remove_for_nsapp(self) -> None:
+        """macOS: remove this menu from the application menu bar."""
+        ...
+
+    def init_for_hwnd(self, hwnd: int) -> None:
+        """Windows: attach this menu as the menu bar of the window with
+        the given HWND (from ``TaoWindow.native_handle()``)."""
+        ...
+    def remove_for_hwnd(self, hwnd: int) -> None:
+        """Windows: detach this menu from the given window's menu bar."""
+        ...
+
+# ── Tray (tray-icon) ────────────────────────────────────────────────────────
+
+class TrayIconClickEvent(TaoEvent):
+    """A click on a tray icon."""
+
+    @property
+    def id(self) -> str: ...
+    @property
+    def position(self) -> tuple[float, float]:
+        """Physical pointer position ``(x, y)``."""
+        ...
+    @property
+    def rect(self) -> tuple[float, float, float, float]:
+        """Physical tray icon bounds ``(x, y, width, height)``."""
+        ...
+    @property
+    def button(self) -> MouseButton: ...
+    @property
+    def button_state(self) -> ElementState: ...
+
+class TrayIconDoubleClickEvent(TaoEvent):
+    """A double click on a tray icon (Windows only)."""
+
+    @property
+    def id(self) -> str: ...
+    @property
+    def position(self) -> tuple[float, float]: ...
+    @property
+    def rect(self) -> tuple[float, float, float, float]: ...
+    @property
+    def button(self) -> MouseButton: ...
+
+class TrayIconEnterEvent(TaoEvent):
+    """The pointer entered the tray icon region."""
+
+    @property
+    def id(self) -> str: ...
+    @property
+    def position(self) -> tuple[float, float]: ...
+    @property
+    def rect(self) -> tuple[float, float, float, float]: ...
+
+class TrayIconMoveEvent(TaoEvent):
+    """The pointer moved over the tray icon region."""
+
+    @property
+    def id(self) -> str: ...
+    @property
+    def position(self) -> tuple[float, float]: ...
+    @property
+    def rect(self) -> tuple[float, float, float, float]: ...
+
+class TrayIconLeaveEvent(TaoEvent):
+    """The pointer left the tray icon region."""
+
+    @property
+    def id(self) -> str: ...
+    @property
+    def position(self) -> tuple[float, float]: ...
+    @property
+    def rect(self) -> tuple[float, float, float, float]: ...
+
+class TaoTrayIcon:
+    """A system tray icon. Unsendable — created and dropped on the main
+    thread; dropping the object removes the icon."""
+
+    def __init__(
+        self,
+        id: str,
+        icon: bytes,
+        icon_width: int,
+        icon_height: int,
+        tooltip: str | None = None,
+        menu: "TaoMenu | None" = None,
+        menu_on_left_click: bool = True,
+        menu_on_right_click: bool = True,
+    ) -> None:
+        """*icon* is raw RGBA bytes with the given width/height.
+        Raises ``RuntimeError`` before ``App.run()``."""
+        ...
+
+    @property
+    def id(self) -> str: ...
+    def set_icon(self, icon: bytes, width: int, height: int) -> None: ...
+    def set_tooltip(self, tooltip: str | None) -> None: ...
+    def set_visible(self, visible: bool) -> None: ...
+    def show_menu(self) -> None:
+        """Open the attached menu at the icon's position."""
+        ...
+    def set_icon_as_template(self, is_template: bool) -> None:
+        """macOS: render the icon as a template image."""
+        ...
+    def set_show_menu_on_left_click(self, enable: bool) -> None: ...
+    def set_show_menu_on_right_click(self, enable: bool) -> None: ...
+
 # ── Functions ───────────────────────────────────────────────────────────────
 
 def parse_key_code(text: str) -> str | None:
     """Parse a key-code name (e.g. ``"KeyW"``, ``"Space"``, ``"A"``)
     into its canonical form, or ``None`` if unknown. Case-insensitive."""
+    ...
+
+def set_loop_running(value: bool) -> None:
+    """Set or clear the crate-level "event loop is running" flag. Called
+    by ``App.run()`` — set in STARTING, cleared after the loop returns."""
+    ...
+
+def init_menu_events(callback: Callable[[MenuItemActivatedEvent], None]) -> None:
+    """Register the Python callback that receives every menu activation.
+
+    Called once by ``App.run()``; idempotent (later calls are no-ops)."""
+    ...
+
+def init_tray_events(callback: Callable[[TrayIconClickEvent | TrayIconDoubleClickEvent | TrayIconEnterEvent | TrayIconMoveEvent | TrayIconLeaveEvent], None]) -> None:
+    """Register the Python callback that receives every tray icon event.
+
+    Called once by ``App.run()``; idempotent (later calls are no-ops)."""
     ...

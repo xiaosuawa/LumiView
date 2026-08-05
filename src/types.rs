@@ -630,3 +630,51 @@ impl From<VibrancyMaterial> for NSVisualEffectMaterial {
         }
     }
 }
+
+// ActivationPolicy
+
+/// App activation policy — macOS only (regular app, accessory/agent app,
+/// or prohibited). Passed to :meth:`TaoEventLoop.set_activation_policy`
+/// **before** the event loop runs.
+#[pyclass(eq, frozen, hash, from_py_object)]
+#[derive(Clone, PartialEq, Debug, Hash)]
+pub enum ActivationPolicy {
+    /// Regular app with a Dock icon and a menu bar.
+    Regular,
+    /// Accessory app: no Dock icon, no menu bar (agent apps, menu bar apps).
+    Accessory,
+    /// Prohibited: the app cannot be activated at all.
+    Prohibited,
+}
+
+#[cfg(target_os = "macos")]
+impl From<ActivationPolicy> for tao::platform::macos::ActivationPolicy {
+    fn from(policy: ActivationPolicy) -> Self {
+        match policy {
+            ActivationPolicy::Regular => Self::Regular,
+            ActivationPolicy::Accessory => Self::Accessory,
+            ActivationPolicy::Prohibited => Self::Prohibited,
+        }
+    }
+}
+
+// Tray conversions (tray-icon's enums are subsets of tao's)
+
+impl From<tray_icon::MouseButton> for MouseButton {
+    fn from(button: tray_icon::MouseButton) -> Self {
+        match button {
+            tray_icon::MouseButton::Left => MouseButton::Left,
+            tray_icon::MouseButton::Right => MouseButton::Right,
+            tray_icon::MouseButton::Middle => MouseButton::Middle,
+        }
+    }
+}
+
+impl From<tray_icon::MouseButtonState> for ElementState {
+    fn from(state: tray_icon::MouseButtonState) -> Self {
+        match state {
+            tray_icon::MouseButtonState::Up => ElementState::Released,
+            tray_icon::MouseButtonState::Down => ElementState::Pressed,
+        }
+    }
+}

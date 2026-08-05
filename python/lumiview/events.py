@@ -19,7 +19,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from lumiview.window import Window
-    from lumiview._core import ElementState, ScrollDeltaKind, StartCause, Theme, TouchPhase
+    from lumiview._core import ElementState, MouseButton, ScrollDeltaKind, StartCause, Theme, TouchPhase
+    from lumiview.menu import MenuItem, Submenu
+    from lumiview.tray import TrayIcon
     from wryview import DragDropEvent
 
 
@@ -518,6 +520,121 @@ class AppEvent:
         """
 
         codepoint: int
+
+    # Menu events
+
+    @dataclass(slots=True, kw_only=True)
+    class MenuItemActivatedEvent(AppBaseEvent):
+        """A menu item was activated (app menu, window menu bar, or tray menu).
+
+        Predefined system items (quit, copy, ...) perform their OS action
+        natively and never emit this event.
+
+        Attributes:
+            id: The item's id string (as passed at construction).
+            menu_item: The matching
+                :class:`~lumiview.menu.MenuItem`/:class:`~lumiview.menu.Submenu`
+                wrapper, filled by the dispatcher; ``None`` when the id is
+                unknown. Prefer :meth:`~lumiview.menu.MenuItem.on_activate`
+                over matching on this field.
+        """
+
+        id: str
+        menu_item: "MenuItem | Submenu | None" = None
+
+    # Tray icon events
+
+    @dataclass(slots=True, kw_only=True)
+    class TrayIconClickEvent(AppBaseEvent):
+        """A click on a tray icon.
+
+        Attributes:
+            id: The tray icon id.
+            position: Physical pointer position ``(x, y)``.
+            rect: Physical tray icon bounds ``(x, y, width, height)``.
+            button: The mouse button (:class:`~lumiview._core.MouseButton`).
+            button_state: Pressed or released
+                (:class:`~lumiview._core.ElementState`).
+            tray: The :class:`~lumiview.tray.TrayIcon` wrapper, filled by
+                the dispatcher; ``None`` when the id is unknown.
+        """
+
+        id: str
+        position: tuple[float, float]
+        rect: tuple[float, float, float, float]
+        button: MouseButton
+        button_state: ElementState
+        tray: "TrayIcon | None" = None
+
+    @dataclass(slots=True, kw_only=True)
+    class TrayIconDoubleClickEvent(AppBaseEvent):
+        """A double click on a tray icon (Windows only).
+
+        Attributes:
+            id: The tray icon id.
+            position: Physical pointer position ``(x, y)``.
+            rect: Physical tray icon bounds ``(x, y, width, height)``.
+            button: The mouse button (:class:`~lumiview._core.MouseButton`).
+            tray: The :class:`~lumiview.tray.TrayIcon` wrapper, filled by
+                the dispatcher; ``None`` when the id is unknown.
+        """
+
+        id: str
+        position: tuple[float, float]
+        rect: tuple[float, float, float, float]
+        button: MouseButton
+        tray: "TrayIcon | None" = None
+
+    @dataclass(slots=True, kw_only=True)
+    class TrayIconEnterEvent(AppBaseEvent):
+        """The pointer entered the tray icon region.
+
+        Attributes:
+            id: The tray icon id.
+            position: Physical pointer position ``(x, y)``.
+            rect: Physical tray icon bounds ``(x, y, width, height)``.
+            tray: The :class:`~lumiview.tray.TrayIcon` wrapper, filled by
+                the dispatcher; ``None`` when the id is unknown.
+        """
+
+        id: str
+        position: tuple[float, float]
+        rect: tuple[float, float, float, float]
+        tray: "TrayIcon | None" = None
+
+    @dataclass(slots=True, kw_only=True)
+    class TrayIconMoveEvent(AppBaseEvent):
+        """The pointer moved over the tray icon region.
+
+        Attributes:
+            id: The tray icon id.
+            position: Physical pointer position ``(x, y)``.
+            rect: Physical tray icon bounds ``(x, y, width, height)``.
+            tray: The :class:`~lumiview.tray.TrayIcon` wrapper, filled by
+                the dispatcher; ``None`` when the id is unknown.
+        """
+
+        id: str
+        position: tuple[float, float]
+        rect: tuple[float, float, float, float]
+        tray: "TrayIcon | None" = None
+
+    @dataclass(slots=True, kw_only=True)
+    class TrayIconLeaveEvent(AppBaseEvent):
+        """The pointer left the tray icon region.
+
+        Attributes:
+            id: The tray icon id.
+            position: Physical pointer position ``(x, y)``.
+            rect: Physical tray icon bounds ``(x, y, width, height)``.
+            tray: The :class:`~lumiview.tray.TrayIcon` wrapper, filled by
+                the dispatcher; ``None`` when the id is unknown.
+        """
+
+        id: str
+        position: tuple[float, float]
+        rect: tuple[float, float, float, float]
+        tray: "TrayIcon | None" = None
 
 
 __all__ = [

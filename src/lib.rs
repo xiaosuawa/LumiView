@@ -1,6 +1,8 @@
 mod event_loop;
 mod events;
+mod menu;
 mod monitor;
+mod tray;
 mod types;
 mod window;
 
@@ -37,6 +39,23 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<types::StartCause>()?;
     m.add_class::<types::ProgressState>()?;
     m.add_class::<types::VibrancyMaterial>()?;
+    m.add_class::<types::ActivationPolicy>()?;
+
+    // Menus (muda)
+    m.add_class::<menu::TaoMenu>()?;
+    m.add_class::<menu::TaoMenuItem>()?;
+    m.add_class::<menu::TaoSubmenu>()?;
+    m.add_class::<menu::TaoCheckMenuItem>()?;
+    m.add_class::<menu::TaoPredefinedMenuItem>()?;
+    m.add_class::<menu::MenuItemActivatedEvent>()?;
+
+    // Tray (tray-icon)
+    m.add_class::<tray::TaoTrayIcon>()?;
+    m.add_class::<tray::TrayIconClickEvent>()?;
+    m.add_class::<tray::TrayIconDoubleClickEvent>()?;
+    m.add_class::<tray::TrayIconEnterEvent>()?;
+    m.add_class::<tray::TrayIconMoveEvent>()?;
+    m.add_class::<tray::TrayIconLeaveEvent>()?;
 
     // Events
     m.add_class::<events::TaoEvent>()?;
@@ -86,6 +105,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Functions
     m.add_function(wrap_pyfunction!(events::parse_key_code, m)?)?;
+    m.add_function(wrap_pyfunction!(event_loop::set_loop_running, m)?)?;
+    m.add_function(wrap_pyfunction!(menu::init_menu_events, m)?)?;
+    m.add_function(wrap_pyfunction!(tray::init_tray_events, m)?)?;
 
     Ok(())
 }

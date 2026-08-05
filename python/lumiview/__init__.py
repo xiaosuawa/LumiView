@@ -42,6 +42,14 @@ from lumiview.window import (
     WindowEffect,
     WindowOptions,
 )
+from lumiview.menu import (
+    Menu,
+    MenuItem,
+    Submenu,
+    CheckMenuItem,
+    PredefinedMenuItem,
+)
+from lumiview.tray import TrayIcon, TrayIconOptions
 from lumiview.bridge import Bridge, BridgeError
 from lumiview.scope import Plugin, Scope, ScopePermission, BridgeContext, InitContext
 from lumiview.task import task, Task, TaskDeadlockError
@@ -52,6 +60,7 @@ from lumiview.events import (
     AppEvent,
     AppBaseEvent,
 )
+from lumiview._core import ActivationPolicy
 from lumiview import utils
 from lumiview import plugins
 from lumiview import serve
@@ -77,6 +86,15 @@ __all__ = [
     "ProgressState",
     "Monitor",
     "VideoMode",
+    # Menus & tray
+    "Menu",
+    "MenuItem",
+    "Submenu",
+    "CheckMenuItem",
+    "PredefinedMenuItem",
+    "TrayIcon",
+    "TrayIconOptions",
+    "ActivationPolicy",
     # Events
     "Event",
     "WindowEvent",

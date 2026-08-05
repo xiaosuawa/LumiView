@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::prelude::*;
 use tao::event_loop::{
@@ -10,6 +11,30 @@ use tao::platform::run_return::EventLoopExtRunReturn;
 use crate::events::build_event;
 use crate::monitor::Monitor;
 use crate::types::EventLoopControl;
+#[cfg(target_os = "macos")]
+use crate::types::ActivationPolicy;
+
+// LOOP_RUNNING — crate-level flag distinct from TaoEventLoop::target
+//
+// ``target`` answers "is the loop actively draining right now" (the ELWT
+// pointer is only valid during run()). ``LOOP_RUNNING`` answers "has run()
+// been entered at least once" — set by App.run() before the loop starts and
+// cleared when it returns. Menu/tray construction checks this flag: native
+// menus and tray icons require a live event loop (tray icons need a message
+// loop on Windows; menus need one to deliver events).
+
+static LOOP_RUNNING: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn loop_running() -> bool {
+    LOOP_RUNNING.load(Ordering::Acquire)
+}
+
+/// Set or clear the crate-level "event loop is running" flag. Called by
+/// ``App.run()`` — set in STARTING, cleared after the loop returns.
+#[pyfunction]
+pub fn set_loop_running(value: bool) {
+    LOOP_RUNNING.store(value, Ordering::Release);
+}
 
 // SendPtr — private helper for detach()
 //
@@ -217,6 +242,50 @@ impl TaoEventLoop {
         // _guard drops here — after the detach closure has freed the Box.
     }
 
+    /// Set the app activation policy (macOS only).
+    ///
+    /// Must be called **before** :meth:`run` — the EventLoop is consumed
+    /// by ``run()``. Mirrors ``App(activation_policy=...)``.
+    #[cfg(target_os = "macos")]
+    fn set_activation_policy(&self, policy: ActivationPolicy) -> PyResult<()> {
+        use tao::platform::macos::EventLoopExtMacOS;
+        let mut guard = self.inner.borrow_mut();
+        let el = guard.as_mut().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("EventLoop already consumed")
+        })?;
+        el.set_activation_policy(policy.into());
+        Ok(())
+    }
+
+    /// Hide the entire application (macOS only) — hides all windows and
+    /// removes the app from the switcher; typically Cmd+H.
+    #[cfg(target_os = "macos")]
+    fn hide_application(&self) -> PyResult<()> {
+        use tao::platform::macos::EventLoopWindowTargetExtMacOS;
+        let target = self.running_target()?;
+        target.hide_application();
+        Ok(())
+    }
+
+    /// Show the entire application again (macOS only).
+    #[cfg(target_os = "macos")]
+    fn show_application(&self) -> PyResult<()> {
+        use tao::platform::macos::EventLoopWindowTargetExtMacOS;
+        let target = self.running_target()?;
+        target.show_application();
+        Ok(())
+    }
+
+    /// Hide every other running application (macOS only); typically
+    /// Cmd+Option+H.
+    #[cfg(target_os = "macos")]
+    fn hide_other_applications(&self) -> PyResult<()> {
+        use tao::platform::macos::EventLoopWindowTargetExtMacOS;
+        let target = self.running_target()?;
+        target.hide_other_applications();
+        Ok(())
+    }
+
     /// Create a thread-safe proxy for sending events from other threads.
     fn create_proxy(&self) -> PyResult<TaoEventLoopProxy> {
         let guard = self.inner.borrow();
@@ -265,6 +334,15 @@ impl TaoEventLoop {
 }
 
 impl TaoEventLoop {
+    /// The current `EventLoopWindowTarget` as a ``PyResult`` — used by
+    /// runtime-only operations (macOS app-level actions).
+    #[cfg(target_os = "macos")]
+    fn running_target(&self) -> PyResult<&'static EventLoopWindowTarget<String>> {
+        self.target().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("EventLoop is not running")
+        })
+    }
+
     /// The current `EventLoopWindowTarget` (valid while `run()` is active).
     pub(crate) fn target(&self) -> Option<&'static EventLoopWindowTarget<String>> {
         if let Some(ptr) = self.target.get() {

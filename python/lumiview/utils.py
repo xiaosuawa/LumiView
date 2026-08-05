@@ -3,10 +3,15 @@
 :func:`match_pattern` / :func:`pattern_to_regex` are the shared ``*``
 glob matching utilities, used by :func:`navigation_policy` here and by
 the Bridge permission chain (:mod:`lumiview.scope` imports them back).
+:func:`main_thread` lives here too — it is used by :mod:`lumiview.window`,
+:mod:`lumiview.menu` and :mod:`lumiview.tray`, and importing it from
+:mod:`lumiview.app` at module level would create a cycle (app imports the
+menu/tray modules lazily, but those import app eagerly).
 """
 
 from __future__ import annotations
 
+import functools
 import re
 from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
@@ -24,6 +29,22 @@ def copy_signature_for_classmethod(_: Callable[P, Any]):
         return fn
 
     return decorator
+
+
+def main_thread(fn: Callable[P, R]) -> Callable[P, "Task[R]"]:
+    """
+    Decorate a sync ``def`` method to run on the main thread.
+
+    Returns a :class:`Task` — ``await`` in async code, ``.result()``
+    in sync code.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> "Task[R]":
+        from lumiview.app import App  # deferred — avoids an import cycle
+
+        return App.get().call_on_main(fn, *args, **kwargs)
+
+    return wrapper
 
 
 def pattern_to_regex(pattern: str) -> re.Pattern[str]:

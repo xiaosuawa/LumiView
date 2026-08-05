@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import inspect
+import logging
 import threading
 from typing import (
     Any,
@@ -15,8 +16,6 @@ from typing import (
 
 P = ParamSpec("P")
 T = TypeVar("T")
-
-_UNSET: Any = object()
 
 # Deadlock detection
 class TaskDeadlockError(RuntimeError):
@@ -40,6 +39,27 @@ def _check_deadlock() -> None:
         raise TaskDeadlockError()
 
 
+def _log_unhandled_task_error(task: "Task[Any]") -> None:
+    """Log a failed-but-never-retrieved Task with its traceback.
+
+    Called from ``Task.__del__`` — must never raise: the interpreter may
+    already be tearing down, and an exception in ``__del__`` would only
+    get printed, not propagated.
+    """
+    try:
+        exc = task.exception()
+        if not isinstance(exc, BaseException):
+            return
+        logging.getLogger("lumiview.task").error(
+            "Task failed and its exception was never retrieved — use "
+            "await / .result() / .on_done() to handle failures: %s",
+            type(exc).__name__,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+    except Exception:
+        pass
+
+
 # Task[T] — a Future with __await__ and deadlock detection
 
 class Task(concurrent.futures.Future, Generic[T]):
@@ -52,6 +72,14 @@ class Task(concurrent.futures.Future, Generic[T]):
         task.on_done(lambda val: ...) # callback — any thread (alias for add_done_callback)
     """
 
+    def __init__(self) -> None:
+        super().__init__()
+        # Self-managed "exception was consumed" flag. Python 3.12 removed
+        # the CPython _exception_was_retrieved machinery (and the
+        # "Future exception was never retrieved" warning) entirely, so
+        # __del__ tracks consumption through the consumption APIs below.
+        self._lumi_retrieved = False
+
     def result(self, timeout: float | None = None) -> T:
         """Block until done and return the value.
 
@@ -63,13 +91,22 @@ class Task(concurrent.futures.Future, Generic[T]):
         """
         if not self.done():
             _check_deadlock()
-        return super().result(timeout)
+        try:
+            return super().result(timeout)
+        except BaseException:
+            self._lumi_retrieved = True
+            raise
 
     def exception(self, timeout: float | None = None) -> BaseException | None:
         """Block until done and return the exception (or None)."""
         if not self.done():
             _check_deadlock()
-        return super().exception(timeout)
+        try:
+            return super().exception(timeout)
+        finally:
+            # Inspecting the exception counts as consuming it (the base
+            # class's retrieved flag is gone in Python 3.12).
+            self._lumi_retrieved = True
 
     def __await__(self) -> Generator[Any, None, T]:
         """``await task`` — fresh ``wrap_future`` each time, no loop binding."""
@@ -89,6 +126,21 @@ class Task(concurrent.futures.Future, Generic[T]):
                 callback(fut.result())
 
         self.add_done_callback(_wrapper)
+
+    def __del__(self) -> None:
+        """
+        Surface unhandled task failures via logging.
+        """
+        try:
+            if (
+                self.done()
+                and not self.cancelled()
+                and self.exception() is not None
+                and not getattr(self, "_lumi_retrieved", False)
+            ):
+                _log_unhandled_task_error(self)
+        except Exception:
+            pass
 
     # Internal (called by App scheduler)
 

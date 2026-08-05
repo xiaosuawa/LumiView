@@ -6,6 +6,7 @@ import json
 import logging
 import queue
 import signal
+import sys
 import threading
 import uuid
 from collections.abc import Coroutine
@@ -14,6 +15,7 @@ from enum import Enum, auto
 from typing import Any, Callable, TypeVar, ParamSpec, TYPE_CHECKING
 
 from lumiview._core import (
+    ActivationPolicy,
     DeviceAddedEvent,
     DeviceButtonEvent,
     DeviceKeyEvent,
@@ -25,17 +27,27 @@ from lumiview._core import (
     EventLoopControl,
     LoopDestroyedEvent,
     MainEventsClearedEvent,
+    MenuItemActivatedEvent,
     NewEventsEvent,
     OpenedEvent,
     RedrawEventsClearedEvent,
     ReopenEvent,
     TaoEvent,
     TaoEventLoop,
+    TrayIconClickEvent,
+    TrayIconDoubleClickEvent,
+    TrayIconEnterEvent,
+    TrayIconLeaveEvent,
+    TrayIconMoveEvent,
     UserEvent,
+    init_menu_events,
+    init_tray_events,
+    set_loop_running,
 )
 
 from lumiview.events import AppBaseEvent, AppEvent
 from lumiview.task import Task, run_async
+from lumiview.utils import main_thread
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -78,6 +90,10 @@ class App:
            Set to False for tray-based apps.
         max_workers: Thread pool size for sync :func:`~lumiview.task.task`
            calls.
+        activation_policy: macOS only — the app activation policy
+           (e.g. ``Accessory`` for menu-bar/agent apps without a Dock
+           icon). Must be set before :meth:`run`; ignored on other
+           platforms.
 
     Lifecycle: register an entry via :meth:`run` (main flow) and/or
     observe via :meth:`on` with :class:`AppEvent.ReadyEvent`. Request
@@ -94,6 +110,7 @@ class App:
         name: str = "lumiview",
         exit_on_last_window: bool = True,
         max_workers: int | None = 6,
+        activation_policy: ActivationPolicy | None = None,
     ) -> None:
         if App._instance is not None:
             raise RuntimeError(
@@ -106,6 +123,7 @@ class App:
         self._name = name
         self._exit_on_last_window = exit_on_last_window
         self._max_workers = max_workers
+        self._activation_policy: ActivationPolicy | None = activation_policy
 
         # State
         self._state = AppState.CREATED
@@ -141,6 +159,15 @@ class App:
 
         # Windows
         self._windows: dict[int, Window] = {}
+
+        # Menus: roots registered on the main thread (kept alive here so
+        # unsendable native objects only drop on the main thread) and the
+        # id → item table used to resolve activation events.
+        self._menus: list[Any] = []
+        self._menu_items: dict[str, Any] = {}
+
+        # Tray icons: id → TrayIcon (main-thread owned; multiple allowed).
+        self._trays: dict[str, Any] = {}
 
         # Completion signal for the Close event dispatch (set by
         # _handle_exit_event, awaited in run()'s finally block).
@@ -232,7 +259,7 @@ class App:
         args: tuple[object, ...],
         kwargs: dict[str, object],
     ) -> None:
-        req_id = str(uuid.uuid4())
+        req_id = uuid.uuid4().hex
         self._pending[req_id] = handle
         # Race: the main thread may have finished shutdown between our
         # state check and this write — fail the handle ourselves.
@@ -340,22 +367,19 @@ class App:
 
     # Event dispatch (internal)
 
-    def _emit(self, event: AppBaseEvent) -> "Future[None] | None":
-        """Dispatch an app event to registered handlers on the asyncio loop.
+    def _dispatch_handlers(
+        self, handlers: list[_Handler], event: AppBaseEvent
+    ) -> "Future[None] | None":
+        """Run *handlers* for *event* on the asyncio loop.
 
         Returns a completion signal (a plain
         :class:`concurrent.futures.Future` resolved when all handlers
-        finish) or None when there is no loop or no handlers. Callers
-        that don't need to wait may ignore the return value — only
-        ``_handle_exit_event`` consumes it.
+        finish) or None when there is no loop or no handlers. Shared by
+        :meth:`_emit` and the per-item menu activation callbacks.
         """
         loop = self._async_loop
-        if loop is None:
-            return
-
-        handlers = self._hooks.get(type(event), [])
-        if not handlers:
-            return
+        if loop is None or not handlers:
+            return None
 
         done: Future[None] = Future()
 
@@ -371,6 +395,74 @@ class App:
 
         loop.call_soon_threadsafe(lambda: asyncio.create_task(_dispatch()))
         return done
+
+    def _emit(self, event: AppBaseEvent) -> "Future[None] | None":
+        """Dispatch an app event to registered handlers on the asyncio loop.
+
+        Returns a completion signal (a plain
+        :class:`concurrent.futures.Future` resolved when all handlers
+        finish) or None when there is no loop or no handlers. Callers
+        that don't need to wait may ignore the return value — only
+        ``_handle_exit_event`` consumes it.
+        """
+        return self._dispatch_handlers(self._hooks.get(type(event), []), event)
+
+    # Menu / tray events (GUI thread → asyncio loop)
+
+    def _on_menu_event(self, event: Any) -> None:
+        """Called on the GUI thread for every menu activation (the single
+        muda global handler). Per-item callbacks run first, then the
+        global event is emitted."""
+        item = self._menu_items.get(event.id)
+        ev = AppEvent.MenuItemActivatedEvent(id=event.id, menu_item=item)
+        if item is not None:
+            # Resolve the item's own on_activate callbacks on the asyncio
+            # loop, in registration order.
+            self._dispatch_handlers(item._activate_callbacks, ev)
+        self._emit(ev)
+
+    def _on_tray_event(self, event: Any) -> None:
+        """Called on the GUI thread for tray icon events."""
+        tray = self._trays.get(event.id)
+        if isinstance(event, TrayIconClickEvent):
+            self._emit(
+                AppEvent.TrayIconClickEvent(
+                    id=event.id,
+                    position=event.position,
+                    rect=event.rect,
+                    button=event.button,
+                    button_state=event.button_state,
+                    tray=tray,
+                )
+            )
+        elif isinstance(event, TrayIconDoubleClickEvent):
+            self._emit(
+                AppEvent.TrayIconDoubleClickEvent(
+                    id=event.id,
+                    position=event.position,
+                    rect=event.rect,
+                    button=event.button,
+                    tray=tray,
+                )
+            )
+        elif isinstance(event, TrayIconEnterEvent):
+            self._emit(
+                AppEvent.TrayIconEnterEvent(
+                    id=event.id, position=event.position, rect=event.rect, tray=tray
+                )
+            )
+        elif isinstance(event, TrayIconMoveEvent):
+            self._emit(
+                AppEvent.TrayIconMoveEvent(
+                    id=event.id, position=event.position, rect=event.rect, tray=tray
+                )
+            )
+        elif isinstance(event, TrayIconLeaveEvent):
+            self._emit(
+                AppEvent.TrayIconLeaveEvent(
+                    id=event.id, position=event.position, rect=event.rect, tray=tray
+                )
+            )
 
     # Run loop
 
@@ -413,6 +505,39 @@ class App:
             max_workers=self._max_workers,
             thread_name_prefix="lumiview-pool",
         )
+
+        # Menus and trays: mark the loop as running (the construction
+        # guard checked by TaoMenu/TaoTrayIcon), register the single
+        # per-process event callbacks (muda and tray-icon accept exactly
+        # one handler each), apply the macOS activation policy before the
+        # loop consumes the EventLoop, and install the default macOS menu
+        # bar (Application/Edit/Window — replaceable via
+        # ``await menu.install_nsapp()``).
+        set_loop_running(True)
+
+        if self._activation_policy is not None:
+            if sys.platform != "darwin":
+                raise ValueError("activation_policy is macOS only")
+            self._event_loop.set_activation_policy(self._activation_policy)
+
+        init_menu_events(_menu_event_bridge)
+        init_tray_events(_tray_event_bridge)
+
+        if sys.platform == "darwin":
+            try:
+                from lumiview.menu import Menu, Submenu
+
+                _default = Menu.default_app_menu()
+                _default._materialize().init_for_nsapp()
+                for _item in _default._items:
+                    if (
+                        isinstance(_item, Submenu)
+                        and _item._is_window_menu
+                        and _item._inner is not None
+                    ):
+                        _item._inner.set_as_windows_menu_for_nsapp()
+            except Exception:
+                log.exception("Failed to install default macOS menu")
 
         # Install Ctrl+C handler. signal.signal() only works on the
         # main thread — background-thread runs (e.g. future test
@@ -507,6 +632,7 @@ class App:
                     log.exception("Interrupted while shutting down thread pool")
 
             _GUI_THREAD_ID = None
+            set_loop_running(False)
 
         return self._exit_code if self._exit_code is not None else 0
 
@@ -535,6 +661,46 @@ class App:
                 self._proxy.send_event(json.dumps({"cmd": "exit"}))
             except Exception:
                 pass
+
+    # App-level visibility (main thread; returns Task)
+
+    @main_thread
+    def hide(self) -> None:
+        """Hide the entire application.
+
+        - macOS: hides the whole application (all windows, app removed
+          from the switcher) — the native ``hide_application``, Cmd+H.
+        - Other platforms: hides every open window (there is no
+          platform "hide app" concept there).
+
+        Use :meth:`show` to bring it back. Returns a :class:`Task`.
+        """
+        if self._event_loop is None:
+            return
+        if sys.platform == "darwin":
+            self._event_loop.hide_application()
+        else:
+            for win in list(self._windows.values()):
+                if win._window is not None:
+                    win._window.set_visible(False)
+
+    @main_thread
+    def show(self) -> None:
+        """Show the entire application again (counterpart of :meth:`hide`).
+
+        - macOS: shows the whole application (native ``show_application``).
+        - Other platforms: shows every open window.
+
+        Returns a :class:`Task`.
+        """
+        if self._event_loop is None:
+            return
+        if sys.platform == "darwin":
+            self._event_loop.show_application()
+        else:
+            for win in list(self._windows.values()):
+                if win._window is not None:
+                    win._window.set_visible(True)
 
     def _run_asyncio(self, entry: Callable[..., Any] | None) -> None:
         try:
@@ -699,6 +865,31 @@ class App:
 
         self._windows.clear()
 
+        # Menus and trays: clear native handles here, on the main thread
+        # (unsendable objects may only drop on this thread). Trays first —
+        # a tray may hold Arc references into a menu tree; detaching the
+        # subclassed window before the menu drops is the safe order on
+        # Windows.
+        for tray in list(self._trays.values()):
+            try:
+                tray._tray = None
+            except Exception:
+                log.exception("Error closing tray icon")
+        self._trays.clear()
+
+        for menu in self._menus:
+            try:
+                menu._inner = None
+            except Exception:
+                log.exception("Error releasing menu")
+        for item in self._menu_items.values():
+            try:
+                item._inner = None
+            except Exception:
+                log.exception("Error releasing menu item")
+        self._menus.clear()
+        self._menu_items.clear()
+
         # Emit Close for remaining handlers. The completion signal is
         # awaited in run()'s finally block before the asyncio loop stops,
         # so cleanup handlers actually run.
@@ -725,3 +916,28 @@ class WindowClosedError(RuntimeError):
         if win_id is not None:
             msg += f" (id={win_id})"
         super().__init__(msg)
+
+
+# Event bridges (module level — held by the Rust OnceLock callbacks)
+#
+# Registered once by App.run() in its STARTING phase; the Rust side keeps
+# a strong Py reference, so these must not close over a specific App
+# instance. Both run on the GUI thread (muda/tray-icon fire their events
+# there), where the GIL is released while the tao loop drains — calling
+# back into Python cannot deadlock.
+
+
+def _menu_event_bridge(event: Any) -> None:
+    """Forward a native menu activation to the current App (GUI thread)."""
+    try:
+        App.get()._on_menu_event(event)
+    except Exception:
+        log.exception("menu event dispatch failed")
+
+
+def _tray_event_bridge(event: Any) -> None:
+    """Forward a native tray event to the current App (GUI thread)."""
+    try:
+        App.get()._on_tray_event(event)
+    except Exception:
+        log.exception("tray event dispatch failed")
