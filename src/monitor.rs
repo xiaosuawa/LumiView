@@ -56,6 +56,15 @@ pub struct VideoMode {
     pub(crate) inner: tao::monitor::VideoMode,
 }
 
+// SAFETY: tao's platform display-mode handle is reference-counted
+// (CGDisplayModeRetain/Release) and tao itself marks it `Send`; our
+// methods only read the plain-data fields (size/bit_depth/refresh_rate)
+// or clone the already-`Send + Sync` monitor handle. The ref-count ops
+// run in tao's Clone/Drop — exclusive by construction — so sharing
+// `&VideoMode` across threads cannot race.
+unsafe impl Send for VideoMode {}
+unsafe impl Sync for VideoMode {}
+
 #[pymethods]
 impl VideoMode {
     /// Resolution of this mode in physical pixels.
