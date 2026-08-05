@@ -1,0 +1,135 @@
+name: Bug Report - Bug反馈
+description: Create a report to help us improve. - 反馈问题，帮助我们改进
+title: "[Bug] "
+labels:
+  - 🐛 bug
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filling in this `issue`, please make sure that there are no similar or duplicate `issues` that have been opened.
+        填写此 `issue` 前，请先确认已经开启的 `issue` 没有类似或重复的 `issue`。
+
+  - type: dropdown
+    id: system
+    attributes:
+      label: OS - 操作系统
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS Version - 操作系统版本
+      description: |
+        e.g. Windows 11 24H2 / macOS 15 Sequoia / Ubuntu 24.04
+        例如：Windows 11 24H2 / macOS 15 Sequoia / Ubuntu 24.04
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python Version - Python 版本
+      description: |
+        LumiView requires Python >= 3.10.
+        LumiView 要求 Python >= 3.10。
+      placeholder: "3.12"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: LumiView Version - LumiView 版本
+      description: |
+        Run `pip show lumiview` to check. LumiView is still in pre-release (0.1.0-dev), so please always test with the latest version first.
+        运行 `pip show lumiview` 查看。LumiView 仍处于预发布阶段（0.1.0-dev），请务必先测试最新版本再提交。
+      placeholder: 0.1.0-dev3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected Area - 影响范围
+      description: |
+        Which part of LumiView is involved? You can select multiple.
+        涉及 LumiView 的哪个部分？可多选。
+      multiple: true
+      options:
+        - Window / 窗口管理（几何、状态、特效、全屏）
+        - WebView / 网页加载与渲染
+        - JS Bridge (IPC) / 桥接通信
+        - Event system / 事件系统
+        - Plugins / 插件
+        - serve protocol / 协议处理
+        - Installation & build / 安装与构建
+        - Other / 其他
+    validations:
+      required: false
+
+  - type: textarea
+    id: exist
+    attributes:
+      label: Existing behavior - 现有行为
+      description: |
+        Please describe the problem you have encountered carefully.
+        请仔细描述你所遇到的问题。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expect
+    attributes:
+      label: Expected behavior - 预期行为
+      description: |
+        Please describe in detail the results you wish to achieve.
+        请仔细描述你要得到的结果。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: To Reproduce - 复现问题
+      description: |
+        How do you trigger this bug? Please walk us through it step by step, and provide a minimal reproduction script if possible.
+        这个 bug 是怎么触发的？请详细告诉我们是怎样出现这个情况的，如果可能请提供最小复现脚本。
+      placeholder: |
+        ```python
+        from lumiview import App, Window, WindowOptions
+
+        # minimal reproduction code
+        ```
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs & Screenshots - 日志与截图
+      description: |
+        Please provide the full traceback, console output, or screenshots. If the window crashes, try running with `RUST_BACKTRACE=1`.
+        请提供完整的 traceback、控制台输出或截图。若窗口崩溃，可尝试以 `RUST_BACKTRACE=1` 运行。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: know
+    attributes:
+      label: This issue is unique - 这个 issue 是唯一的
+      options:
+        - label: I have searched the issue tracker and confirmed that there is no identical issue. 我已经搜索问题追踪器并且确认没有相同的 Issue。
+          required: true
+        - label: I admit that I previously checked all options without thorough verification and directly submitted this Issue, and I agree that it can be closed directly. 我承认此前未充分核实便勾选了所有选项并直接提交此 Issue ，且同意该 Issue 可被直接关闭。
+        - label: I confirm that I am currently using the latest version of LumiView. If not, this issue can be closed directly. 我确认当前使用的是最新版本的 LumiView，若非如此，此 Issue 可被直接关闭。
+          required: true
+        - label: I promise to provide a detailed description of the encountered issue, along with relevant logs and screenshots, rather than offering incomplete or vague information. 我承诺将详细描述遇到的问题，并提供相关日志与截图，而非提供不完整或模糊的信息。
+          required: true
