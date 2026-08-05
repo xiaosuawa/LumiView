@@ -39,11 +39,11 @@ tao 事件
   → Rust build_event() 构造 TaoEvent 子类（ResizedEvent 等）
   → App._on_tao_event（主线程）按 window_id 路由
   → Window._on_tao_event → 构造事件类实例（WindowEvent.ResizedEvent 等）
-  → Window._emit(evt)：按 type(evt) 找到 handler，投递到 asyncio 线程
-  → handler(evt) 收到事件对象（evt.window 已填充）
+  → Window._emit(event)：按 type(event) 找到 handler，投递到 asyncio 线程
+  → handler(event) 收到事件对象（event.window 已填充）
 ```
 
-可阻止事件（`CloseRequestedEvent` / `NavigationRequestedEvent` / `NewWindowRequestedEvent` / `DownloadStartedEvent`）走 `_dispatch_preventable`：先派发并**等待** handler 完成，再检查 `evt.prevented` 决定是否执行默认行为（如关闭窗口、放行导航、允许下载）。
+可阻止事件（`CloseRequestedEvent` / `NavigationRequestedEvent` / `NewWindowRequestedEvent` / `DownloadStartedEvent`）走 `_dispatch_preventable`：先派发并**等待** handler 完成，再检查 `event.prevented` 决定是否执行默认行为（如关闭窗口、放行导航、允许下载）。
 
 ## 事件类体系
 

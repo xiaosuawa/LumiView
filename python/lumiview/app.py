@@ -97,7 +97,10 @@ class App:
 
         # State
         self._state = AppState.CREATED
-        self._exit_code: int = 0
+        # None = exit not requested yet; the first request wins. Kept
+        # separate from _state so "exit requested" (a promise) is not
+        # conflated with "cleanup executed" (STOPPING).
+        self._exit_code: int | None = None
 
         # Rust bindings (created in run())
         self._event_loop: TaoEventLoop | None = None
@@ -109,6 +112,11 @@ class App:
         # Command queue (any thread → main thread)
         self._cmd_queue: queue.Queue[_Command] = queue.Queue()
         self._pending: dict[str, Task[Any]] = {}
+        # Wake signal for main-thread waits: notified when a command is
+        # enqueued and when a dispatched task completes. Waits use
+        # Condition.wait_for with a predicate, so lost-wakeup races are
+        # re-checked instead of hanging.
+        self._wake_cond = threading.Condition()
 
         # Async infrastructure
         self._async_loop: asyncio.AbstractEventLoop | None = None
@@ -222,6 +230,8 @@ class App:
                 handle.set_exception(AppClosedError(self._name))
             return
         self._cmd_queue.put((req_id, fn, args, kwargs))
+        with self._wake_cond:
+            self._wake_cond.notify_all()
         if self._proxy is not None:
             self._proxy.send_event(json.dumps({"cmd": "wake", "id": req_id}))
 
@@ -486,26 +496,28 @@ class App:
 
             _GUI_THREAD_ID = None
 
-        return self._exit_code
+        return self._exit_code if self._exit_code is not None else 0
 
     def exit(self, code: int = 0) -> None:
         """Request a graceful shutdown; ``run()`` returns *code*.
 
-        Once shutdown has started (STOPPING/STOPPED), later calls are
-        ignored so the first requested exit code wins.
+        Only records the request (first request wins) and wakes the
+        main thread — it does **not** transition the state. The actual
+        cleanup (closing windows, emitting :class:`AppCloseEvent`) runs
+        when the exit event is handled on the main thread, so
+        ``_handle_exit_event`` remains the single transition into
+        STOPPING.
         """
-        if self._state in (AppState.STOPPING, AppState.STOPPED):
-            # Shutdown already in progress — ignore the request. Keeps
-            # _exit_code monotonic: a window closing during STOPPING
-            # (_remove_window, code 0) can no longer overwrite an
-            # explicit exit(code).
+        if self._exit_code is not None:
+            # Already requested — ignore so the first requested exit
+            # code wins. A window closing mid-shutdown (_remove_window,
+            # code 0) can no longer overwrite an explicit exit(code).
             return
         if self._state == AppState.CREATED:
             # Not running yet — nothing to shut down. Ignore the request,
             # or run() would later misreport "App already finished".
             return
         self._exit_code = code
-        self._state = AppState.STOPPING
         if self._proxy is not None:
             try:
                 self._proxy.send_event(json.dumps({"cmd": "exit"}))
@@ -586,7 +598,13 @@ class App:
         return EventLoopControl.Continue
 
     def _handle_exit_event(self) -> EventLoopControl:
-        """Graceful shutdown sequence."""
+        """Graceful shutdown sequence.
+
+        Single transition into STOPPING: ``exit()`` only records the
+        request, so this runs the real cleanup (closing windows,
+        emitting AppCloseEvent) on every exit path — explicit exit(),
+        Ctrl+C, last-window close, and LoopDestroyed alike.
+        """
         if self._state == AppState.STOPPING:
             # Already shutting down — a second trigger (e.g.
             # LoopDestroyed following an exit() request, or a window

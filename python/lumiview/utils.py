@@ -8,9 +8,22 @@ the Bridge permission chain (:mod:`lumiview.scope` imports them back).
 from __future__ import annotations
 
 import re
-from typing import Callable
+from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
 from lumiview.events import WindowEvent
+
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def copy_signature_for_classmethod(_: Callable[P, Any]):
+    """Decorator to copy the signature of a callable to a classmethod."""
+
+    def decorator(fn: Callable[..., R]) -> Callable[Concatenate[type[Any], P], R]:
+        return fn
+
+    return decorator
 
 
 def pattern_to_regex(pattern: str) -> re.Pattern[str]:
@@ -51,13 +64,13 @@ def navigation_policy(
         )
     """
 
-    def handler(evt: WindowEvent.NavigationRequestedEvent) -> None:
-        url = evt.url
+    def handler(event: WindowEvent.NavigationRequestedEvent) -> None:
+        url = event.url
         for pattern in deny:
             if match_pattern(pattern, url):
-                evt.prevent()
+                event.prevent()
                 return
         if allow and not any(match_pattern(p, url) for p in allow):
-            evt.prevent()
+            event.prevent()
 
     return handler

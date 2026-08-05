@@ -105,7 +105,7 @@ GTK 不是线程安全的：所有 GTK 调用（对话框、窗口操作、Clipb
 from lumiview import WindowEvent
 
 @win.on(WindowEvent.TitleChangedEvent)   # win 来自 Window.create(...)
-def on_title(evt):
+def on_title(event):
     # 后台直接做：写日志、截图、上报……
     save_screenshot()          # 同步函数 → 线程池执行
 ```

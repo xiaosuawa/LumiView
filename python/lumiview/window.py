@@ -5,7 +5,6 @@ import functools
 import json
 import logging
 import sys
-import time
 import webbrowser
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Callable, ParamSpec, TypeVar, overload
@@ -16,6 +15,7 @@ from dataclasses import dataclass
 from lumiview.app import App, WindowClosedError
 from lumiview.scope import InitContext
 from lumiview.serve.base import Serve
+from lumiview.utils import copy_signature_for_classmethod
 from wryview import DragDropEvent, PageLoadEvent, WebView
 from wryview._core import NewWindowResponse, WindowHandleKind as WryKind
 
@@ -93,117 +93,117 @@ class WindowOptions:
     Passed to :meth:`Window.create` either as a single object
     (``await Window.create(WindowOptions(...))``) or as keyword
     arguments (``await Window.create(title=..., url=...)``).
-
-    Attributes:
-        title: Window title shown in the titlebar.
-        url: URL to load as the initial page.
-        html: HTML string to show instead of a URL.
-        source: One or more :class:`~lumiview.serve.Serve` handlers
-            registered as ``lumiview://`` custom protocols.
-        width: Initial inner width in logical pixels.
-        height: Initial inner height in logical pixels.
-        position: Initial outer position ``(x, y)``.
-        min_size: Minimum inner size ``(width, height)``.
-        max_size: Maximum inner size ``(width, height)``.
-        visible: Whether the window starts visible.
-        decorations: Whether the window has a native titlebar.
-        resizable: Whether the user can resize the window.
-        transparent: Whether the window background is transparent
-            (may need ``undecorated_shadow`` on some platforms).
-        maximized: Whether the window starts maximized.
-        always_on_top: Whether the window floats above other windows.
-        undecorated_shadow: Shadow for undecorated windows — ``None``
-            lets the platform decide.
-        icon: Window icon — a file path, ``(rgba_bytes, width, height)``
-            tuple, or ``PIL.Image.Image`` object.
-        focused: Whether the window starts focused.
-        focusable: Whether the window can receive focus.
-        minimizable: Whether the user can minimize the window.
-        maximizable: Whether the user can maximize the window.
-        closable: Whether the user can close the window.
-        close_behavior: The :class:`CloseBehavior` applied on close
-            request.
-        visible_on_all_workspaces: Whether the window appears on all
-            workspaces (Linux).
-        content_protection: Whether window content is hidden from
-            screenshots (Windows).
-        bridge: The :class:`~lumiview.bridge.Bridge` for IPC. ``None``
-            isolates the window — raw messages still surface as
-            :class:`~lumiview.events.WindowEvent.WebMessageReceivedEvent`.
-        untrusted: Skip bridge-script injection entirely; ``emit()``
-            events are never delivered to the page.
-        web_context: Shared WebView context passed to wryview.
-        data_directory: WebView user-data folder.
-        incognito: Start with no persistent data.
-        proxy: Proxy URL string (e.g. ``"http://host:port"``).
-        user_agent: Custom user agent for the WebView.
-        autoplay: Allow autoplaying media.
-        hotkeys_zoom: Enable the browser zoom shortcuts.
-        clipboard: Enable clipboard access.
-        javascript: Enable JavaScript execution.
-        back_forward_gestures: Enable swipe back/forward navigation
-            (Windows).
-        https_scheme: Treat the custom protocol as secure from https
-            pages (Windows WebView2).
-        default_context_menus: Show the default right-click context
-            menu.
-        background_color: WebView background ``(r, g, b, a)``.
-        headers: Extra HTTP headers for the initial load.
-        devtools: Whether developer tools are available.
-        prepare: Called with the :class:`Window` shell before the
-            native window and WebView are created — the earliest point
-            to register event handlers.
     """
     # Content
     title: str = "lumiview"
+    """Window title shown in the titlebar."""
     url: str | None = None
+    """URL to load as the initial page."""
     html: str | None = None
+    """HTML string to show instead of a URL."""
     source: Serve | list[Serve] | None = None
+    """One or more :class:`~lumiview.serve.Serve` handlers
+    registered as ``lumiview://`` custom protocols."""
     # Geometry
     width: int = 800
+    """Initial inner width in logical pixels."""
     height: int = 600
+    """Initial inner height in logical pixels."""
     position: tuple[float, float] | None = None
+    """Initial outer position ``(x, y)``."""
     min_size: tuple[float, float] | None = None
+    """Minimum inner size ``(width, height)``."""
     max_size: tuple[float, float] | None = None
+    """Maximum inner size ``(width, height)``."""
     # Appearance
     visible: bool = True
+    """Whether the window starts visible."""
     decorations: bool = True
+    """Whether the window has a native titlebar."""
     resizable: bool = True
+    """Whether the user can resize the window."""
     transparent: bool = False
+    """Whether the window background is transparent (may need
+    ``undecorated_shadow`` on some platforms)."""
     maximized: bool = False
+    """Whether the window starts maximized."""
     always_on_top: bool = False
+    """Whether the window floats above other windows."""
     undecorated_shadow: bool | None = None
+    """Shadow for undecorated windows — ``None`` lets the platform
+    decide."""
     icon: _IconSource | None = None
+    """Window icon — a file path, ``(rgba_bytes, width, height)``
+    tuple, or ``PIL.Image.Image`` object."""
     # Behavior
     focused: bool = True
+    """Whether the window starts focused."""
     focusable: bool = True
+    """Whether the window can receive focus."""
     minimizable: bool = True
+    """Whether the user can minimize the window."""
     maximizable: bool = True
+    """Whether the user can maximize the window."""
     closable: bool = True
+    """Whether the user can close the window."""
     close_behavior: CloseBehavior = CloseBehavior.Close
+    """The :class:`CloseBehavior` applied on close request."""
     visible_on_all_workspaces: bool = False
+    """Whether the window appears on all workspaces (Linux)."""
     content_protection: bool = False
+    """Whether window content is hidden from screenshots (Windows)."""
     # Bridge
     bridge: Bridge | None = None
+    """The :class:`~lumiview.bridge.Bridge` for IPC. ``None`` isolates
+    the window — raw messages still surface as
+    :class:`~lumiview.events.WindowEvent.WebMessageReceivedEvent`."""
     untrusted: bool = False
+    """Skip bridge-script injection entirely; ``emit()`` events are
+    never delivered to the page."""
     # WebView
     web_context: Any = None
+    """Shared WebView context passed to wryview."""
     data_directory: str | None = None
+    """WebView user-data folder."""
     incognito: bool = False
+    """Start with no persistent data."""
     proxy: str | None = None
+    """Proxy URL string (e.g. ``"http://host:port"``)."""
     user_agent: str | None = None
+    """Custom user agent for the WebView."""
     autoplay: bool = False
+    """Allow autoplaying media."""
     hotkeys_zoom: bool = True
+    """Enable the browser zoom shortcuts."""
     clipboard: bool = True
+    """Enable clipboard access."""
     javascript: bool = True
+    """Enable JavaScript execution."""
     back_forward_gestures: bool = False
+    """Enable swipe back/forward navigation (Windows)."""
     https_scheme: bool = True
+    """Treat the custom protocol as secure from https pages
+    (Windows WebView2)."""
     default_context_menus: bool = True
+    """Show the default right-click context menu."""
+    drag_drop: bool = False
+    """Enable custom drag-drop events (``WindowEvent.DragEvent``).
+
+    Registering a custom drag-drop handler disables WebView2's built-in
+    external-file drops on Windows, so this must be decided at creation
+    — it cannot be enabled lazily after the WebView exists.
+    """
     background_color: tuple[int, int, int, int] | None = None
+    """WebView background ``(r, g, b, a)``."""
     headers: dict[str, str] | None = None
+    """Extra HTTP headers for the initial load."""
     devtools: bool = False
+    """Whether developer tools are available."""
     # Pre-creation hook
     prepare: Callable[[Window], None] | None = None
+    """Called with the :class:`Window` shell before the native window
+    and WebView are created — the earliest point to register event
+    handlers."""
 
     def __post_init__(self) -> None:
         if self.bridge is not None and self.untrusted:
@@ -232,10 +232,9 @@ class Window:
             self._bridge: Bridge
             self._hooks: dict[type[WindowBaseEvent], list[Callable[..., Any]]]
             self._close_behavior: CloseBehavior
-            self._bridge_enabled: bool
+            self._close_pending: bool
+            self._drag_enabled: bool
             self._untrusted: bool
-            self._drag_handler_installed: bool
-            self._drag_handler_pending: bool
         raise RuntimeError("Use 'await Window.create(...)' instead")
     
     @overload
@@ -244,6 +243,7 @@ class Window:
 
     @overload
     @classmethod
+    @copy_signature_for_classmethod(WindowOptions)
     def create(cls, **kwargs: Any) -> Task[Window]: ...
 
     @classmethod
@@ -302,11 +302,10 @@ class Window:
             ctx = options.bridge._run_on_init(ctx)
 
         self._close_behavior = options.close_behavior
+        self._close_pending = False
+        self._drag_enabled = options.drag_drop
         self._bridge = options.bridge or Bridge()
-        self._bridge_enabled = options.bridge is not None
         self._untrusted = options.untrusted
-        self._drag_handler_installed = False
-        self._drag_handler_pending = False
 
         # Resolve source → url / html / custom_protocols
         custom_protocols: dict[str, Any] = {}
@@ -427,6 +426,9 @@ class Window:
                     WindowEvent.TitleChangedEvent(title=t)
                 ),
                 on_new_window=self._dispatch_new_window,
+                drag_drop_handler=(
+                    self._dispatch_drag_drop if options.drag_drop else None
+                ),
                 custom_protocols=custom_protocols or None,
                 proxy=(
                     _parse_proxy(options.proxy) if options.proxy is not None else None
@@ -471,9 +473,6 @@ class Window:
             self.close()
             del tao_win
             raise
-
-        if self._drag_handler_pending:
-            self._install_drag_handler()
 
         return self
 
@@ -879,14 +878,13 @@ class Window:
 
         The handler receives the event object.
         """
-        if event is WindowEvent.DragEvent:
-            if self._webview is not None:
-                if not self._drag_handler_installed:
-                    self._install_drag_handler()
-            else:
-                # Registered before the WebView exists (e.g. the
-                # ``prepare`` hook) — install once creation completes.
-                self._drag_handler_pending = True
+        if event is WindowEvent.DragEvent and not self._drag_enabled:
+            raise RuntimeError(
+                "WindowEvent.DragEvent requires WindowOptions(drag_drop=True) — "
+                "registering a custom drag-drop handler at creation disables "
+                "WebView2's built-in external-file drops, so it cannot be "
+                "enabled lazily after the WebView exists."
+            )
 
         def decorator(fn):
             self._hooks.setdefault(event, []).append(fn)
@@ -894,31 +892,18 @@ class Window:
 
         return decorator
 
-    @main_thread
-    def _install_drag_handler(self) -> None:
+    def _emit(self, event: WindowBaseEvent) -> Future[None] | None:
         """
-        Install the wryview drag-drop handler (lazy, main thread).
-
-        Wiring it at creation unconditionally would disable WebView2's
-        built-in external-file drops on Windows.
-        """
-        if self._drag_handler_installed or self._webview is None:
-            return
-        self._webview.set_drag_drop_handler(self._dispatch_drag_drop)
-        self._drag_handler_installed = True
-
-    def _emit(self, evt: WindowBaseEvent) -> Future[None] | None:
-        """
-        Dispatch *evt* to handlers registered for its class.
+        Dispatch *event* to handlers registered for its class.
 
         Returns a completion :class:`Future` or ``None`` when there is
-        no loop or no handlers. ``evt.window`` is set to this window.
+        no loop or no handlers. ``event.window`` is set to this window.
         """
-        evt.window = self
+        event.window = self
         if self._app._async_loop is None:
             return
 
-        handlers = self._hooks.get(type(evt), [])
+        handlers = self._hooks.get(type(event), [])
 
         if not handlers:
             return
@@ -929,10 +914,10 @@ class Window:
             try:
                 for fn in handlers:
                     try:
-                        await run_async(fn, evt, pool=self._app._threadpool)
+                        await run_async(fn, event, pool=self._app._threadpool)
                     except Exception:
                         logging.getLogger("lumiview.window").exception(
-                            f"Error in {type(evt).__name__} handler: {fn}",
+                            f"Error in {type(event).__name__} handler: {fn}",
                         )
             finally:
                 done.set_result(None)
@@ -944,27 +929,38 @@ class Window:
 
         return done
 
-    def _dispatch_preventable(self, evt: TEvent) -> TEvent:
+    def _dispatch_preventable(self, event: TEvent) -> TEvent:
         """
-        Dispatch *evt* and wait for handlers to finish.
+        Dispatch *event* and wait for handlers to finish.
 
-        Callers need ``prevent()`` / ``open_in()`` / ``save_to()``
-        outcomes to decide the native default behavior. On the main
-        thread, queued commands are drained while waiting to avoid
-        deadlock.
+        Only used for wryview's synchronous callbacks (navigation, new
+        window, download) whose native default must be decided inline;
+        :class:`~lumiview.events.WindowEvent.CloseRequestedEvent` is
+        dispatched asynchronously instead (see ``_request_close_now``).
+        On the main thread, queued commands are drained while waiting to
+        avoid deadlock.
         """
-        done = self._emit(evt)
+        done = self._emit(event)
         if done is None:
-            return evt
+            return event
         if self._app.is_main_thread():
-            # Unbounded wait: the asyncio loop must stay alive while a
-            # preventable dispatch is in flight — if the loop stops
-            # mid-dispatch (shutdown race), this wait never terminates.
+            cond = self._app._wake_cond
+
+            def _notify(_) -> None:
+                with cond:
+                    cond.notify_all()
+
+            done.add_done_callback(_notify)
             while not done.done():
                 self._app._drain_commands()
+                with cond:
+                    cond.wait_for(
+                        lambda: done.done()
+                        or not self._app._cmd_queue.empty(),
+                    )
         else:
             done.result()
-        return evt
+        return event
 
     # wryview callback dispatch
 
@@ -981,8 +977,8 @@ class Window:
         """
         wryview ``on_navigation`` callback — ``False`` blocks.
         """
-        evt = self._dispatch_preventable(WindowEvent.NavigationRequestedEvent(url=url))
-        return not evt.prevented
+        event = self._dispatch_preventable(WindowEvent.NavigationRequestedEvent(url=url))
+        return not event.prevented
 
     def _dispatch_new_window(self, url: str) -> NewWindowResponse:
         """
@@ -992,14 +988,14 @@ class Window:
         ``open_in(url)`` opens *url* in the system browser. Default:
         deny the in-webview window and open it externally.
         """
-        evt = self._dispatch_preventable(WindowEvent.NewWindowRequestedEvent(url=url))
-        open_url = evt._open_url
+        event = self._dispatch_preventable(WindowEvent.NewWindowRequestedEvent(url=url))
+        open_url = event._open_url
         if open_url is not None:
             try:
                 webbrowser.open(open_url)
             except Exception:
                 pass
-        elif not evt.prevented:
+        elif not event.prevented:
             try:
                 webbrowser.open(url)
             except Exception:
@@ -1013,13 +1009,13 @@ class Window:
         Returns ``True`` to allow, ``False`` to cancel, or a string
         path to redirect the download.
         """
-        evt = self._dispatch_preventable(
+        event = self._dispatch_preventable(
             WindowEvent.DownloadStartedEvent(url=url, suggested_path=suggested_path)
         )
-        save_path = evt._save_path
+        save_path = event._save_path
         if save_path is not None:
             return save_path
-        if evt.prevented:
+        if event.prevented:
             return False
         return True
 
@@ -1113,31 +1109,70 @@ class Window:
     @main_thread
     def request_close(self) -> None:
         """
-        Apply this window's configured ``close_behavior``.
+        Request this window to close.
+
+        Dispatches the preventable
+        :class:`~lumiview.events.WindowEvent.CloseRequestedEvent`
+        asynchronously — the returned task completes once the request is
+        dispatched, *not* once the window is actually closed. The
+        configured ``close_behavior`` is applied after handlers finish:
+        a handler may call
+        :meth:`~lumiview.events.WindowBaseEvent.prevent` to cancel the
+        close.
         """
         self._request_close_now()
 
     def _request_close_now(self) -> None:
         """
-        Apply ``close_behavior`` immediately on the GUI thread.
+        Apply ``close_behavior`` without blocking the GUI thread.
 
-        Dispatches the preventable
-        :class:`~lumiview.events.WindowEvent.CloseRequestedEvent` first —
-        a handler may call :meth:`~lumiview.events.WindowBaseEvent.prevent`
-        to cancel the close.
+        Dispatches :class:`~lumiview.events.WindowEvent.CloseRequestedEvent`
+        and returns immediately; the close decision is made when handlers
+        complete (on the asyncio thread), mirroring Tauri's
+        close-requested flow. ``_close_pending`` guards against re-entrant
+        close requests while a dispatch is in flight.
         """
-        evt = self._dispatch_preventable(WindowEvent.CloseRequestedEvent())
-        if evt.prevented:
+        if self._close_pending or self._window is None:
+            return
+        self._close_pending = True
+        event = WindowEvent.CloseRequestedEvent()
+        done = self._emit(event)
+        if done is None:
+            # No handlers — apply close behavior right now (we are on the
+            # main thread; @main_thread calls run inline here).
+            self._on_close_handlers_done(event)
+        else:
+            def _on_done(future: Future[None]) -> None:
+                del future  # callback signature requires the argument
+                self._on_close_handlers_done(event)
+
+            done.add_done_callback(_on_done)
+
+    def _on_close_handlers_done(self, event: WindowBaseEvent) -> None:
+        """
+        Handler-completion callback (asyncio thread) — apply close behavior.
+
+        ``_close_pending`` is cleared on every path that keeps the window
+        alive (prevented / Ignore / Hide); the Close path keeps it set,
+        leaving ``self._window is None`` as the guard for any later
+        request.
+        """
+        if event.prevented:
+            self._close_pending = False
             return
 
         behavior = self._close_behavior
         if behavior == CloseBehavior.Ignore:
-            return
-        if behavior == CloseBehavior.Hide:
-            if self._window is not None:
-                self._window.set_visible(False)
-            return
-        self.close()
+            self._close_pending = False
+        elif behavior == CloseBehavior.Hide:
+            def _hide() -> None:
+                if self._window is not None:
+                    self._window.set_visible(False)
+                self._close_pending = False
+
+            self._app.call_on_main(_hide)
+        else:
+            self.close()
 
     @main_thread
     def close(self) -> None:

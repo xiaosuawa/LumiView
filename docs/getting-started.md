@@ -55,25 +55,25 @@ async def main():
     ))
 
     @win.on(WindowEvent.TitleChangedEvent)
-    def on_title(evt):
-        print("新标题:", evt.title)
+    def on_title(event):
+        print("新标题:", event.title)
 
     @win.on(WindowEvent.NavigationRequestedEvent)
-    def on_navigation(evt):
-        print("导航到:", evt.url)
-        if evt.url.startswith("https://evil.com"):
-            evt.prevent()          # 阻止这次导航
+    def on_navigation(event):
+        print("导航到:", event.url)
+        if event.url.startswith("https://evil.com"):
+            event.prevent()          # 阻止这次导航
 
     @win.on(WindowEvent.CloseRequestedEvent)
-    def on_close(evt):
+    def on_close(event):
         if not saved:
-            evt.prevent()          # 取消关闭
+            event.prevent()          # 取消关闭
 ```
 
 - 事件类集中在 `WindowEvent` 命名空间。
 - 所有 handler 都运行在 **asyncio 线程**（不是主线程、不是 wryview 回调线程）——不要在里面直接操作原生 GUI。
-- 可阻止事件（`CloseRequestedEvent` / `NavigationRequestedEvent` / `NewWindowRequestedEvent` / `DownloadStartedEvent`）调用 `evt.prevent()` 后，默认行为会被取消。
-- `evt.window` 指向触发事件的窗口实例。
+- 可阻止事件（`CloseRequestedEvent` / `NavigationRequestedEvent` / `NewWindowRequestedEvent` / `DownloadStartedEvent`）调用 `event.prevent()` 后，默认行为会被取消。
+- `event.window` 指向触发事件的窗口实例。
 
 ## 窗口配置：WindowOptions
 
@@ -119,7 +119,7 @@ tao 窗口创建、webview 加载的那一刻事件流就开始了（`PageLoadSt
 ```python
 def prepare(win):
     win.on(WindowEvent.PageLoadStartedEvent)(
-        lambda evt: print("开始加载:", evt.url)
+        lambda event: print("开始加载:", event.url)
     )
 
 win = await Window.create(WindowOptions(
@@ -151,7 +151,7 @@ win = await Window.create(WindowOptions(
 
 
 @win.on(WindowEvent.CloseRequestedEvent)
-def on_close(evt):
+def on_close(event):
     if not saved:
-        evt.prevent()                    # 未保存 → 什么都不发生
+        event.prevent()                    # 未保存 → 什么都不发生
 ```

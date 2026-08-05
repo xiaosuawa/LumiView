@@ -33,7 +33,7 @@ class Greeter(Plugin):
         ctx.inject_script += "console.log('greeter ready');"
         # ctx.window — 构建中的 Window 空壳（hooks 已就绪），可注册早期事件：
         ctx.window.on(WindowEvent.PageLoadStartedEvent)(
-            lambda evt: print("early:", evt.url)
+            lambda event: print("early:", event.url)
         )
         return ctx
 

@@ -16,13 +16,13 @@ app = App(name="HelloWorld")
 
 def main():
     # Create a window — returns Task[Window], so we await it.
-    win = Window.create(WindowOptions(
+    win = Window.create(
         title="Hello LumiView!",
         url="https://example.com",
         width=900,
         height=640,
-        devtools=True,
-    )).result()
+        devtools=True
+    ).result()
 
     # eval_js returns Task[str] — await to get the result.
     title = win.eval_js("document.title").result()

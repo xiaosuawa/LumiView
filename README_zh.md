@@ -124,6 +124,8 @@ app.run(main)
 
 这是一个早期项目——**你的反馈至关重要**。
 
+受个人时间所限，部分功能可能无法及时完成，欢迎各位通过 PR 等贡献方式一同实现。
+
 - 🐛 [报告 Bug](https://github.com/xiaosuawa/LumiView/issues)
 - 💡 [分享想法](https://github.com/xiaosuawa/LumiView/discussions)
 - 🔧 [贡献指南](CONTRIBUTING.md)

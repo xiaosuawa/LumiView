@@ -340,7 +340,7 @@ mod tests {
             alt: false,
             super_key: false,
         };
-        let repr = format!("{}", state.__repr__());
+        let repr = state.__repr__();
         assert!(repr.contains("Shift"));
         assert!(repr.contains("Ctrl"));
         assert!(!repr.contains("Alt"));

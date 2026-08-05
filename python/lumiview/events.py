@@ -5,7 +5,7 @@
 namespace containers — event classes nest inside them (inheriting the
 *BaseEvent classes), so both namespace access
 (``WindowEvent.TitleChangedEvent``) and isinstance checks
-(``isinstance(evt, WindowBaseEvent)``) work.
+(``isinstance(event, WindowBaseEvent)``) work.
 
 Event classes are ``@dataclass(slots=True, kw_only=True)`` — every field
 is a real dataclass field, so static type checkers see the full shape

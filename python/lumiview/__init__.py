@@ -21,8 +21,8 @@ Events::
     from lumiview import WindowEvent
 
     @win.on(WindowEvent.TitleChangedEvent)
-    def on_title(evt):
-        print(evt.title)
+    def on_title(event):
+        print(event.title)
 
 Low-level bindings live in :mod:`lumiview._core`.
 """

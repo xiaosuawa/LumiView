@@ -24,7 +24,7 @@ async def main():
         # The prepare hook fires before the WebView exists — no page
         # event can slip past this registration.
         @win.on(WindowEvent.PageLoadFinishedEvent)
-        async def on_page_load(evt):
+        async def on_page_load(event):
             load_done.set()
 
     # Create a window — returns Task[Window], so we await it.

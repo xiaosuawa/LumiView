@@ -19,29 +19,29 @@ app = App(name="EventsDemo")
 
 
 @app.on(AppEvent.ReadyEvent)
-async def on_ready(evt: AppEvent.ReadyEvent):
+async def on_ready(event: AppEvent.ReadyEvent):
     print("[AppEvent] Ready — app is running.")
 
 
 @app.on(AppEvent.AppCloseEvent)
-async def on_close(evt: AppEvent.AppCloseEvent):
+async def on_close(event: AppEvent.AppCloseEvent):
     print("[AppEvent] Close — shutting down gracefully.")
 
 
 async def main():
-    win = await Window.create(WindowOptions(
+    win = await Window.create(
         title="Events Demo",
         url="https://www.example.com",
         width=800,
         height=600,
         devtools=True,
-    ))
+    )
 
     # ── Window-level event: TitleChanged ────────────────────────────────
 
     @win.on(WindowEvent.TitleChangedEvent)
-    async def on_title_changed(evt: WindowEvent.TitleChangedEvent):
-        print(f"[WindowEvent] Title changed → '{evt.title}'")
+    async def on_title_changed(event: WindowEvent.TitleChangedEvent):
+        print(f"[WindowEvent] Title changed → '{event.title}'")
 
     # Trigger a title change to fire the hook
     await win.eval_js("document.title = 'LumiView Events!'")

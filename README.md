@@ -124,6 +124,8 @@ For runnable code, see the [`examples/`](examples/) directory.
 
 This is an early-stage project — **your feedback is crucial**.
 
+Due to limited personal time, some features may not be completed promptly — PRs and other contributions are warmly welcomed.
+
 - 🐛 [Report Bugs](https://github.com/xiaosuawa/LumiView/issues)
 - 💡 [Share Ideas](https://github.com/xiaosuawa/LumiView/discussions)
 - 🔧 [Contribution Guide](CONTRIBUTING.md)

@@ -106,7 +106,7 @@ unsafe fn run_event_loop_detached(
 
             // Re-acquire the GIL to create Python event objects.
             Python::attach(|py| {
-                let evt = match build_event(py, &event) {
+                let event = match build_event(py, &event) {
                     Some(e) => e,
                     None => {
                         return;
@@ -114,7 +114,7 @@ unsafe fn run_event_loop_detached(
                 };
 
                 let cf: Cell<ControlFlow> = Cell::new(*control_flow);
-                match callback.call1(py, (evt,)) {
+                match callback.call1(py, (event,)) {
                     Ok(val) => {
                         if let Ok(ctrl) = val.extract::<EventLoopControl>(py) {
                             if ctrl == EventLoopControl::Exit {
@@ -190,7 +190,11 @@ impl TaoEventLoop {
         // moves the EventLoop out of the slot. Boxing puts the EventLoop
         // at a stable heap address for the whole run; moving the Box itself
         // does not move the heap allocation.
-        let event_loop = self.inner.borrow_mut().take().expect("EventLoop already consumed");
+        let event_loop = self
+            .inner
+            .borrow_mut()
+            .take()
+            .expect("EventLoop already consumed");
         let boxed = Box::new(event_loop);
         // `EventLoop` derefs to `EventLoopWindowTarget` (tao's API for
         // obtaining the target reference); the annotation coerces through
