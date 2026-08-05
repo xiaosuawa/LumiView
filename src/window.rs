@@ -7,10 +7,14 @@ use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::window::{Icon, Window, WindowBuilder};
-use window_vibrancy::{NSVisualEffectMaterial, NSVisualEffectState};
+use window_vibrancy::NSVisualEffectState;
 
 use crate::event_loop::TaoEventLoop;
-use crate::types::{ResizeDirection, WindowEffect, WindowHandleKind};
+use crate::monitor::{Monitor, VideoMode};
+use crate::types::{
+    AttentionType, CursorIcon, ProgressState, ResizeDirection, Theme, VibrancyMaterial,
+    WindowEffect, WindowHandleKind,
+};
 
 fn effect_error(error: window_vibrancy::Error) -> PyErr {
     match error {
@@ -360,6 +364,37 @@ impl TaoWindow {
             .set_max_inner_size(Some(LogicalSize::new(width, height)));
     }
 
+    /// Logical inner position of the window's client area, relative to
+    /// the top-left of the screen. Raises ``NotImplementedError`` on
+    /// platforms that cannot report it (Wayland).
+    fn inner_position(&self) -> PyResult<(f64, f64)> {
+        let pos = self.inner.inner_position().map_err(|_| {
+            PyNotImplementedError::new_err("inner position is not supported on this platform")
+        })?;
+        let sf = self.inner.scale_factor();
+        Ok((pos.x as f64 / sf, pos.y as f64 / sf))
+    }
+
+    /// Logical outer position of the window, relative to the top-left
+    /// of the screen.
+    fn outer_position(&self) -> PyResult<(f64, f64)> {
+        let pos = self.inner.outer_position().map_err(|_| {
+            PyNotImplementedError::new_err("outer position is not supported on this platform")
+        })?;
+        let sf = self.inner.scale_factor();
+        Ok((pos.x as f64 / sf, pos.y as f64 / sf))
+    }
+
+    /// Logical cursor position inside the window client area.
+    fn cursor_position(&self) -> PyResult<(f64, f64)> {
+        let pos = self
+            .inner
+            .cursor_position()
+            .map_err(interaction_error)?;
+        let sf = self.inner.scale_factor();
+        Ok((pos.x as f64 / sf, pos.y as f64 / sf))
+    }
+
     // Appearance
 
     fn set_title(&self, title: &str) {
@@ -398,14 +433,24 @@ impl TaoWindow {
         self.inner.set_decorations(decorations);
     }
 
-    fn apply_effect(&self, effect: WindowEffect, color: Option<(u8, u8, u8, u8)>) -> PyResult<()> {
+    #[pyo3(signature = (effect, color = None, material = None))]
+    fn apply_effect(
+        &self,
+        effect: WindowEffect,
+        color: Option<(u8, u8, u8, u8)>,
+        material: Option<VibrancyMaterial>,
+    ) -> PyResult<()> {
+        // *material* only applies to Vibrancy — ignore it for the
+        // Windows effects, matching the platform's one-parameter APIs.
         let result = match effect {
             WindowEffect::Blur => window_vibrancy::apply_blur(&self.inner, color),
             WindowEffect::Acrylic => window_vibrancy::apply_acrylic(&self.inner, color),
             WindowEffect::Mica => window_vibrancy::apply_mica(&self.inner, None),
             WindowEffect::Vibrancy => window_vibrancy::apply_vibrancy(
                 &self.inner,
-                NSVisualEffectMaterial::Sidebar,
+                material
+                    .unwrap_or(VibrancyMaterial::Sidebar)
+                    .into(),
                 Some(NSVisualEffectState::FollowsWindowActiveState),
                 None,
             ),
@@ -454,6 +499,176 @@ impl TaoWindow {
         } else {
             self.inner.set_fullscreen(None);
         }
+    }
+
+    /// Enter borderless fullscreen on *monitor* (``None`` = the
+    /// current monitor).
+    fn set_borderless_fullscreen(&self, monitor: Option<&Monitor>) {
+        use tao::window::Fullscreen;
+        let m = monitor.map(|m| m.inner.clone());
+        self.inner.set_fullscreen(Some(Fullscreen::Borderless(m)));
+    }
+
+    /// Enter exclusive fullscreen on the monitor of *mode* at the
+    /// mode's resolution and refresh rate.
+    fn set_exclusive_fullscreen(&self, mode: &VideoMode) {
+        use tao::window::Fullscreen;
+        self.inner
+            .set_fullscreen(Some(Fullscreen::Exclusive(mode.inner.clone())));
+    }
+
+    /// Current fullscreen state.
+    fn is_fullscreen(&self) -> bool {
+        self.inner.fullscreen().is_some()
+    }
+
+    fn is_focused(&self) -> bool {
+        self.inner.is_focused()
+    }
+
+    fn is_resizable(&self) -> bool {
+        self.inner.is_resizable()
+    }
+
+    fn is_decorated(&self) -> bool {
+        self.inner.is_decorated()
+    }
+
+    fn is_closable(&self) -> bool {
+        self.inner.is_closable()
+    }
+
+    fn is_minimizable(&self) -> bool {
+        self.inner.is_minimizable()
+    }
+
+    fn is_maximizable(&self) -> bool {
+        self.inner.is_maximizable()
+    }
+
+    fn is_always_on_top(&self) -> bool {
+        self.inner.is_always_on_top()
+    }
+
+    /// The current window title.
+    fn title(&self) -> String {
+        self.inner.title()
+    }
+
+    /// The window's effective color theme.
+    fn theme(&self) -> Theme {
+        Theme::from(self.inner.theme())
+    }
+
+    /// Force the window theme (``None`` restores the system default).
+    fn set_theme(&self, theme: Option<Theme>) {
+        let t = theme.map(|t| match t {
+            Theme::Light => tao::window::Theme::Light,
+            Theme::Dark => tao::window::Theme::Dark,
+        });
+        self.inner.set_theme(t);
+    }
+
+    fn set_focusable(&self, focusable: bool) {
+        self.inner.set_focusable(focusable);
+    }
+
+    fn set_content_protection(&self, enabled: bool) {
+        self.inner.set_content_protection(enabled);
+    }
+
+    fn set_visible_on_all_workspaces(&self, visible: bool) {
+        self.inner.set_visible_on_all_workspaces(visible);
+    }
+
+    fn set_always_on_bottom(&self, always: bool) {
+        self.inner.set_always_on_bottom(always);
+    }
+
+    // Cursor
+
+    /// Set the cursor shape shown while hovering the window.
+    fn set_cursor_icon(&self, cursor: CursorIcon) {
+        self.inner.set_cursor_icon(cursor.into());
+    }
+
+    /// Lock (``True``) or release (``False``) the cursor to the window.
+    /// Useful for games or drawing apps.
+    fn set_cursor_grab(&self, grab: bool) -> PyResult<()> {
+        self.inner.set_cursor_grab(grab).map_err(interaction_error)
+    }
+
+    /// Make the window transparent to mouse events (``True`` = clicks
+    /// pass through).
+    fn set_ignore_cursor_events(&self, ignore: bool) -> PyResult<()> {
+        self.inner
+            .set_ignore_cursor_events(ignore)
+            .map_err(interaction_error)
+    }
+
+    /// Move the cursor to a logical position inside the window.
+    fn set_cursor_position(&self, x: f64, y: f64) -> PyResult<()> {
+        self.inner
+            .set_cursor_position(LogicalPosition::new(x, y))
+            .map_err(interaction_error)
+    }
+
+    // Attention
+
+    /// Ask the OS to draw the user's attention to this window
+    /// (taskbar flash / Dock bounce). ``None`` clears the request.
+    fn request_user_attention(&self, request_type: Option<AttentionType>) {
+        self.inner
+            .request_user_attention(request_type.map(Into::into));
+    }
+
+    // IME
+
+    /// Place the input method editor (candidate window) at a logical
+    /// position inside the window.
+    fn set_ime_position(&self, x: f64, y: f64) {
+        self.inner.set_ime_position(LogicalPosition::new(x, y));
+    }
+
+    // Progress bar (Windows taskbar)
+
+    /// Set the Windows taskbar progress bar. ``state=None`` removes it;
+    /// *progress* is 0.0–100.0 (ignored for ``Indeterminate``).
+    fn set_progress_bar(&self, state: Option<ProgressState>, progress: Option<f64>) {
+        use tao::window::ProgressBarState;
+        let progress = progress.map(|p| p.clamp(0.0, 100.0) as u64);
+        self.inner.set_progress_bar(ProgressBarState {
+            state: state.map(Into::into),
+            progress,
+            desktop_filename: None,
+        });
+    }
+
+    // Monitors
+
+    /// The monitor the window is currently on, if any.
+    fn current_monitor(&self) -> Option<Monitor> {
+        self.inner.current_monitor().map(|m| Monitor { inner: m })
+    }
+
+    /// All monitors currently connected.
+    fn available_monitors(&self) -> Vec<Monitor> {
+        self.inner
+            .available_monitors()
+            .map(|m| Monitor { inner: m })
+            .collect()
+    }
+
+    /// The primary monitor, if any.
+    fn primary_monitor(&self) -> Option<Monitor> {
+        self.inner.primary_monitor().map(|m| Monitor { inner: m })
+    }
+
+    /// The monitor that contains the given physical screen point.
+    fn monitor_from_point(&self, x: f64, y: f64) -> Option<Monitor> {
+        self.inner
+            .monitor_from_point(x, y)
+            .map(|m| Monitor { inner: m })
     }
 
     // Icon
@@ -526,5 +741,154 @@ impl TaoWindow {
             .default_vbox()
             .map(|vbox| vbox.as_ptr() as isize)
             .unwrap_or(0)
+    }
+
+    // ── Platform extensions ────────────────────────────────────────────
+    // Each group exists only on its platform (like ``gtk_container``):
+    // calling it elsewhere raises AttributeError.
+
+    // Windows
+
+    /// Hide (``True``) or show (``False``) the window in the taskbar.
+    /// **Windows only.**
+    #[cfg(target_os = "windows")]
+    fn set_skip_taskbar(&self, skip: bool) -> PyResult<()> {
+        use tao::platform::windows::WindowExtWindows;
+        self.inner.set_skip_taskbar(skip).map_err(interaction_error)
+    }
+
+    /// Replace the taskbar icon (``None`` restores the window icon).
+    /// **Windows only.**
+    #[cfg(target_os = "windows")]
+    fn set_taskbar_icon(&self, icon: Option<(u32, u32, Vec<u8>)>) -> PyResult<()> {
+        use tao::platform::windows::WindowExtWindows;
+        let icon = match icon {
+            Some((w, h, rgba)) => Some(Icon::from_rgba(rgba, w, h).map_err(|e| {
+                PyErr::new::<PyValueError, _>(format!("invalid icon: {e}"))
+            })?),
+            None => None,
+        };
+        self.inner.set_taskbar_icon(icon);
+        Ok(())
+    }
+
+    /// Set an overlay badge on the taskbar icon (``None`` removes it).
+    /// **Windows only.**
+    #[cfg(target_os = "windows")]
+    fn set_overlay_icon(&self, icon: Option<(u32, u32, Vec<u8>)>) -> PyResult<()> {
+        use tao::platform::windows::WindowExtWindows;
+        let icon = match icon {
+            Some((w, h, rgba)) => Some(Icon::from_rgba(rgba, w, h).map_err(|e| {
+                PyErr::new::<PyValueError, _>(format!("invalid icon: {e}"))
+            })?),
+            None => None,
+        };
+        self.inner.set_overlay_icon(icon.as_ref());
+        Ok(())
+    }
+
+    /// Enable (``True``) or disable (``False``) the window (disabled
+    /// windows ignore mouse input). **Windows only.**
+    #[cfg(target_os = "windows")]
+    fn set_enable(&self, enabled: bool) {
+        use tao::platform::windows::WindowExtWindows;
+        self.inner.set_enable(enabled);
+    }
+
+    /// Right-to-left layout for the window. **Windows only.**
+    #[cfg(target_os = "windows")]
+    fn set_rtl(&self, rtl: bool) {
+        use tao::platform::windows::WindowExtWindows;
+        self.inner.set_rtl(rtl);
+    }
+
+    /// Reset the OS dead-key state (e.g. after AltGr combos). **Windows only.**
+    #[cfg(target_os = "windows")]
+    fn reset_dead_keys(&self) {
+        use tao::platform::windows::WindowExtWindows;
+        self.inner.reset_dead_keys();
+    }
+
+    /// Toggle the shadow of an undecorated window at runtime.
+    /// **Windows only.**
+    #[cfg(target_os = "windows")]
+    fn set_undecorated_shadow(&self, shadow: bool) {
+        use tao::platform::windows::WindowExtWindows;
+        self.inner.set_undecorated_shadow(shadow);
+    }
+
+    /// Whether the undecorated window shadow is currently enabled.
+    /// **Windows only.**
+    #[cfg(target_os = "windows")]
+    fn has_undecorated_shadow(&self) -> bool {
+        use tao::platform::windows::WindowExtWindows;
+        self.inner.has_undecorated_shadow()
+    }
+
+    // macOS
+
+    /// Set the text shown in the macOS Dock badge (``None`` clears it).
+    /// **macOS only.**
+    #[cfg(target_os = "macos")]
+    fn set_badge_label(&self, label: Option<String>) {
+        use tao::platform::macos::WindowExtMacOS;
+        self.inner.set_badge_label(label);
+    }
+
+    /// Toggle "simple fullscreen" (content covers the whole screen,
+    /// including the menu bar). Returns the resulting state.
+    /// **macOS only.**
+    #[cfg(target_os = "macos")]
+    fn set_simple_fullscreen(&self, fullscreen: bool) -> bool {
+        use tao::platform::macos::WindowExtMacOS;
+        self.inner.set_simple_fullscreen(fullscreen)
+    }
+
+    /// Make the native titlebar transparent (custom chrome overlays
+    /// the titlebar area). **macOS only.**
+    #[cfg(target_os = "macos")]
+    fn set_titlebar_transparent(&self, transparent: bool) {
+        use tao::platform::macos::WindowExtMacOS;
+        self.inner.set_titlebar_transparent(transparent);
+    }
+
+    /// Set the traffic-light (window controls) inset in logical points.
+    /// **macOS only.**
+    #[cfg(target_os = "macos")]
+    fn set_traffic_light_inset(&self, x: f64, y: f64) {
+        use tao::platform::macos::WindowExtMacOS;
+        self.inner.set_traffic_light_inset(LogicalPosition::new(x, y));
+    }
+
+    /// Toggle the window shadow. **macOS only.**
+    #[cfg(target_os = "macos")]
+    fn set_has_shadow(&self, has_shadow: bool) {
+        use tao::platform::macos::WindowExtMacOS;
+        self.inner.set_has_shadow(has_shadow);
+    }
+
+    /// Whether the window currently has a shadow. **macOS only.**
+    #[cfg(target_os = "macos")]
+    fn has_shadow(&self) -> bool {
+        use tao::platform::macos::WindowExtMacOS;
+        self.inner.has_shadow()
+    }
+
+    // Linux (GTK)
+
+    /// Hide (``True``) or show (``False``) the window in the taskbar.
+    /// **Linux only.**
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn set_skip_taskbar(&self, skip: bool) -> PyResult<()> {
+        use tao::platform::unix::WindowExtUnix;
+        self.inner.set_skip_taskbar(skip).map_err(interaction_error)
+    }
+
+    /// Set the number shown in the GTK badge (``None`` clears it).
+    /// **Linux only.**
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn set_badge_count(&self, count: Option<i64>) {
+        use tao::platform::unix::WindowExtUnix;
+        self.inner.set_badge_count(count, None);
     }
 }

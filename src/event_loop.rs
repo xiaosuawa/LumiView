@@ -8,6 +8,7 @@ use tao::event_loop::{
 use tao::platform::run_return::EventLoopExtRunReturn;
 
 use crate::events::build_event;
+use crate::monitor::Monitor;
 use crate::types::EventLoopControl;
 
 // SendPtr — private helper for detach()
@@ -225,6 +226,41 @@ impl TaoEventLoop {
         Ok(TaoEventLoopProxy {
             proxy: inner.create_proxy(),
         })
+    }
+
+    // Monitors (valid while run() is active, like window creation)
+
+    /// All monitors currently connected.
+    fn available_monitors(&self) -> PyResult<Vec<Monitor>> {
+        let elwt = self.target().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "EventLoop is not running",
+            )
+        })?;
+        Ok(elwt
+            .available_monitors()
+            .map(|m| Monitor { inner: m })
+            .collect())
+    }
+
+    /// The primary monitor, if any.
+    fn primary_monitor(&self) -> PyResult<Option<Monitor>> {
+        let elwt = self.target().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "EventLoop is not running",
+            )
+        })?;
+        Ok(elwt.primary_monitor().map(|m| Monitor { inner: m }))
+    }
+
+    /// The monitor that contains the given physical screen point.
+    fn monitor_from_point(&self, x: f64, y: f64) -> PyResult<Option<Monitor>> {
+        let elwt = self.target().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "EventLoop is not running",
+            )
+        })?;
+        Ok(elwt.monitor_from_point(x, y).map(|m| Monitor { inner: m }))
     }
 }
 

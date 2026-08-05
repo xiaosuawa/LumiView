@@ -29,11 +29,18 @@ Low-level bindings live in :mod:`lumiview._core`.
 
 from lumiview.app import App, AppState, AppClosedError, WindowClosedError
 from lumiview.window import (
+    AttentionType,
     CloseBehavior,
-    Window,
-    WindowOptions,
-    WindowEffect,
+    CursorIcon,
+    Monitor,
+    ProgressState,
     ResizeDirection,
+    Theme,
+    VibrancyMaterial,
+    VideoMode,
+    Window,
+    WindowEffect,
+    WindowOptions,
 )
 from lumiview.bridge import Bridge, BridgeError
 from lumiview.scope import Plugin, Scope, ScopePermission, BridgeContext, InitContext
@@ -63,6 +70,13 @@ __all__ = [
     "CloseBehavior",
     "WindowEffect",
     "ResizeDirection",
+    "Theme",
+    "CursorIcon",
+    "AttentionType",
+    "VibrancyMaterial",
+    "ProgressState",
+    "Monitor",
+    "VideoMode",
     # Events
     "Event",
     "WindowEvent",

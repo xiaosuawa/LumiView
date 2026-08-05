@@ -1,4 +1,5 @@
 use pyo3::prelude::*;
+use window_vibrancy::NSVisualEffectMaterial;
 
 // EventLoopControl
 
@@ -39,6 +40,31 @@ pub enum EventKind {
     CursorEntered,
     CursorLeft,
     RedrawRequested,
+    // Window lifecycle
+    Started,
+    Suspended,
+    Resumed,
+    Stopped,
+    // Input events (extended)
+    ReceivedImeText,
+    TouchpadPressure,
+    AxisMotion,
+    Touch,
+    DecorationsClick,
+    // Loop-level events
+    NewEvents,
+    MainEventsCleared,
+    RedrawEventsCleared,
+    Opened,
+    // Device events
+    DeviceAdded,
+    DeviceRemoved,
+    DeviceMouseMotion,
+    DeviceMouseWheel,
+    DeviceMotion,
+    DeviceButton,
+    DeviceKey,
+    DeviceText,
     // System events
     UserEvent,
     LoopDestroyed,
@@ -166,14 +192,16 @@ simple_enum!(
     }
 );
 
-simple_enum!(
-    Theme,
-    "System color theme.",
-    {
-        Light => "Light",
-        Dark => "Dark",
-    }
-);
+/// System color theme.
+///
+/// Used as both an event payload (:class:`ThemeChangedEvent`) and an
+/// input to :meth:`TaoWindow.set_theme`.
+#[pyclass(eq, frozen, hash, from_py_object)]
+#[derive(Clone, PartialEq, Debug, Hash)]
+pub enum Theme {
+    Light,
+    Dark,
+}
 
 /// Native background material applied to a window.
 #[pyclass(eq, frozen, hash, from_py_object)]
@@ -392,4 +420,213 @@ pub enum WindowHandleKind {
     Wayland,
     /// Linux GTK container pointer (recommended for Wayland compatibility).
     Gtk,
+}
+
+// CursorIcon
+
+/// Mouse cursor shape, for :meth:`TaoWindow.set_cursor_icon`.
+#[pyclass(eq, frozen, hash, from_py_object)]
+#[derive(Clone, PartialEq, Debug, Hash)]
+pub enum CursorIcon {
+    Default,
+    Crosshair,
+    Hand,
+    Arrow,
+    Move,
+    Text,
+    Wait,
+    Help,
+    Progress,
+    NotAllowed,
+    ContextMenu,
+    Cell,
+    VerticalText,
+    Alias,
+    Copy,
+    NoDrop,
+    Grab,
+    Grabbing,
+    AllScroll,
+    ZoomIn,
+    ZoomOut,
+    EResize,
+    NResize,
+    NeResize,
+    NwResize,
+    SResize,
+    SeResize,
+    SwResize,
+    WResize,
+    EwResize,
+    NsResize,
+    NeswResize,
+    NwseResize,
+    ColResize,
+    RowResize,
+}
+
+impl From<CursorIcon> for tao::window::CursorIcon {
+    fn from(cursor: CursorIcon) -> Self {
+        match cursor {
+            CursorIcon::Default => Self::Default,
+            CursorIcon::Crosshair => Self::Crosshair,
+            CursorIcon::Hand => Self::Hand,
+            CursorIcon::Arrow => Self::Arrow,
+            CursorIcon::Move => Self::Move,
+            CursorIcon::Text => Self::Text,
+            CursorIcon::Wait => Self::Wait,
+            CursorIcon::Help => Self::Help,
+            CursorIcon::Progress => Self::Progress,
+            CursorIcon::NotAllowed => Self::NotAllowed,
+            CursorIcon::ContextMenu => Self::ContextMenu,
+            CursorIcon::Cell => Self::Cell,
+            CursorIcon::VerticalText => Self::VerticalText,
+            CursorIcon::Alias => Self::Alias,
+            CursorIcon::Copy => Self::Copy,
+            CursorIcon::NoDrop => Self::NoDrop,
+            CursorIcon::Grab => Self::Grab,
+            CursorIcon::Grabbing => Self::Grabbing,
+            CursorIcon::AllScroll => Self::AllScroll,
+            CursorIcon::ZoomIn => Self::ZoomIn,
+            CursorIcon::ZoomOut => Self::ZoomOut,
+            CursorIcon::EResize => Self::EResize,
+            CursorIcon::NResize => Self::NResize,
+            CursorIcon::NeResize => Self::NeResize,
+            CursorIcon::NwResize => Self::NwResize,
+            CursorIcon::SResize => Self::SResize,
+            CursorIcon::SeResize => Self::SeResize,
+            CursorIcon::SwResize => Self::SwResize,
+            CursorIcon::WResize => Self::WResize,
+            CursorIcon::EwResize => Self::EwResize,
+            CursorIcon::NsResize => Self::NsResize,
+            CursorIcon::NeswResize => Self::NeswResize,
+            CursorIcon::NwseResize => Self::NwseResize,
+            CursorIcon::ColResize => Self::ColResize,
+            CursorIcon::RowResize => Self::RowResize,
+        }
+    }
+}
+
+// AttentionType
+
+/// How to draw the user's attention (taskbar flash / Dock bounce).
+#[pyclass(eq, frozen, hash, from_py_object)]
+#[derive(Clone, PartialEq, Debug, Hash)]
+pub enum AttentionType {
+    /// The user needs a critical response (taskbar flashes until focused).
+    Critical,
+    /// Informational — the taskbar flashes once.
+    Informational,
+}
+
+impl From<AttentionType> for tao::window::UserAttentionType {
+    fn from(t: AttentionType) -> Self {
+        match t {
+            AttentionType::Critical => Self::Critical,
+            AttentionType::Informational => Self::Informational,
+        }
+    }
+}
+
+// StartCause
+
+/// Why the event loop started a new batch of events.
+#[pyclass(eq, frozen, hash, from_py_object)]
+#[derive(Clone, PartialEq, Debug, Hash)]
+pub enum StartCause {
+    /// The loop was freshly initialized.
+    Init,
+    /// The loop is polling (continuous refresh).
+    Poll,
+    /// A ``Wait`` was cancelled before the deadline (external wake).
+    WaitCancelled,
+    /// A scheduled ``WaitUntil`` deadline was reached.
+    ResumeTimeReached,
+}
+
+impl From<tao::event::StartCause> for StartCause {
+    fn from(cause: tao::event::StartCause) -> Self {
+        match cause {
+            tao::event::StartCause::Init => StartCause::Init,
+            tao::event::StartCause::Poll => StartCause::Poll,
+            tao::event::StartCause::WaitCancelled { .. } => StartCause::WaitCancelled,
+            tao::event::StartCause::ResumeTimeReached { .. } => StartCause::ResumeTimeReached,
+            _ => StartCause::Init,
+        }
+    }
+}
+
+// ProgressState
+
+/// Taskbar progress bar state (Windows).
+#[pyclass(eq, frozen, hash, from_py_object)]
+#[derive(Clone, PartialEq, Debug, Hash)]
+pub enum ProgressState {
+    /// Determinate progress (see the ``progress`` value).
+    Normal,
+    /// Indeterminate animation (no value shown).
+    Indeterminate,
+    /// Paused (yellow).
+    Paused,
+    /// Error (red).
+    Error,
+}
+
+impl From<ProgressState> for tao::window::ProgressState {
+    fn from(state: ProgressState) -> Self {
+        match state {
+            ProgressState::Normal => Self::Normal,
+            ProgressState::Indeterminate => Self::Indeterminate,
+            ProgressState::Paused => Self::Paused,
+            ProgressState::Error => Self::Error,
+        }
+    }
+}
+
+// VibrancyMaterial
+
+/// macOS ``NSVisualEffectMaterial`` — the background material used by
+/// :meth:`TaoWindow.apply_effect` with ``WindowEffect.Vibrancy``.
+#[pyclass(eq, frozen, hash, from_py_object)]
+#[derive(Clone, PartialEq, Debug, Hash)]
+pub enum VibrancyMaterial {
+    /// Default material for the view's appearance.
+    AppearanceBased,
+    Titlebar,
+    Selection,
+    Menu,
+    Popover,
+    Sidebar,
+    HeaderView,
+    Sheet,
+    WindowBackground,
+    HudWindow,
+    FullScreenUI,
+    Tooltip,
+    ContentBackground,
+    UnderWindowBackground,
+    UnderPageBackground,
+}
+
+impl From<VibrancyMaterial> for NSVisualEffectMaterial {
+    #[allow(deprecated)] // AppearanceBased is marked deprecated upstream
+    fn from(material: VibrancyMaterial) -> Self {
+        match material {
+            VibrancyMaterial::AppearanceBased => Self::AppearanceBased,
+            VibrancyMaterial::Titlebar => Self::Titlebar,
+            VibrancyMaterial::Selection => Self::Selection,
+            VibrancyMaterial::Menu => Self::Menu,
+            VibrancyMaterial::Popover => Self::Popover,
+            VibrancyMaterial::Sidebar => Self::Sidebar,
+            VibrancyMaterial::HeaderView => Self::HeaderView,
+            VibrancyMaterial::Sheet => Self::Sheet,
+            VibrancyMaterial::WindowBackground => Self::WindowBackground,
+            VibrancyMaterial::HudWindow => Self::HudWindow,
+            VibrancyMaterial::FullScreenUI => Self::FullScreenUI,
+            VibrancyMaterial::Tooltip => Self::Tooltip,
+            VibrancyMaterial::ContentBackground => Self::ContentBackground,
+            VibrancyMaterial::UnderWindowBackground => Self::UnderWindowBackground,
+            VibrancyMaterial::UnderPageBackground => Self::UnderPageBackground,
+        }
+    }
 }

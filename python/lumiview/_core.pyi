@@ -48,6 +48,17 @@ class TaoEventLoop:
         """
         ...
 
+    # Monitors (valid while run() is active)
+    def available_monitors(self) -> list["Monitor"]:
+        """All monitors currently connected."""
+        ...
+    def primary_monitor(self) -> "Monitor | None":
+        """The primary monitor, if any."""
+        ...
+    def monitor_from_point(self, x: float, y: float) -> "Monitor | None":
+        """The monitor that contains the given physical screen point."""
+        ...
+
 class TaoEventLoopProxy:
     """Thread-safe handle for sending user events into the event loop.
 
@@ -141,6 +152,7 @@ class TaoWindow:
         self,
         effect: "WindowEffect",
         color: tuple[int, int, int, int] | None = None,
+        material: "VibrancyMaterial | None" = None,
     ) -> None: ...
     def clear_effect(self, effect: "WindowEffect") -> None: ...
 
@@ -174,6 +186,106 @@ class TaoWindow:
         (AttributeError).
         """
         ...
+
+    # Geometry
+    def inner_position(self) -> tuple[float, float]:
+        """Logical inner position, relative to the screen top-left.
+
+        Raises ``NotImplementedError`` on platforms that cannot report
+        it (Wayland).
+        """
+        ...
+    def outer_position(self) -> tuple[float, float]:
+        """Logical outer position, relative to the screen top-left."""
+        ...
+    def cursor_position(self) -> tuple[float, float]:
+        """Logical cursor position inside the client area."""
+        ...
+
+    # Appearance / state
+    def title(self) -> str:
+        """The current window title."""
+        ...
+    def theme(self) -> "Theme":
+        """The window's effective color theme."""
+        ...
+    def set_theme(self, theme: "Theme | None") -> None:
+        """Force the window theme (None restores the system default)."""
+        ...
+    def is_focused(self) -> bool: ...
+    def is_resizable(self) -> bool: ...
+    def is_decorated(self) -> bool: ...
+    def is_closable(self) -> bool: ...
+    def is_minimizable(self) -> bool: ...
+    def is_maximizable(self) -> bool: ...
+    def is_always_on_top(self) -> bool: ...
+    def is_fullscreen(self) -> bool: ...
+    def set_focusable(self, focusable: bool) -> None: ...
+    def set_content_protection(self, enabled: bool) -> None: ...
+    def set_visible_on_all_workspaces(self, visible: bool) -> None: ...
+    def set_always_on_bottom(self, always: bool) -> None: ...
+
+    # Cursor
+    def set_cursor_icon(self, cursor: "CursorIcon") -> None: ...
+    def set_cursor_grab(self, grab: bool) -> None: ...
+    def set_ignore_cursor_events(self, ignore: bool) -> None: ...
+    def set_cursor_position(self, x: float, y: float) -> None: ...
+
+    # Attention / IME
+    def request_user_attention(self, request_type: "AttentionType | None") -> None:
+        """Ask the OS to draw the user's attention (None clears it)."""
+        ...
+    def set_ime_position(self, x: float, y: float) -> None: ...
+
+    # Fullscreen
+    def set_borderless_fullscreen(self, monitor: "Monitor | None") -> None:
+        """Borderless fullscreen on *monitor* (None = current)."""
+        ...
+    def set_exclusive_fullscreen(self, mode: "VideoMode") -> None:
+        """Exclusive fullscreen at the mode's resolution/refresh rate."""
+        ...
+
+    # Progress bar (Windows taskbar)
+    def set_progress_bar(
+        self,
+        state: "ProgressState | None",
+        progress: "float | None",
+    ) -> None:
+        """Set the taskbar progress bar (state=None removes it)."""
+        ...
+
+    # Monitors
+    def current_monitor(self) -> "Monitor | None": ...
+    def available_monitors(self) -> "list[Monitor]": ...
+    def primary_monitor(self) -> "Monitor | None": ...
+    def monitor_from_point(self, x: float, y: float) -> "Monitor | None": ...
+
+    # Windows only
+    def set_skip_taskbar(self, skip: bool) -> None: ...
+    def set_taskbar_icon(self, icon: "tuple[int, int, bytes] | None") -> None:
+        """(width, height, rgba); None restores the window icon."""
+        ...
+    def set_overlay_icon(self, icon: "tuple[int, int, bytes] | None") -> None:
+        """(width, height, rgba); None removes the overlay."""
+        ...
+    def set_enable(self, enabled: bool) -> None: ...
+    def set_rtl(self, rtl: bool) -> None: ...
+    def reset_dead_keys(self) -> None: ...
+    def set_undecorated_shadow(self, shadow: bool) -> None: ...
+    def has_undecorated_shadow(self) -> bool: ...
+
+    # macOS only
+    def set_badge_label(self, label: "str | None") -> None: ...
+    def set_simple_fullscreen(self, fullscreen: bool) -> bool:
+        """Toggle simple fullscreen; returns the resulting state."""
+        ...
+    def set_titlebar_transparent(self, transparent: bool) -> None: ...
+    def set_traffic_light_inset(self, x: float, y: float) -> None: ...
+    def set_has_shadow(self, has_shadow: bool) -> None: ...
+    def has_shadow(self) -> bool: ...
+
+    # Linux only
+    def set_badge_count(self, count: "int | None") -> None: ...
 
 # ── Types ───────────────────────────────────────────────────────────────────
 
@@ -230,6 +342,27 @@ class EventKind(Enum):
     CursorEntered: EventKind
     CursorLeft: EventKind
     RedrawRequested: EventKind
+    Started: EventKind
+    Suspended: EventKind
+    Resumed: EventKind
+    Stopped: EventKind
+    ReceivedImeText: EventKind
+    TouchpadPressure: EventKind
+    AxisMotion: EventKind
+    Touch: EventKind
+    DecorationsClick: EventKind
+    NewEvents: EventKind
+    MainEventsCleared: EventKind
+    RedrawEventsCleared: EventKind
+    Opened: EventKind
+    DeviceAdded: EventKind
+    DeviceRemoved: EventKind
+    DeviceMouseMotion: EventKind
+    DeviceMouseWheel: EventKind
+    DeviceMotion: EventKind
+    DeviceButton: EventKind
+    DeviceKey: EventKind
+    DeviceText: EventKind
     UserEvent: EventKind
     LoopDestroyed: EventKind
 
@@ -270,10 +403,133 @@ class KeyLocation(Enum):
     Numpad: KeyLocation
 
 class Theme(Enum):
-    """System color theme."""
+    """System color theme.
+
+    Used as both an event payload and an input to
+    :meth:`TaoWindow.set_theme`.
+    """
 
     Light: Theme
     Dark: Theme
+
+class CursorIcon(Enum):
+    """Mouse cursor shape."""
+
+    Default: CursorIcon
+    Crosshair: CursorIcon
+    Hand: CursorIcon
+    Arrow: CursorIcon
+    Move: CursorIcon
+    Text: CursorIcon
+    Wait: CursorIcon
+    Help: CursorIcon
+    Progress: CursorIcon
+    NotAllowed: CursorIcon
+    ContextMenu: CursorIcon
+    Cell: CursorIcon
+    VerticalText: CursorIcon
+    Alias: CursorIcon
+    Copy: CursorIcon
+    NoDrop: CursorIcon
+    Grab: CursorIcon
+    Grabbing: CursorIcon
+    AllScroll: CursorIcon
+    ZoomIn: CursorIcon
+    ZoomOut: CursorIcon
+    EResize: CursorIcon
+    NResize: CursorIcon
+    NeResize: CursorIcon
+    NwResize: CursorIcon
+    SResize: CursorIcon
+    SeResize: CursorIcon
+    SwResize: CursorIcon
+    WResize: CursorIcon
+    EwResize: CursorIcon
+    NsResize: CursorIcon
+    NeswResize: CursorIcon
+    NwseResize: CursorIcon
+    ColResize: CursorIcon
+    RowResize: CursorIcon
+
+class AttentionType(Enum):
+    """How to draw the user's attention."""
+
+    Critical: AttentionType
+    Informational: AttentionType
+
+class StartCause(Enum):
+    """Why the event loop started a new batch of events."""
+
+    Init: StartCause
+    Poll: StartCause
+    WaitCancelled: StartCause
+    ResumeTimeReached: StartCause
+
+class ProgressState(Enum):
+    """Taskbar progress bar state (Windows)."""
+
+    Normal: ProgressState
+    Indeterminate: ProgressState
+    Paused: ProgressState
+    Error: ProgressState
+
+class VibrancyMaterial(Enum):
+    """macOS NSVisualEffectMaterial for ``WindowEffect.Vibrancy``."""
+
+    AppearanceBased: VibrancyMaterial
+    Titlebar: VibrancyMaterial
+    Selection: VibrancyMaterial
+    Menu: VibrancyMaterial
+    Popover: VibrancyMaterial
+    Sidebar: VibrancyMaterial
+    HeaderView: VibrancyMaterial
+    Sheet: VibrancyMaterial
+    WindowBackground: VibrancyMaterial
+    HudWindow: VibrancyMaterial
+    FullScreenUI: VibrancyMaterial
+    Tooltip: VibrancyMaterial
+    ContentBackground: VibrancyMaterial
+    UnderWindowBackground: VibrancyMaterial
+    UnderPageBackground: VibrancyMaterial
+
+class Monitor:
+    """A display monitor connected to the system.
+
+    Size and position are in physical pixels; use
+    :meth:`scale_factor` to convert.
+    """
+
+    def name(self) -> str | None:
+        """Human-readable monitor name, if known."""
+        ...
+    def size(self) -> tuple[int, int]:
+        """Physical size in pixels."""
+        ...
+    def position(self) -> tuple[int, int]:
+        """Physical position of the top-left corner."""
+        ...
+    def scale_factor(self) -> float:
+        """DPI scale factor of this monitor."""
+        ...
+    def video_modes(self) -> list["VideoMode"]:
+        """All display modes supported by this monitor, best first."""
+        ...
+
+class VideoMode:
+    """A display mode (resolution + refresh rate + color depth)."""
+
+    def size(self) -> tuple[int, int]:
+        """Resolution in physical pixels."""
+        ...
+    def bit_depth(self) -> int:
+        """Color depth in bits per pixel."""
+        ...
+    def refresh_rate(self) -> int:
+        """Refresh rate in Hertz."""
+        ...
+    def monitor(self) -> Monitor:
+        """The monitor this mode belongs to."""
+        ...
 
 class ModifiersState:
     """Keyboard modifier key state snapshot.
@@ -377,12 +633,7 @@ class ScaleFactorChangedEvent(TaoEvent):
 
     @property
     def scale_factor(self) -> float:
-        """Current DPI scale factor of the source window."""
-        ...
-
-    @property
-    def new_scale_factor(self) -> float:
-        """The new scale factor value."""
+        """The new DPI scale factor."""
         ...
 
 class ThemeChangedEvent(TaoEvent):
@@ -505,3 +756,179 @@ class LoopDestroyedEvent(TaoEvent):
     """Sent once after the event loop has exited."""
 
     pass
+
+# ── Extended events ─────────────────────────────────────────────────────────
+
+class StartedEvent(TaoEvent):
+    """The window started (became active)."""
+
+    pass
+
+class SuspendedEvent(TaoEvent):
+    """The window was suspended."""
+
+    pass
+
+class ResumedEvent(TaoEvent):
+    """The window resumed from suspension."""
+
+    pass
+
+class StoppedEvent(TaoEvent):
+    """The window stopped."""
+
+    pass
+
+class DecorationsClickEvent(TaoEvent):
+    """The user double-clicked the window decorations (Windows)."""
+
+    pass
+
+class ReceivedImeTextEvent(TaoEvent):
+    """Input method editor (IME) text arrived."""
+
+    @property
+    def text(self) -> str:
+        """The IME pre-edit / committed text."""
+        ...
+
+class TouchpadPressureEvent(TaoEvent):
+    """Touchpad pressure changed (macOS)."""
+
+    @property
+    def pressure(self) -> float:
+        """Normalized pressure 0.0–1.0."""
+        ...
+    @property
+    def stage(self) -> int:
+        """Pressure stage (1 = light, 2 = deep click)."""
+        ...
+
+class AxisMotionEvent(TaoEvent):
+    """Joystick / additional input axis motion."""
+
+    @property
+    def axis(self) -> int:
+        """The axis identifier."""
+        ...
+    @property
+    def value(self) -> float:
+        """The axis position (typically -1.0–1.0)."""
+        ...
+
+class TouchEvent(TaoEvent):
+    """A touch contact on a touch screen."""
+
+    @property
+    def phase(self) -> TouchPhase: ...
+    @property
+    def x(self) -> float:
+        """Logical x position inside the window."""
+        ...
+    @property
+    def y(self) -> float:
+        """Logical y position inside the window."""
+        ...
+    @property
+    def force(self) -> float | None:
+        """Pressure 0.0–1.0, or None if not reported."""
+        ...
+    @property
+    def id(self) -> int:
+        """Unique finger identifier."""
+        ...
+
+class NewEventsEvent(TaoEvent):
+    """The event loop started a new batch of events."""
+
+    @property
+    def cause(self) -> StartCause:
+        """Why the batch started."""
+        ...
+
+class MainEventsClearedEvent(TaoEvent):
+    """All events of the current batch were processed."""
+
+    pass
+
+class RedrawEventsClearedEvent(TaoEvent):
+    """All redraw requests of the current frame were processed."""
+
+    pass
+
+class OpenedEvent(TaoEvent):
+    """The app was opened with a URL (custom scheme / file association)."""
+
+    @property
+    def urls(self) -> list[str]:
+        """The URLs the app was opened with."""
+        ...
+
+class DeviceAddedEvent(TaoEvent):
+    """An input device was connected."""
+
+    pass
+
+class DeviceRemovedEvent(TaoEvent):
+    """An input device was disconnected."""
+
+    pass
+
+class DeviceMouseMotionEvent(TaoEvent):
+    """Global (device-level) mouse motion."""
+
+    @property
+    def dx(self) -> float: ...
+    @property
+    def dy(self) -> float: ...
+
+class DeviceMouseWheelEvent(TaoEvent):
+    """Global (device-level) mouse wheel."""
+
+    @property
+    def delta_kind(self) -> ScrollDeltaKind: ...
+    @property
+    def dx(self) -> float: ...
+    @property
+    def dy(self) -> float: ...
+
+class DeviceMotionEvent(TaoEvent):
+    """Global (device-level) axis motion."""
+
+    @property
+    def axis(self) -> int: ...
+    @property
+    def value(self) -> float: ...
+
+class DeviceButtonEvent(TaoEvent):
+    """Global (device-level) mouse button."""
+
+    @property
+    def button(self) -> int: ...
+    @property
+    def state(self) -> ElementState: ...
+
+class DeviceKeyEvent(TaoEvent):
+    """Global (device-level) keyboard event."""
+
+    @property
+    def physical_key(self) -> str:
+        """The hardware key (e.g. ``"KeyW"``)."""
+        ...
+    @property
+    def state(self) -> ElementState: ...
+
+class DeviceTextEvent(TaoEvent):
+    """Global (device-level) text input."""
+
+    @property
+    def codepoint(self) -> int:
+        """The Unicode code point of the character."""
+        ...
+
+# ── Functions ───────────────────────────────────────────────────────────────
+
+def parse_key_code(text: str) -> str | None:
+    """Parse a key-code name (e.g. ``"KeyW"``, ``"Space"``, ``"A"``)
+    into its canonical form, or ``None`` if unknown. Case-insensitive."""
+    ...

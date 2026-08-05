@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from lumiview.window import Window
-    from lumiview._core import Theme
+    from lumiview._core import ElementState, ScrollDeltaKind, StartCause, Theme, TouchPhase
     from wryview import DragDropEvent
 
 
@@ -236,12 +236,10 @@ class WindowEvent:
         """The display scale factor changed (e.g. across monitors).
 
         Attributes:
-            scale_factor: The previous scale factor.
-            new_scale_factor: The new scale factor.
+            scale_factor: The new scale factor.
         """
 
         scale_factor: float
-        new_scale_factor: float
 
     @dataclass(slots=True, kw_only=True)
     class ThemeChangedEvent(WindowBaseEvent):
@@ -252,6 +250,91 @@ class WindowEvent:
         """
 
         theme: Theme
+
+    # Window lifecycle (tao)
+
+    class StartedEvent(WindowBaseEvent):
+        """The window started (became active)."""
+
+        ...
+
+    class SuspendedEvent(WindowBaseEvent):
+        """The window was suspended."""
+
+        ...
+
+    class ResumedEvent(WindowBaseEvent):
+        """The window resumed from suspension."""
+
+        ...
+
+    class StoppedEvent(WindowBaseEvent):
+        """The window stopped."""
+
+        ...
+
+    class DecorationsClickEvent(WindowBaseEvent):
+        """The user double-clicked the window decorations (Windows)."""
+
+        ...
+
+    # Input (extended)
+
+    @dataclass(slots=True, kw_only=True)
+    class ReceivedImeTextEvent(WindowBaseEvent):
+        """Input method editor (IME) text arrived.
+
+        Carries the pre-edit / committed string of a composition
+        session (e.g. Chinese pinyin candidates).
+
+        Attributes:
+            text: The IME text.
+        """
+
+        text: str
+
+    @dataclass(slots=True, kw_only=True)
+    class TouchpadPressureEvent(WindowBaseEvent):
+        """Touchpad pressure changed (macOS).
+
+        Attributes:
+            pressure: Normalized pressure 0.0–1.0.
+            stage: The pressure stage (1 = light, 2 = deep click).
+        """
+
+        pressure: float
+        stage: int
+
+    @dataclass(slots=True, kw_only=True)
+    class AxisMotionEvent(WindowBaseEvent):
+        """Joystick / additional input axis motion.
+
+        Attributes:
+            axis: The axis identifier.
+            value: The axis position (typically -1.0–1.0).
+        """
+
+        axis: int
+        value: float
+
+    @dataclass(slots=True, kw_only=True)
+    class TouchEvent(WindowBaseEvent):
+        """A touch contact on a touch screen.
+
+        Attributes:
+            phase: The :class:`~lumiview._core.TouchPhase` of the contact.
+            x: Logical x position inside the window.
+            y: Logical y position inside the window.
+            force: Pressure 0.0–1.0, or ``None`` if the platform does
+                not report it.
+            id: Unique finger identifier.
+        """
+
+        phase: TouchPhase
+        x: float
+        y: float
+        force: float | None
+        id: int
 
     # IPC
 
@@ -306,6 +389,135 @@ class AppEvent:
         """
 
         has_visible_windows: bool
+
+    # Loop-level events (not tied to a window)
+
+    @dataclass(slots=True, kw_only=True)
+    class NewEventsEvent(AppBaseEvent):
+        """The event loop started a new batch of events.
+
+        Fires on every loop iteration — keep handlers cheap.
+
+        Attributes:
+            cause: Why the batch started
+                (:class:`~lumiview._core.StartCause`).
+        """
+
+        cause: StartCause
+
+    class MainEventsClearedEvent(AppBaseEvent):
+        """All events of the current batch were processed.
+
+        Fires once per loop iteration after the batch — a good place
+        for frame-synchronized work.
+        """
+
+        ...
+
+    class RedrawEventsClearedEvent(AppBaseEvent):
+        """All redraw requests of the current frame were processed.
+
+        Fires once per frame after redraws.
+        """
+
+        ...
+
+    @dataclass(slots=True, kw_only=True)
+    class OpenedEvent(AppBaseEvent):
+        """The app was opened with a URL (custom scheme / file
+        association).
+
+        Attributes:
+            urls: The URLs the app was opened with.
+        """
+
+        urls: list[str]
+
+    # Device events (global input devices)
+
+    class DeviceAddedEvent(AppBaseEvent):
+        """An input device was connected."""
+
+        ...
+
+    class DeviceRemovedEvent(AppBaseEvent):
+        """An input device was disconnected."""
+
+        ...
+
+    @dataclass(slots=True, kw_only=True)
+    class DeviceMouseMotionEvent(AppBaseEvent):
+        """Global (device-level) mouse motion.
+
+        Attributes:
+            dx: Motion delta on the x axis.
+            dy: Motion delta on the y axis.
+        """
+
+        dx: float
+        dy: float
+
+    @dataclass(slots=True, kw_only=True)
+    class DeviceMouseWheelEvent(AppBaseEvent):
+        """Global (device-level) mouse wheel.
+
+        Attributes:
+            delta_kind: :class:`~lumiview._core.ScrollDeltaKind` of the
+                delta (lines or pixels).
+            dx: Horizontal delta.
+            dy: Vertical delta.
+        """
+
+        delta_kind: ScrollDeltaKind
+        dx: float
+        dy: float
+
+    @dataclass(slots=True, kw_only=True)
+    class DeviceMotionEvent(AppBaseEvent):
+        """Global (device-level) axis motion.
+
+        Attributes:
+            axis: The axis identifier.
+            value: The axis position.
+        """
+
+        axis: int
+        value: float
+
+    @dataclass(slots=True, kw_only=True)
+    class DeviceButtonEvent(AppBaseEvent):
+        """Global (device-level) mouse button.
+
+        Attributes:
+            button: The button identifier.
+            state: :class:`~lumiview._core.ElementState` (pressed or
+                released).
+        """
+
+        button: int
+        state: ElementState
+
+    @dataclass(slots=True, kw_only=True)
+    class DeviceKeyEvent(AppBaseEvent):
+        """Global (device-level) keyboard event.
+
+        Attributes:
+            physical_key: The hardware key (e.g. ``"KeyW"``).
+            state: :class:`~lumiview._core.ElementState`.
+        """
+
+        physical_key: str
+        state: ElementState
+
+    @dataclass(slots=True, kw_only=True)
+    class DeviceTextEvent(AppBaseEvent):
+        """Global (device-level) text input.
+
+        Attributes:
+            codepoint: The Unicode code point of the character.
+        """
+
+        codepoint: int
 
 
 __all__ = [

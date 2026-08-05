@@ -14,11 +14,23 @@ from enum import Enum, auto
 from typing import Any, Callable, TypeVar, ParamSpec, TYPE_CHECKING
 
 from lumiview._core import (
-    TaoEventLoop,
-    TaoEvent,
+    DeviceAddedEvent,
+    DeviceButtonEvent,
+    DeviceKeyEvent,
+    DeviceMouseMotionEvent,
+    DeviceMouseWheelEvent,
+    DeviceMotionEvent,
+    DeviceTextEvent,
+    DeviceRemovedEvent,
     EventLoopControl,
     LoopDestroyedEvent,
+    MainEventsClearedEvent,
+    NewEventsEvent,
+    OpenedEvent,
+    RedrawEventsClearedEvent,
     ReopenEvent,
+    TaoEvent,
+    TaoEventLoop,
     UserEvent,
 )
 
@@ -588,6 +600,69 @@ class App:
             # AppCloseEvent handlers actually execute. Idempotent via
             # _handle_exit_event's state check.
             return self._handle_exit_event()
+
+        # App-scoped loop events (window_id is None). Fire-and-forget:
+        # the per-frame events (NewEvents/MainEventsCleared/
+        # RedrawEventsCleared) only reach handlers if one is registered.
+        if isinstance(event, NewEventsEvent):
+            self._emit(AppEvent.NewEventsEvent(cause=event.cause))
+            return EventLoopControl.Continue
+
+        if isinstance(event, MainEventsClearedEvent):
+            self._emit(AppEvent.MainEventsClearedEvent())
+            return EventLoopControl.Continue
+
+        if isinstance(event, RedrawEventsClearedEvent):
+            self._emit(AppEvent.RedrawEventsClearedEvent())
+            return EventLoopControl.Continue
+
+        if isinstance(event, OpenedEvent):
+            self._emit(AppEvent.OpenedEvent(urls=event.urls))
+            return EventLoopControl.Continue
+
+        if isinstance(event, DeviceAddedEvent):
+            self._emit(AppEvent.DeviceAddedEvent())
+            return EventLoopControl.Continue
+
+        if isinstance(event, DeviceRemovedEvent):
+            self._emit(AppEvent.DeviceRemovedEvent())
+            return EventLoopControl.Continue
+
+        if isinstance(event, DeviceMouseMotionEvent):
+            self._emit(
+                AppEvent.DeviceMouseMotionEvent(dx=event.dx, dy=event.dy)
+            )
+            return EventLoopControl.Continue
+
+        if isinstance(event, DeviceMouseWheelEvent):
+            self._emit(
+                AppEvent.DeviceMouseWheelEvent(
+                    delta_kind=event.delta_kind, dx=event.dx, dy=event.dy
+                )
+            )
+            return EventLoopControl.Continue
+
+        if isinstance(event, DeviceMotionEvent):
+            self._emit(AppEvent.DeviceMotionEvent(axis=event.axis, value=event.value))
+            return EventLoopControl.Continue
+
+        if isinstance(event, DeviceButtonEvent):
+            self._emit(
+                AppEvent.DeviceButtonEvent(button=event.button, state=event.state)
+            )
+            return EventLoopControl.Continue
+
+        if isinstance(event, DeviceKeyEvent):
+            self._emit(
+                AppEvent.DeviceKeyEvent(
+                    physical_key=event.physical_key, state=event.state
+                )
+            )
+            return EventLoopControl.Continue
+
+        if isinstance(event, DeviceTextEvent):
+            self._emit(AppEvent.DeviceTextEvent(codepoint=event.codepoint))
+            return EventLoopControl.Continue
 
         # Every other tao event is window-scoped — route it to the window.
         if (wid := event.window_id) is not None:

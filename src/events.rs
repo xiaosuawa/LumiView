@@ -5,8 +5,8 @@ use tao::event::{Event, WindowEvent};
 use tao::window::WindowId;
 
 use crate::types::{
-    ElementState, EventKind, KeyLocation, ModifiersState, MouseButton, ScrollDeltaKind, Theme,
-    TouchPhase,
+    ElementState, EventKind, KeyLocation, ModifiersState, MouseButton, ScrollDeltaKind,
+    StartCause, Theme, TouchPhase,
 };
 
 // WindowId → u64
@@ -154,18 +154,19 @@ impl ReopenEvent {
 }
 
 /// DPI scale factor changed.
+///
+/// The old factor equals the base :attr:`TaoEvent.scale_factor`; this
+/// field carries the new one.
 #[pyclass(extends = TaoEvent)]
 pub struct ScaleFactorChangedEvent {
     #[pyo3(get)]
     pub scale_factor: f64,
-    #[pyo3(get)]
-    pub new_scale_factor: f64,
 }
 
 #[pymethods]
 impl ScaleFactorChangedEvent {
     fn __repr__(&self) -> String {
-        format!("ScaleFactorChangedEvent(sf={})", self.new_scale_factor)
+        format!("ScaleFactorChangedEvent(sf={})", self.scale_factor)
     }
 }
 
@@ -333,6 +334,236 @@ empty_event!(
     "Sent once after the event loop has exited."
 );
 
+// Window lifecycle events
+
+empty_event!(StartedEvent, "The window started (became active).");
+empty_event!(SuspendedEvent, "The window was suspended.");
+empty_event!(ResumedEvent, "The window resumed from suspension.");
+empty_event!(StoppedEvent, "The window stopped.");
+empty_event!(
+    DecorationsClickEvent,
+    "The user double-clicked the window decorations (Windows)."
+);
+
+/// Input method editor (IME) text arrived — the pre-edit / committed
+/// string of a composition session.
+#[pyclass(extends = TaoEvent)]
+pub struct ReceivedImeTextEvent {
+    #[pyo3(get)]
+    pub text: String,
+}
+
+#[pymethods]
+impl ReceivedImeTextEvent {
+    fn __repr__(&self) -> String {
+        format!("ReceivedImeTextEvent({:?})", self.text)
+    }
+}
+
+/// Touchpad pressure event (macOS).
+#[pyclass(extends = TaoEvent)]
+pub struct TouchpadPressureEvent {
+    #[pyo3(get)]
+    pub pressure: f64,
+    #[pyo3(get)]
+    pub stage: i64,
+}
+
+#[pymethods]
+impl TouchpadPressureEvent {
+    fn __repr__(&self) -> String {
+        format!("TouchpadPressureEvent(pressure={:.2}, stage={})", self.pressure, self.stage)
+    }
+}
+
+/// Joystick / additional input axis motion.
+#[pyclass(extends = TaoEvent)]
+pub struct AxisMotionEvent {
+    #[pyo3(get)]
+    pub axis: u32,
+    #[pyo3(get)]
+    pub value: f64,
+}
+
+#[pymethods]
+impl AxisMotionEvent {
+    fn __repr__(&self) -> String {
+        format!("AxisMotionEvent(axis={}, value={:.2})", self.axis, self.value)
+    }
+}
+
+/// A touch contact on a touch screen.
+#[pyclass(extends = TaoEvent)]
+pub struct TouchEvent {
+    #[pyo3(get)]
+    pub phase: TouchPhase,
+    /// Logical position inside the window.
+    #[pyo3(get)]
+    pub x: f64,
+    #[pyo3(get)]
+    pub y: f64,
+    /// Pressure 0.0–1.0, when the platform reports it.
+    #[pyo3(get)]
+    pub force: Option<f64>,
+    /// Unique finger identifier.
+    #[pyo3(get)]
+    pub id: u64,
+}
+
+#[pymethods]
+impl TouchEvent {
+    fn __repr__(&self) -> String {
+        format!(
+            "TouchEvent({:?} ({:.1}, {:.1}) id={})",
+            self.phase, self.x, self.y, self.id
+        )
+    }
+}
+
+// Loop-level events
+
+/// The event loop started a new batch of events.
+#[pyclass(extends = TaoEvent)]
+pub struct NewEventsEvent {
+    #[pyo3(get)]
+    pub cause: StartCause,
+}
+
+#[pymethods]
+impl NewEventsEvent {
+    fn __repr__(&self) -> String {
+        format!("NewEventsEvent({:?})", self.cause)
+    }
+}
+
+empty_event!(
+    MainEventsClearedEvent,
+    "All events of the current batch were processed."
+);
+empty_event!(
+    RedrawEventsClearedEvent,
+    "All redraw events of the current frame were processed."
+);
+
+/// The application was opened with a URL (e.g. custom scheme /
+/// file association).
+#[pyclass(extends = TaoEvent)]
+pub struct OpenedEvent {
+    #[pyo3(get)]
+    pub urls: Vec<String>,
+}
+
+#[pymethods]
+impl OpenedEvent {
+    fn __repr__(&self) -> String {
+        format!("OpenedEvent({:?})", self.urls)
+    }
+}
+
+// Device events (global input devices)
+
+empty_event!(DeviceAddedEvent, "An input device was connected.");
+empty_event!(DeviceRemovedEvent, "An input device was disconnected.");
+
+/// Global (device-level) mouse motion.
+#[pyclass(extends = TaoEvent)]
+pub struct DeviceMouseMotionEvent {
+    #[pyo3(get)]
+    pub dx: f64,
+    #[pyo3(get)]
+    pub dy: f64,
+}
+
+#[pymethods]
+impl DeviceMouseMotionEvent {
+    fn __repr__(&self) -> String {
+        format!("DeviceMouseMotionEvent(dx={:.1}, dy={:.1})", self.dx, self.dy)
+    }
+}
+
+/// Global (device-level) mouse wheel.
+#[pyclass(extends = TaoEvent)]
+pub struct DeviceMouseWheelEvent {
+    #[pyo3(get)]
+    pub delta_kind: ScrollDeltaKind,
+    #[pyo3(get)]
+    pub dx: f64,
+    #[pyo3(get)]
+    pub dy: f64,
+}
+
+#[pymethods]
+impl DeviceMouseWheelEvent {
+    fn __repr__(&self) -> String {
+        format!(
+            "DeviceMouseWheelEvent({:?} dx={:.1}, dy={:.1})",
+            self.delta_kind, self.dx, self.dy
+        )
+    }
+}
+
+/// Global (device-level) axis motion.
+#[pyclass(extends = TaoEvent)]
+pub struct DeviceMotionEvent {
+    #[pyo3(get)]
+    pub axis: u32,
+    #[pyo3(get)]
+    pub value: f64,
+}
+
+#[pymethods]
+impl DeviceMotionEvent {
+    fn __repr__(&self) -> String {
+        format!("DeviceMotionEvent(axis={}, value={:.2})", self.axis, self.value)
+    }
+}
+
+/// Global (device-level) mouse button.
+#[pyclass(extends = TaoEvent)]
+pub struct DeviceButtonEvent {
+    #[pyo3(get)]
+    pub button: u32,
+    #[pyo3(get)]
+    pub state: ElementState,
+}
+
+#[pymethods]
+impl DeviceButtonEvent {
+    fn __repr__(&self) -> String {
+        format!("DeviceButtonEvent({} {:?})", self.button, self.state)
+    }
+}
+
+/// Global (device-level) keyboard event.
+#[pyclass(extends = TaoEvent)]
+pub struct DeviceKeyEvent {
+    #[pyo3(get)]
+    pub physical_key: String,
+    #[pyo3(get)]
+    pub state: ElementState,
+}
+
+#[pymethods]
+impl DeviceKeyEvent {
+    fn __repr__(&self) -> String {
+        format!("DeviceKeyEvent({:?} {:?})", self.physical_key, self.state)
+    }
+}
+
+/// Global (device-level) text input.
+#[pyclass(extends = TaoEvent)]
+pub struct DeviceTextEvent {
+    #[pyo3(get)]
+    pub codepoint: u32,
+}
+
+#[pymethods]
+impl DeviceTextEvent {
+    fn __repr__(&self) -> String {
+        format!("DeviceTextEvent({})", self.codepoint)
+    }
+}
+
 // build_event — type-driven factory
 
 pub fn build_event(py: Python<'_>, event: &Event<'_, String>) -> Option<Py<PyAny>> {
@@ -407,7 +638,6 @@ pub fn build_event(py: Python<'_>, event: &Event<'_, String>) -> Option<Py<PyAny
                     let init =
                         PyClassInitializer::from(base).add_subclass(ScaleFactorChangedEvent {
                             scale_factor: *scale_factor,
-                            new_scale_factor: *scale_factor,
                         });
                     Py::new(py, init).ok().map(|p| p.into_any())
                 }
@@ -504,7 +734,7 @@ pub fn build_event(py: Python<'_>, event: &Event<'_, String>) -> Option<Py<PyAny
                         window_id: Some(wid),
                     };
                     let init = PyClassInitializer::from(base).add_subclass(KeyboardInputEvent {
-                        physical_key: format!("{:?}", key_event.physical_key),
+                        physical_key: key_event.physical_key.to_string(),
                         logical_key: format!("{:?}", key_event.logical_key),
                         text: key_event.text.map(|s| s.to_string()),
                         state: ElementState::from(key_event.state),
@@ -540,9 +770,237 @@ pub fn build_event(py: Python<'_>, event: &Event<'_, String>) -> Option<Py<PyAny
                     let init = PyClassInitializer::from(base).add_subclass(CursorLeftEvent {});
                     Py::new(py, init).ok().map(|p| p.into_any())
                 }
+                WindowEvent::Started => {
+                    let base = TaoEvent {
+                        kind: EventKind::Started,
+                        window_id: Some(wid),
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(StartedEvent {});
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                WindowEvent::Suspended => {
+                    let base = TaoEvent {
+                        kind: EventKind::Suspended,
+                        window_id: Some(wid),
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(SuspendedEvent {});
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                WindowEvent::Resumed => {
+                    let base = TaoEvent {
+                        kind: EventKind::Resumed,
+                        window_id: Some(wid),
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(ResumedEvent {});
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                WindowEvent::Stopped => {
+                    let base = TaoEvent {
+                        kind: EventKind::Stopped,
+                        window_id: Some(wid),
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(StoppedEvent {});
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                WindowEvent::ReceivedImeText(text) => {
+                    let base = TaoEvent {
+                        kind: EventKind::ReceivedImeText,
+                        window_id: Some(wid),
+                    };
+                    let init =
+                        PyClassInitializer::from(base).add_subclass(ReceivedImeTextEvent {
+                            text: text.clone(),
+                        });
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                WindowEvent::TouchpadPressure {
+                    pressure, stage, ..
+                } => {
+                    let base = TaoEvent {
+                        kind: EventKind::TouchpadPressure,
+                        window_id: Some(wid),
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(TouchpadPressureEvent {
+                        pressure: *pressure as f64,
+                        stage: *stage,
+                    });
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                WindowEvent::AxisMotion { axis, value, .. } => {
+                    let base = TaoEvent {
+                        kind: EventKind::AxisMotion,
+                        window_id: Some(wid),
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(AxisMotionEvent {
+                        axis: *axis,
+                        value: *value,
+                    });
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                WindowEvent::Touch(touch) => {
+                    let base = TaoEvent {
+                        kind: EventKind::Touch,
+                        window_id: Some(wid),
+                    };
+                    let force = match touch.force {
+                        Some(tao::event::Force::Normalized(f)) => Some(f),
+                        Some(tao::event::Force::Calibrated { force, .. }) => Some(force),
+                        _ => None,
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(TouchEvent {
+                        phase: TouchPhase::from(touch.phase),
+                        x: touch.location.x,
+                        y: touch.location.y,
+                        force,
+                        id: touch.id,
+                    });
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                WindowEvent::DecorationsClick => {
+                    let base = TaoEvent {
+                        kind: EventKind::DecorationsClick,
+                        window_id: Some(wid),
+                    };
+                    let init =
+                        PyClassInitializer::from(base).add_subclass(DecorationsClickEvent {});
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
                 _ => None,
             }
         }
+        Event::NewEvents(cause) => {
+            let base = TaoEvent {
+                kind: EventKind::NewEvents,
+                window_id: None,
+            };
+            let init = PyClassInitializer::from(base).add_subclass(NewEventsEvent {
+                cause: StartCause::from(*cause),
+            });
+            Py::new(py, init).ok().map(|p| p.into_any())
+        }
+        Event::MainEventsCleared => {
+            let base = TaoEvent {
+                kind: EventKind::MainEventsCleared,
+                window_id: None,
+            };
+            let init = PyClassInitializer::from(base).add_subclass(MainEventsClearedEvent {});
+            Py::new(py, init).ok().map(|p| p.into_any())
+        }
+        Event::RedrawEventsCleared => {
+            let base = TaoEvent {
+                kind: EventKind::RedrawEventsCleared,
+                window_id: None,
+            };
+            let init = PyClassInitializer::from(base).add_subclass(RedrawEventsClearedEvent {});
+            Py::new(py, init).ok().map(|p| p.into_any())
+        }
+        Event::Opened { urls } => {
+            let base = TaoEvent {
+                kind: EventKind::Opened,
+                window_id: None,
+            };
+            let init = PyClassInitializer::from(base).add_subclass(OpenedEvent {
+                urls: urls.iter().map(|u| u.to_string()).collect(),
+            });
+            Py::new(py, init).ok().map(|p| p.into_any())
+        }
+        Event::DeviceEvent {
+            event: device_event,
+            ..
+        } => match device_event {
+                tao::event::DeviceEvent::Added => {
+                    let base = TaoEvent {
+                        kind: EventKind::DeviceAdded,
+                        window_id: None,
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(DeviceAddedEvent {});
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                tao::event::DeviceEvent::Removed => {
+                    let base = TaoEvent {
+                        kind: EventKind::DeviceRemoved,
+                        window_id: None,
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(DeviceRemovedEvent {});
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                tao::event::DeviceEvent::MouseMotion { delta, .. } => {
+                    let base = TaoEvent {
+                        kind: EventKind::DeviceMouseMotion,
+                        window_id: None,
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(DeviceMouseMotionEvent {
+                        dx: delta.0,
+                        dy: delta.1,
+                    });
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                tao::event::DeviceEvent::MouseWheel { delta, .. } => {
+                    let base = TaoEvent {
+                        kind: EventKind::DeviceMouseWheel,
+                        window_id: None,
+                    };
+                    let (kind, dx, dy) = match delta {
+                        tao::event::MouseScrollDelta::LineDelta(x, y) => {
+                            (ScrollDeltaKind::Line, *x as f64, *y as f64)
+                        }
+                        tao::event::MouseScrollDelta::PixelDelta(pos) => {
+                            (ScrollDeltaKind::Pixel, pos.x, pos.y)
+                        }
+                        _ => (ScrollDeltaKind::Line, 0.0, 0.0),
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(DeviceMouseWheelEvent {
+                        delta_kind: kind,
+                        dx,
+                        dy,
+                    });
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                tao::event::DeviceEvent::Motion { axis, value, .. } => {
+                    let base = TaoEvent {
+                        kind: EventKind::DeviceMotion,
+                        window_id: None,
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(DeviceMotionEvent {
+                        axis: *axis,
+                        value: *value,
+                    });
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                tao::event::DeviceEvent::Button { button, state, .. } => {
+                    let base = TaoEvent {
+                        kind: EventKind::DeviceButton,
+                        window_id: None,
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(DeviceButtonEvent {
+                        button: *button,
+                        state: ElementState::from(*state),
+                    });
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                tao::event::DeviceEvent::Key(key_event) => {
+                    let base = TaoEvent {
+                        kind: EventKind::DeviceKey,
+                        window_id: None,
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(DeviceKeyEvent {
+                        physical_key: key_event.physical_key.to_string(),
+                        state: ElementState::from(key_event.state),
+                    });
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                tao::event::DeviceEvent::Text { codepoint, .. } => {
+                    let base = TaoEvent {
+                        kind: EventKind::DeviceText,
+                        window_id: None,
+                    };
+                    let init = PyClassInitializer::from(base).add_subclass(DeviceTextEvent {
+                        codepoint: *codepoint as u32,
+                    });
+                    Py::new(py, init).ok().map(|p| p.into_any())
+                }
+                _ => None,
+            }
         Event::RedrawRequested(window_id) => {
             let wid = wid_to_u64(window_id);
             let base = TaoEvent {
@@ -583,5 +1041,33 @@ pub fn build_event(py: Python<'_>, event: &Event<'_, String>) -> Option<Py<PyAny
             Py::new(py, init).ok().map(|p| p.into_any())
         }
         _ => None,
+    }
+}
+
+// Key code parsing
+
+/// Parse a key-code name (e.g. ``"KeyW"``, ``"Space"``, ``"A"``) into
+/// its canonical form (``"KeyW"``), or ``None`` if unknown.
+///
+/// Accepts both the canonical event spelling (``"KeyW"``, what
+/// :attr:`KeyboardInputEvent.physical_key` carries) and tao's bare
+/// accelerator names (``"W"``, ``"SPACE"``). Case-insensitive.
+/// Useful for matching against a normalized constant::
+///
+///     if parse_key_code(event.physical_key) == parse_key_code("KeyW"):
+///         ...
+#[pyfunction]
+pub fn parse_key_code(text: &str) -> Option<String> {
+    // tao's FromStr knows bare names ("W", "SPACE") but not the
+    // "Key"-prefixed Display spelling — strip it for parsing.
+    let bare = text.strip_prefix("Key").unwrap_or(text);
+    match bare.parse::<tao::keyboard::KeyCode>() {
+        // Unknown input parses as Unidentified instead of failing —
+        // treat that as "no match" and return None.
+        Ok(tao::keyboard::KeyCode::Unidentified(
+            tao::keyboard::NativeKeyCode::Unidentified,
+        )) => None,
+        Ok(key) => Some(key.to_string()),
+        Err(_) => None,
     }
 }

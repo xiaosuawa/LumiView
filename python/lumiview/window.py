@@ -21,18 +21,34 @@ from wryview._core import NewWindowResponse, WindowHandleKind as WryKind
 
 from lumiview.bridge import BRIDGE_SCRIPT, Bridge
 from lumiview._core import (
+    AttentionType,
+    AxisMotionEvent,
     CloseRequestedEvent,
+    CursorIcon,
+    DecorationsClickEvent,
     DestroyedEvent,
     FocusedEvent,
+    Monitor,
     MovedEvent,
+    ProgressState,
+    ReceivedImeTextEvent,
     RedrawRequestedEvent,
     ResizeDirection,
     ResizedEvent,
     ScaleFactorChangedEvent,
+    StartedEvent,
+    StoppedEvent,
+    SuspendedEvent,
     TaoEvent,
     TaoWindow,
+    Theme,
     ThemeChangedEvent,
+    TouchEvent,
+    TouchpadPressureEvent,
     UnfocusedEvent,
+    ResumedEvent,
+    VibrancyMaterial,
+    VideoMode,
     WindowEffect,
     WindowHandleKind,
 )
@@ -110,7 +126,17 @@ class WindowOptions:
     height: int = 600
     """Initial inner height in logical pixels."""
     position: tuple[float, float] | None = None
-    """Initial outer position ``(x, y)``."""
+    """Initial outer position ``(x, y)`` in logical pixels.
+
+    Without ``monitor`` this is relative to the primary screen's
+    top-left; with ``monitor`` it becomes local to that monitor's
+    top-left."""
+    monitor: Monitor | None = None
+    """The :class:`~lumiview._core.Monitor` to open the window on.
+
+    Without ``position`` the window is centered on this monitor;
+    with ``position``, *position* is interpreted as local to the
+    monitor's top-left (in logical pixels)."""
     min_size: tuple[float, float] | None = None
     """Minimum inner size ``(width, height)``."""
     max_size: tuple[float, float] | None = None
@@ -359,6 +385,27 @@ class Window:
         else:
             icon_data = None
 
+        # Resolve the initial position. tao has no "open on monitor"
+        # builder option — targeting a monitor means placing the window
+        # at that monitor's screen coordinates. With *monitor*, an
+        # explicit *position* is local to the monitor's top-left
+        # (logical pixels); without one, the window is centered.
+        if options.monitor is not None:
+            m = options.monitor
+            sf = m.scale_factor()
+            mx, my = m.position()
+            if options.position is None:
+                mw, mh = m.size()
+                position = (
+                    mx / sf + (mw / sf - options.width) / 2,
+                    my / sf + (mh / sf - options.height) / 2,
+                )
+            else:
+                lx, ly = options.position
+                position = (mx / sf + lx, my / sf + ly)
+        else:
+            position = options.position
+
         if app._event_loop is None:
             raise RuntimeError(
                 "App is not running — create windows inside app.run(entry)"
@@ -369,7 +416,7 @@ class Window:
             title=options.title,
             width=float(options.width),
             height=float(options.height),
-            position=options.position,
+            position=position,
             min_size=options.min_size,
             max_size=options.max_size,
             resizable=options.resizable,
@@ -549,16 +596,20 @@ class Window:
         self,
         effect: WindowEffect,
         color: tuple[int, int, int, int] | None = None,
+        material: VibrancyMaterial | None = None,
     ) -> None:
         """
         Apply a native window background material.
 
+        *material* selects the macOS
+        :class:`~lumiview._core.VibrancyMaterial` when
+        ``effect == WindowEffect.Vibrancy`` (default ``Sidebar``).
         Unsupported platforms or OS versions raise
         :class:`NotImplementedError`.
         """
         if self._window is None:
             raise WindowClosedError(self._win_id)
-        self._window.apply_effect(effect, color)
+        self._window.apply_effect(effect, color, material)
 
     @main_thread
     def clear_effect(self, effect: WindowEffect) -> None:
@@ -666,11 +717,57 @@ class Window:
         self._window.set_title(title)
 
     @main_thread
+    def title(self) -> str:
+        """Return the current window title."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.title()
+
+    @main_thread
+    def theme(self) -> Theme:
+        """Return the window's effective color theme."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.theme()
+
+    @main_thread
+    def set_theme(self, theme: Theme | None = None) -> None:
+        """Force the window theme (``None`` restores the system default)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_theme(theme)
+
+    @main_thread
     def inner_size(self) -> tuple[float, float]:
         """Return the inner size ``(width, height)`` in logical pixels."""
         if self._window is None:
             raise WindowClosedError(self._win_id)
         return self._window.inner_size()
+
+    @main_thread
+    def inner_position(self) -> tuple[float, float]:
+        """Return the client area position ``(x, y)`` in logical pixels.
+
+        Raises :class:`NotImplementedError` on platforms that cannot
+        report it (Wayland).
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.inner_position()
+
+    @main_thread
+    def outer_position(self) -> tuple[float, float]:
+        """Return the window position ``(x, y)`` in logical pixels."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.outer_position()
+
+    @main_thread
+    def cursor_position(self) -> tuple[float, float]:
+        """Return the cursor position inside the window in logical pixels."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.cursor_position()
 
     @main_thread
     def outer_size(self) -> tuple[int, int]:
@@ -715,6 +812,92 @@ class Window:
         self._window.set_resizable(flag)
 
     @main_thread
+    def set_focusable(self, flag: bool) -> None:
+        """Allow or disallow the window receiving focus."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_focusable(flag)
+
+    @main_thread
+    def set_content_protection(self, flag: bool) -> None:
+        """Hide window content from screenshots (Windows)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_content_protection(flag)
+
+    @main_thread
+    def set_visible_on_all_workspaces(self, flag: bool) -> None:
+        """Show the window on all workspaces (Linux)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_visible_on_all_workspaces(flag)
+
+    @main_thread
+    def set_always_on_bottom(self, flag: bool) -> None:
+        """Pin the window below other windows."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_always_on_bottom(flag)
+
+    # State queries
+
+    @main_thread
+    def is_focused(self) -> bool:
+        """True if the window currently has keyboard focus."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.is_focused()
+
+    @main_thread
+    def is_resizable(self) -> bool:
+        """True if the window can be resized by the user."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.is_resizable()
+
+    @main_thread
+    def is_decorated(self) -> bool:
+        """True if the window has a native titlebar and frame."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.is_decorated()
+
+    @main_thread
+    def is_closable(self) -> bool:
+        """True if the window can be closed by the user."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.is_closable()
+
+    @main_thread
+    def is_minimizable(self) -> bool:
+        """True if the window can be minimized by the user."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.is_minimizable()
+
+    @main_thread
+    def is_maximizable(self) -> bool:
+        """True if the window can be maximized by the user."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.is_maximizable()
+
+    @main_thread
+    def is_always_on_top(self) -> bool:
+        """True if the window floats above other windows."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.is_always_on_top()
+
+    @main_thread
+    def is_fullscreen(self) -> bool:
+        """True if the window is currently fullscreen."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.is_fullscreen()
+
+    @main_thread
     def set_minimizable(self, flag: bool) -> None:
         """Allow or disallow minimizing the window."""
         if self._window is None:
@@ -755,6 +938,72 @@ class Window:
         if self._window is None:
             raise WindowClosedError(self._win_id)
         self._window.set_cursor_visible(flag)
+
+    @main_thread
+    def set_cursor_icon(self, icon: CursorIcon) -> None:
+        """Set the cursor shape shown while hovering the window."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_cursor_icon(icon)
+
+    @main_thread
+    def set_cursor_grab(self, grab: bool) -> None:
+        """Lock (``True``) or release (``False``) the cursor to the
+        window. Useful for games or drawing apps."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_cursor_grab(grab)
+
+    @main_thread
+    def set_ignore_cursor_events(self, ignore: bool) -> None:
+        """Make the window transparent to mouse events (``True`` =
+        clicks pass through)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_ignore_cursor_events(ignore)
+
+    @main_thread
+    def set_cursor_position(self, x: float, y: float) -> None:
+        """Move the cursor to a logical position inside the window."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_cursor_position(x, y)
+
+    @main_thread
+    def request_user_attention(
+        self, request_type: AttentionType | None = None
+    ) -> None:
+        """Ask the OS to draw the user's attention to this window
+        (taskbar flash / Dock bounce).
+
+        ``None`` clears a previous request.
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.request_user_attention(request_type)
+
+    @main_thread
+    def set_ime_position(self, x: float, y: float) -> None:
+        """Place the input method editor (candidate window) at a
+        logical position inside the window."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_ime_position(x, y)
+
+    @main_thread
+    def set_progress_bar(
+        self,
+        state: ProgressState | None = None,
+        progress: float | None = None,
+    ) -> None:
+        """Set the Windows taskbar progress bar.
+
+        ``state=None`` removes it; *progress* is 0.0–100.0 (ignored for
+        ``Indeterminate``).
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_progress_bar(state, progress)
 
     @main_thread
     def set_focused(self, flag: bool) -> None:
@@ -819,6 +1068,181 @@ class Window:
         if self._window is None:
             raise WindowClosedError(self._win_id)
         return self._window.gtk_container()
+
+    # Monitors
+
+    @main_thread
+    def current_monitor(self) -> Monitor | None:
+        """Return the :class:`~lumiview._core.Monitor` the window is
+        currently on, or ``None``."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.current_monitor()
+
+    @main_thread
+    def available_monitors(self) -> list[Monitor]:
+        """Return all monitors currently connected."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.available_monitors()
+
+    @main_thread
+    def primary_monitor(self) -> Monitor | None:
+        """Return the primary monitor, or ``None``."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.primary_monitor()
+
+    @main_thread
+    def monitor_from_point(self, x: float, y: float) -> Monitor | None:
+        """Return the monitor containing the given physical screen point."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.monitor_from_point(x, y)
+
+    @main_thread
+    def set_borderless_fullscreen(self, monitor: Monitor | None = None) -> None:
+        """Enter borderless fullscreen on *monitor* (``None`` = the
+        current monitor)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_borderless_fullscreen(monitor)
+
+    @main_thread
+    def set_exclusive_fullscreen(self, mode: VideoMode) -> None:
+        """Enter exclusive fullscreen at *mode*'s resolution and
+        refresh rate (see :meth:`~lumiview._core.Monitor.video_modes`)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_exclusive_fullscreen(mode)
+
+    # Platform extensions
+    # Each method exists only on its platform — calling it elsewhere
+    # raises AttributeError (the underlying _core method is absent).
+
+    # Windows
+
+    @main_thread
+    def set_skip_taskbar(self, skip: bool) -> None:
+        """Hide or show the window in the taskbar. **Windows only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_skip_taskbar(skip)
+
+    @main_thread
+    def set_taskbar_icon(self, icon: _IconSource | None = None) -> None:
+        """Replace the taskbar icon (``None`` restores the window icon).
+        **Windows only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        data = None if icon is None else _icon_tuple(icon)
+        self._window.set_taskbar_icon(data)
+
+    @main_thread
+    def set_overlay_icon(self, icon: _IconSource | None = None) -> None:
+        """Set an overlay badge on the taskbar icon (``None`` removes
+        it). **Windows only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        data = None if icon is None else _icon_tuple(icon)
+        self._window.set_overlay_icon(data)
+
+    @main_thread
+    def set_enable(self, enabled: bool) -> None:
+        """Enable or disable the window (disabled windows ignore mouse
+        input). **Windows only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_enable(enabled)
+
+    @main_thread
+    def set_rtl(self, rtl: bool) -> None:
+        """Right-to-left layout for the window. **Windows only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_rtl(rtl)
+
+    @main_thread
+    def reset_dead_keys(self) -> None:
+        """Reset the OS dead-key state. **Windows only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.reset_dead_keys()
+
+    @main_thread
+    def set_undecorated_shadow(self, shadow: bool) -> None:
+        """Toggle the shadow of an undecorated window at runtime.
+        **Windows only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_undecorated_shadow(shadow)
+
+    @main_thread
+    def has_undecorated_shadow(self) -> bool:
+        """Whether the undecorated window shadow is enabled.
+        **Windows only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.has_undecorated_shadow()
+
+    # macOS
+
+    @main_thread
+    def set_badge_label(self, label: str | None) -> None:
+        """Set the text in the macOS Dock badge (``None`` clears it).
+        **macOS only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_badge_label(label)
+
+    @main_thread
+    def set_simple_fullscreen(self, fullscreen: bool) -> bool:
+        """Toggle "simple fullscreen" (content covers the whole screen,
+        including the menu bar). Returns the resulting state.
+        **macOS only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.set_simple_fullscreen(fullscreen)
+
+    @main_thread
+    def set_titlebar_transparent(self, transparent: bool) -> None:
+        """Make the native titlebar transparent (custom chrome overlays
+        the titlebar area). **macOS only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_titlebar_transparent(transparent)
+
+    @main_thread
+    def set_traffic_light_inset(self, x: float, y: float) -> None:
+        """Set the traffic-light (window controls) inset in logical
+        points. **macOS only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_traffic_light_inset(x, y)
+
+    @main_thread
+    def set_has_shadow(self, has_shadow: bool) -> None:
+        """Toggle the window shadow. **macOS only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_has_shadow(has_shadow)
+
+    @main_thread
+    def has_shadow(self) -> bool:
+        """Whether the window currently has a shadow. **macOS only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.has_shadow()
+
+    # Linux (GTK)
+
+    @main_thread
+    def set_badge_count(self, count: int | None) -> None:
+        """Set the number shown in the GTK badge (``None`` clears it).
+        **Linux only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_badge_count(count)
 
     # Bridge
 
@@ -1077,14 +1501,50 @@ class Window:
 
         elif isinstance(event, ScaleFactorChangedEvent):
             self._emit(
-                WindowEvent.ScaleFactorChangedEvent(
-                    scale_factor=event.scale_factor,
-                    new_scale_factor=event.new_scale_factor,
-                )
+                WindowEvent.ScaleFactorChangedEvent(scale_factor=event.scale_factor)
             )
 
         elif isinstance(event, ThemeChangedEvent):
             self._emit(WindowEvent.ThemeChangedEvent(theme=event.theme))
+
+        elif isinstance(event, StartedEvent):
+            self._emit(WindowEvent.StartedEvent())
+
+        elif isinstance(event, SuspendedEvent):
+            self._emit(WindowEvent.SuspendedEvent())
+
+        elif isinstance(event, ResumedEvent):
+            self._emit(WindowEvent.ResumedEvent())
+
+        elif isinstance(event, StoppedEvent):
+            self._emit(WindowEvent.StoppedEvent())
+
+        elif isinstance(event, DecorationsClickEvent):
+            self._emit(WindowEvent.DecorationsClickEvent())
+
+        elif isinstance(event, ReceivedImeTextEvent):
+            self._emit(WindowEvent.ReceivedImeTextEvent(text=event.text))
+
+        elif isinstance(event, TouchpadPressureEvent):
+            self._emit(
+                WindowEvent.TouchpadPressureEvent(
+                    pressure=event.pressure, stage=event.stage
+                )
+            )
+
+        elif isinstance(event, AxisMotionEvent):
+            self._emit(WindowEvent.AxisMotionEvent(axis=event.axis, value=event.value))
+
+        elif isinstance(event, TouchEvent):
+            self._emit(
+                WindowEvent.TouchEvent(
+                    phase=event.phase,
+                    x=event.x,
+                    y=event.y,
+                    force=event.force,
+                    id=event.id,
+                )
+            )
 
         elif isinstance(event, RedrawRequestedEvent):
             if self._window is not None:
@@ -1358,6 +1818,15 @@ def _propagate_dispatch_failure(
 
 
 # Helpers
+
+
+def _icon_tuple(icon: _IconSource) -> tuple[int, int, bytes]:
+    """
+    Resolve icon input to ``(width, height, rgba)`` — the argument order
+    the native bindings expect.
+    """
+    rgba, w, h = _load_icon(icon)
+    return w, h, rgba
 
 
 def _load_icon(icon: _IconSource) -> tuple[bytes, int, int]:
