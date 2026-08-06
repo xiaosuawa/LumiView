@@ -124,6 +124,7 @@ For runnable code, see the [`examples/`](examples/) directory.
 | [`custom_titlebar.py`](examples/custom_titlebar.py) | Frameless window + native effects + drag regions |
 | [`events.py`](examples/events.py) | App/Window hook events + JS event emission |
 | [`fastapi_demo.py`](examples/fastapi_demo.py) | FastAPI running via `source=ASGI(...)` |
+| [`django_demo.py`](examples/django_demo.py) | Django running via `source=WSGI(...)` — template rendering, form POST, JSON APIs |
 | [`menu.py`](examples/menu.py) | Native menus — accelerators, `on_activate` callbacks, macOS app menu / Windows window menu bar |
 | [`tray.py`](examples/tray.py) | System tray — close-to-tray pattern, tray context menu |
 
