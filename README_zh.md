@@ -120,6 +120,7 @@ logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + 调度 / 事件派发
 | [`custom_titlebar.py`](examples/custom_titlebar.py) | 无系统标题栏 + 原生效果 + 拖动区域 |
 | [`events.py`](examples/events.py) | App/Window 钩子事件 + JS 事件推送 |
 | [`fastapi_demo.py`](examples/fastapi_demo.py) | FastAPI 通过 ``source=ASGI(...)`` 运行 |
+| [`django_demo.py`](examples/django_demo.py) | Django 通过 ``source=WSGI(...)`` 运行 — 模板渲染、表单 POST、JSON API |
 | [`menu.py`](examples/menu.py) | 原生菜单 — 加速键、`on_activate` 回调、macOS 应用菜单 / Windows 窗口菜单栏 |
 | [`tray.py`](examples/tray.py) | 系统托盘 — close-to-tray 模式、托盘右键菜单 |
 
@@ -149,7 +150,7 @@ logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + 调度 / 事件派发
 - 💡 [分享想法](https://github.com/xiaosuawa/LumiView/discussions)
 - 🔧 [贡献指南](CONTRIBUTING.md)
 
-在提交 PR 之前请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)——API 仍处于不稳定阶段，重大变更需要先讨论。
+在提交 PR 之前请先阅读 [贡献指南.md](CONTRIBUTING.md)——API 仍处于不稳定阶段，重大变更需要先讨论。
 
 ## License
 
