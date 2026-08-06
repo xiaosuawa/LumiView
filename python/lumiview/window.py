@@ -1583,12 +1583,6 @@ class Window:
     def _request_close_now(self) -> None:
         """
         Apply ``close_behavior`` without blocking the GUI thread.
-
-        Dispatches :class:`~lumiview.events.WindowEvent.CloseRequestedEvent`
-        and returns immediately; the close decision is made when handlers
-        complete (on the asyncio thread), mirroring Tauri's
-        close-requested flow. ``_close_pending`` guards against re-entrant
-        close requests while a dispatch is in flight.
         """
         if self._close_pending or self._window is None:
             return

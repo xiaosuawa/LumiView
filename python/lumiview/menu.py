@@ -82,9 +82,11 @@ class MenuItem:
         accelerator: Keyboard shortcut in muda syntax, e.g.
             ``"CmdOrCtrl+Shift+K"`` (modifiers may be ``Ctrl``, ``Shift``,
             ``Alt``, ``Cmd``, ``CmdOrCtrl`` ...). A malformed string
-            raises ``ValueError`` when the item is materialized. Note:
-            on Windows the accelerator is shown but not triggered by the
-            keyboard (the tao message loop does not translate accels).
+            raises ``ValueError`` when the item is materialized.
+
+            .. note::
+               **Windows**: accelerators may not fire from the keyboard —
+               PRs welcome to fix this.
         on_activate: A handler called when the item is activated — the
             same as calling :meth:`on_activate` afterwards.
     """
