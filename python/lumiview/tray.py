@@ -14,6 +14,7 @@ to the tray's menu fire the regular menu activation events.
 
 from __future__ import annotations
 
+import logging
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -22,6 +23,8 @@ from typing import TYPE_CHECKING, Any
 from lumiview.app import App
 from lumiview.utils import main_thread
 from lumiview._core import TaoTrayIcon
+
+log = logging.getLogger("lumiview.tray")
 
 if TYPE_CHECKING:
     from lumiview.window import _IconSource
@@ -108,6 +111,7 @@ class TrayIcon:
         if options.icon_as_template and sys.platform == "darwin":
             tray._tray.set_icon_as_template(True)
         app._trays[tray._id] = tray
+        log.info("Tray icon created (id=%s)", tray._id)
         return tray
 
     @main_thread
@@ -117,6 +121,7 @@ class TrayIcon:
         app = App.get()
         app._trays.pop(self._id, None)
         self._tray = None
+        log.debug("Tray icon removed (id=%s)", self._id)
 
     @main_thread
     def set_tooltip(self, tooltip: str | None) -> None:

@@ -94,6 +94,23 @@ app.run(main)
 - **🎛️ System tray** — Cross-platform tray icons with context menus and click events; close-to-tray pattern.
 - **📁 Static serving & WSGI & ASGI** — Directly load local files, proxy to WSGI apps (Flask, Django, etc.), or run FastAPI/Starlette apps without external servers.
 
+## Logging
+
+LumiView logs to the `lumiview` logger tree using the standard
+`logging` configuration. To see internal diagnostics, raise the level of
+the `lumiview` logger:
+
+```python
+import logging
+
+logging.getLogger("lumiview").setLevel(logging.INFO)   # lifecycle events
+logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + scheduling / dispatch
+```
+
+When reporting a bug, please include the DEBUG log output from your
+repro — it covers window / tray lifecycle and event dispatch, which
+usually pinpoints the issue. See [CONTRIBUTING.md](CONTRIBUTING.md#-bug-reports).
+
 For runnable code, see the [`examples/`](examples/) directory.
 
 ## Examples

@@ -65,7 +65,6 @@ _IconSource = str | tuple[bytes, int, int] | _PILImage
 
 P = ParamSpec("P")
 R = TypeVar("R")
-TEvent = TypeVar("TEvent", bound=WindowBaseEvent)
 
 log = logging.getLogger("lumiview.window")
 
@@ -78,6 +77,7 @@ class CloseBehavior(Enum):
     - ``Hide`` — hide the window instead of destroying it.
     - ``Ignore`` — do nothing.
     """
+
     Close = auto()
     Hide = auto()
     Ignore = auto()
@@ -92,6 +92,7 @@ class WindowOptions:
     (``await Window.create(WindowOptions(...))``) or as keyword
     arguments (``await Window.create(title=..., url=...)``).
     """
+
     # Content
     title: str = "lumiview"
     """Window title shown in the titlebar."""
@@ -232,6 +233,7 @@ class Window:
     the main thread and returns a :class:`~lumiview.task.Task` —
     ``await`` it in async code, or use ``.result()`` in sync code.
     """
+
     def __init__(self) -> None:
         if TYPE_CHECKING:
             self._app: App
@@ -247,7 +249,7 @@ class Window:
             self._drag_enabled: bool
             self._untrusted: bool
         raise RuntimeError("Use 'await Window.create(...)' instead")
-    
+
     @overload
     @classmethod
     def create(cls, _options: WindowOptions, /) -> Task[Window]: ...
@@ -285,7 +287,7 @@ class Window:
                 arguments.
         """
         app = App.get()
-        
+
         if _options is not None:
             if kwargs:
                 raise TypeError(
@@ -491,6 +493,7 @@ class Window:
         win_id = tao_win.id()
         self._win_id = win_id
         app._windows[win_id] = self
+        log.info("Window created (id=%s)", win_id)
 
         try:
             if options.transparent:
@@ -955,9 +958,7 @@ class Window:
         self._window.set_cursor_position(x, y)
 
     @main_thread
-    def request_user_attention(
-        self, request_type: AttentionType | None = None
-    ) -> None:
+    def request_user_attention(self, request_type: AttentionType | None = None) -> None:
         """Ask the OS to draw the user's attention to this window
         (taskbar flash / Dock bounce).
 
@@ -1317,11 +1318,11 @@ class Window:
 
         return decorator
 
-    def _emit(self, event: WindowBaseEvent) -> Future[None] | None:
+    def _emit(self, event: WindowBaseEvent) -> Task[None] | None:
         """
         Dispatch *event* to handlers registered for its class.
 
-        Returns a completion :class:`Future` or ``None`` when there is
+        Returns a completion :class:`Task` or ``None`` when there is
         no loop or no handlers. ``event.window`` is set to this window.
         """
         event.window = self
@@ -1333,7 +1334,10 @@ class Window:
         if not handlers:
             return
 
-        done: Future[None] = Future()
+        log.debug(
+            "dispatching %s to %d handler(s)", type(event).__name__, len(handlers)
+        )
+        done: Task[None] = Task()
 
         async def _dispatch() -> None:
             try:
@@ -1354,41 +1358,6 @@ class Window:
 
         return done
 
-    def _dispatch_preventable(self, event: TEvent) -> TEvent:
-        """
-        Dispatch *event* and wait for handlers to finish.
-
-        Only used for wryview's synchronous callbacks (navigation, new
-        window, download) whose native default must be decided inline;
-        :class:`~lumiview.events.WindowEvent.CloseRequestedEvent` is
-        dispatched asynchronously instead (see ``_request_close_now``).
-        On the main thread, queued commands are drained while waiting to
-        avoid deadlock.
-        """
-        done = self._emit(event)
-        if done is None:
-            return event
-        if self._app.is_main_thread():
-            cond = self._app._wake_cond
-
-            def _notify(_) -> None:
-                with cond:
-                    cond.notify_all()
-
-            done.add_done_callback(_notify)
-            while not done.done():
-                self._app._drain_commands()
-                with cond:
-                    cond.wait_for(
-                        lambda: done.done()
-                        or not self._app._cmd_queue.empty(),
-                    )
-        else:
-            done.result()
-        return event
-
-    # wryview callback dispatch
-
     def _dispatch_page_load(self, ev: PageLoadEvent, url: str) -> None:
         """
         wryview ``on_page_load`` callback — dispatch a page event.
@@ -1402,7 +1371,10 @@ class Window:
         """
         wryview ``on_navigation`` callback — ``False`` blocks.
         """
-        event = self._dispatch_preventable(WindowEvent.NavigationRequestedEvent(url=url))
+        event = WindowEvent.NavigationRequestedEvent(url=url)
+        done = self._emit(event)
+        if done is not None:
+            done.result()
         return not event.prevented
 
     def _dispatch_new_window(self, url: str) -> NewWindowResponse:
@@ -1413,7 +1385,10 @@ class Window:
         ``open_in(url)`` opens *url* in the system browser. Default:
         deny the in-webview window and open it externally.
         """
-        event = self._dispatch_preventable(WindowEvent.NewWindowRequestedEvent(url=url))
+        event = WindowEvent.NewWindowRequestedEvent(url=url)
+        done = self._emit(event)
+        if done is not None:
+            done.result()
         open_url = event._open_url
         if open_url is not None:
             try:
@@ -1434,9 +1409,10 @@ class Window:
         Returns ``True`` to allow, ``False`` to cancel, or a string
         path to redirect the download.
         """
-        event = self._dispatch_preventable(
-            WindowEvent.DownloadStartedEvent(url=url, suggested_path=suggested_path)
-        )
+        event = WindowEvent.DownloadStartedEvent(url=url, suggested_path=suggested_path)
+        done = self._emit(event)
+        if done is not None:
+            done.result()
         save_path = event._save_path
         if save_path is not None:
             return save_path
@@ -1597,11 +1573,7 @@ class Window:
             # main thread; @main_thread calls run inline here).
             self._on_close_handlers_done(event)
         else:
-            def _on_done(future: Future[None]) -> None:
-                del future  # callback signature requires the argument
-                self._on_close_handlers_done(event)
-
-            done.add_done_callback(_on_done)
+            done.add_done_callback(lambda _: self._on_close_handlers_done(event))
 
     def _on_close_handlers_done(self, event: WindowBaseEvent) -> None:
         """
@@ -1620,6 +1592,7 @@ class Window:
         if behavior == CloseBehavior.Ignore:
             self._close_pending = False
         elif behavior == CloseBehavior.Hide:
+
             def _hide() -> None:
                 if self._window is not None:
                     self._window.set_visible(False)
@@ -1776,6 +1749,7 @@ class Window:
         """
         Create an IPC handler that forwards messages to the Bridge.
         """
+
         def _handler(raw: str) -> None:
             if self._untrusted:
                 self._emit(WindowEvent.WebMessageReceivedEvent(message=raw))

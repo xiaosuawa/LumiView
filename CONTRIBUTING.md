@@ -10,6 +10,17 @@ Thank you for your interest in contributing! LumiView is in early development, a
 
 - Check existing [Issues](https://github.com/xiaosuawa/LumiView/issues) first
 - Include: OS + version, Python version, `lumiview` version, minimal repro code
+- **Include logs**: run the repro with DEBUG logging enabled and paste
+  the relevant output:
+
+  ```python
+  import logging
+
+  logging.getLogger("lumiview").setLevel(logging.DEBUG)
+  ```
+
+  The `lumiview.*` log tree covers window / tray lifecycle and event
+  dispatch — it usually pinpoints the issue faster than the repro alone.
 
 ### 💡 Feature Ideas
 

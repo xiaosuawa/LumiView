@@ -195,7 +195,10 @@ class CheckMenuItem(MenuItem):
         on_activate: Callable[[AppEvent.MenuItemActivatedEvent], Any] | None = None,
     ) -> None:
         super().__init__(
-            text=text, id=id, enabled=enabled, accelerator=accelerator,
+            text=text,
+            id=id,
+            enabled=enabled,
+            accelerator=accelerator,
             on_activate=on_activate,
         )
         self.checked = checked
@@ -427,6 +430,7 @@ class Menu:
         for item in items:
             inner = cls._materialize_item(item)
             menu._inner.append(inner)
+        log.debug("Materialized menu with %d item(s)", len(items))
         return menu
 
     @classmethod
@@ -516,7 +520,9 @@ class Menu:
             # register (and no on_activate).
         elif isinstance(item, Submenu):
             if item._inner is None:
-                item._inner = TaoSubmenu(id=item.id, text=item.text, enabled=item.enabled)
+                item._inner = TaoSubmenu(
+                    id=item.id, text=item.text, enabled=item.enabled
+                )
             cls._register(item)
             for child in item.items:
                 inner_child = cls._materialize_item(child)
@@ -540,7 +546,8 @@ class Menu:
         prev = app._menu_items.get(item.id)
         if prev is not None and prev is not item:
             log.warning(
-                "duplicate menu item id %r — activation events may be ambiguous", item.id
+                "duplicate menu item id %r — activation events may be ambiguous",
+                item.id,
             )
         app._menu_items[item.id] = item
 

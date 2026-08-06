@@ -96,6 +96,19 @@ app.run(main)
 
 可运行代码见 [`examples/`](examples/) 目录。
 
+## 日志
+
+LumiView 使用标准 `logging` 配置输出到 `lumiview` logger 树。需要查看内部诊断信息时，调高 `lumiview` logger 的级别即可：
+
+```python
+import logging
+
+logging.getLogger("lumiview").setLevel(logging.INFO)   # 生命周期事件
+logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + 调度 / 事件派发详情
+```
+
+**报告 Bug 时请附上 DEBUG 级别的日志输出**——它覆盖窗口/托盘生命周期与事件派发，通常能直接定位问题。参见 [CONTRIBUTING.md](CONTRIBUTING.md#-bug-reports)。
+
 ## 示例
 
 | 示例 | 内容 |
@@ -132,7 +145,7 @@ app.run(main)
 
 受个人时间所限，部分功能可能无法及时完成，欢迎各位通过 PR 等贡献方式一同实现。
 
-- 🐛 [报告 Bug](https://github.com/xiaosuawa/LumiView/issues)
+- 🐛 [报告 Bug](https://github.com/xiaosuawa/LumiView/issues)（最好附上 DEBUG 日志，见[日志](#日志)）
 - 💡 [分享想法](https://github.com/xiaosuawa/LumiView/discussions)
 - 🔧 [贡献指南](CONTRIBUTING.md)
 

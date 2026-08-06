@@ -81,7 +81,10 @@ async def main():
 
     @app.on(AppEvent.TrayIconClickEvent)
     async def on_tray_click(event):
-        if event.button == MouseButton.Left and event.button_state == ElementState.Released:
+        if (
+            event.button == MouseButton.Left
+            and event.button_state == ElementState.Released
+        ):
             await win.toggle_visibility()
 
     # Tray menu — same MenuItem type as menu bars.

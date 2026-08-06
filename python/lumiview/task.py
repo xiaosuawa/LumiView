@@ -5,6 +5,7 @@ import concurrent.futures
 import inspect
 import logging
 import threading
+import time
 from typing import (
     Any,
     Callable,
@@ -17,26 +18,18 @@ from typing import (
 P = ParamSpec("P")
 T = TypeVar("T")
 
-# Deadlock detection
+
+# Asyncio deadlock detection
 class TaskDeadlockError(RuntimeError):
-    """Raised when blocking the GUI thread on an incomplete Task."""
+    """Raised when blocking a thread with a running event loop on an
+    incomplete Task."""
 
     def __init__(self) -> None:
         super().__init__(
-            "Cannot block the GUI thread with .result(). "
-            "Use await from async code, or .on_done() / .add_done_callback() "
-            "for callback-style handling."
+            "Cannot block the asyncio thread with .result() — the event "
+            "loop would stall and every coroutine on it freezes. "
+            "Use `await task` instead."
         )
-
-
-def _check_deadlock() -> None:
-    """Raise TaskDeadlockError if called from the GUI thread."""
-    # Deferred import: _app sets this global in App.run(); importing by value
-    # at module load would freeze it at None (see App.run / _GUI_THREAD_ID).
-    from lumiview.app import _GUI_THREAD_ID
-
-    if _GUI_THREAD_ID is not None and threading.get_ident() == _GUI_THREAD_ID:
-        raise TaskDeadlockError()
 
 
 def _log_unhandled_task_error(task: "Task[Any]") -> None:
@@ -60,7 +53,8 @@ def _log_unhandled_task_error(task: "Task[Any]") -> None:
         pass
 
 
-# Task[T] — a Future with __await__ and deadlock detection
+# Task[T] — a Future with __await__ and thread-aware blocking
+
 
 class Task(concurrent.futures.Future, Generic[T]):
     """A handle to a running (or completed) operation.
@@ -68,29 +62,28 @@ class Task(concurrent.futures.Future, Generic[T]):
     Three ways to use::
 
         await task                    # async  — any event loop
-        task.result()                 # sync   — any thread except GUI
+        task.result()                 # sync   — any thread (GUI drains commands)
         task.on_done(lambda val: ...) # callback — any thread (alias for add_done_callback)
     """
 
     def __init__(self) -> None:
         super().__init__()
-        # Self-managed "exception was consumed" flag. Python 3.12 removed
-        # the CPython _exception_was_retrieved machinery (and the
-        # "Future exception was never retrieved" warning) entirely, so
-        # __del__ tracks consumption through the consumption APIs below.
         self._lumi_retrieved = False
 
     def result(self, timeout: float | None = None) -> T:
         """Block until done and return the value.
 
         Raises:
-            TaskDeadlockError: If called from the GUI thread on an
-                **incomplete** task (completed tasks return instantly).
+            TaskDeadlockError: If called from the asyncio thread on an
+                **incomplete** task (completed tasks return instantly) —
+                the loop would stall. On the GUI thread an incomplete
+                task is waited on while the main-thread command queue
+                keeps running (the window freezes meanwhile).
             TimeoutError: If *timeout* is exceeded.
             BaseException: The original exception if the task failed.
         """
         if not self.done():
-            _check_deadlock()
+            self._block(timeout)
         try:
             return super().result(timeout)
         except BaseException:
@@ -100,13 +93,75 @@ class Task(concurrent.futures.Future, Generic[T]):
     def exception(self, timeout: float | None = None) -> BaseException | None:
         """Block until done and return the exception (or None)."""
         if not self.done():
-            _check_deadlock()
+            self._block(timeout)
         try:
             return super().exception(timeout)
         finally:
             # Inspecting the exception counts as consuming it (the base
             # class's retrieved flag is gone in Python 3.12).
             self._lumi_retrieved = True
+
+    def _block(self, timeout: float | None) -> None:
+        """Block until done, adapting to the calling thread.
+
+        Only called when the task is incomplete.
+
+        - **GUI thread**: drains the main-thread command queue while
+          waiting — a queued command may be the very operation this task
+          waits on (e.g. a ``call_on_main`` from the asyncio thread), so
+          the wait can always make progress (logged at debug level, since
+          the window freezes meanwhile).
+        - **thread with a running event loop**: the loop would stall, so
+          raise :class:`TaskDeadlockError` — ``await`` is the correct
+          form there (``Task`` awaits from any loop).
+        - **other threads**: block normally (like ``Future.result``).
+        """
+        from lumiview.app import _GUI_THREAD_ID
+
+        if _GUI_THREAD_ID is not None and threading.get_ident() == _GUI_THREAD_ID:
+            self._block_on_gui(timeout)
+            return
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        else:
+            raise TaskDeadlockError()
+
+    def _block_on_gui(self, timeout: float | None) -> None:
+        """Wait on the GUI thread, running queued main-thread commands.
+
+        Extracted from ``Window._dispatch_preventable``'s wait pattern:
+        commands enqueued by the task we wait on keep executing, so the
+        wait always makes progress instead of deadlocking.
+        """
+
+        logging.getLogger("lumiview.task").debug(
+            "Blocking the GUI thread on Task.result() — the window may freeze."
+        )
+
+        from lumiview.app import App
+
+        app = App.get()
+        cond = app._wake_cond
+
+        def _notify(_: Any) -> None:
+            with cond:
+                cond.notify_all()
+
+        self.add_done_callback(_notify)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not self.done():
+            app._drain_commands()
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise TimeoutError
+            with cond:
+                cond.wait_for(
+                    lambda: self.done() or not app._cmd_queue.empty(),
+                    timeout=remaining,
+                )
 
     def __await__(self) -> Generator[Any, None, T]:
         """``await task`` — fresh ``wrap_future`` each time, no loop binding."""
@@ -180,6 +235,7 @@ class Task(concurrent.futures.Future, Generic[T]):
 
 # Public: lightweight async/sync dispatch (no Task overhead)
 
+
 async def run_async(
     fn: Callable[..., Any],
     *args: Any,
@@ -206,6 +262,7 @@ async def run_async(
 
 
 # Public factory: task()
+
 
 def task(
     fn: Callable[P, T],

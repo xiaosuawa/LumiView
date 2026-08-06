@@ -10,7 +10,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Coroutine
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum, auto
 from typing import Any, Callable, TypeVar, ParamSpec, TYPE_CHECKING
 
@@ -58,9 +58,9 @@ _Command = tuple[str, Callable[..., Any], tuple, dict[str, Any]]
 
 log = logging.getLogger("lumiview.app")
 
-# tao/GUI thread identity for Task deadlock detection. Assigned by
+# tao/GUI thread identity for Task blocking adaptation. Assigned by
 # App.run() and reset on exit. Lives in this module because _task's
-# _check_deadlock() reads it via deferred import — a by-value import
+# Task._block() reads it via deferred import — a by-value import
 # would freeze it at None.
 _GUI_THREAD_ID: int | None = None
 
@@ -171,7 +171,7 @@ class App:
 
         # Completion signal for the Close event dispatch (set by
         # _handle_exit_event, awaited in run()'s finally block).
-        self._close_done: Future[None] | None = None
+        self._close_done: Task[None] | None = None
 
     # Singleton access
 
@@ -268,6 +268,7 @@ class App:
             if not handle.done():
                 handle.set_exception(AppClosedError(self._name))
             return
+        log.debug("queued main-thread call (id=%s)", req_id)
         self._cmd_queue.put((req_id, fn, args, kwargs))
         with self._wake_cond:
             self._wake_cond.notify_all()
@@ -279,6 +280,7 @@ class App:
     def _drain_commands(self) -> None:
         while not self._cmd_queue.empty():
             req_id, fn, args, kwargs = self._cmd_queue.get_nowait()
+            log.debug("executing main-thread call (id=%s)", req_id)
             try:
                 result = fn(*args, **kwargs)
                 self._respond(req_id, result, None)
@@ -315,6 +317,7 @@ class App:
         kwargs: dict[str, object],
     ) -> Task[Any]:
         handle: Task[Any] = Task()
+        log.debug("scheduling async task: %s", fn)
         loop = self._async_loop
         if loop is None:
             # App never ran — nothing to schedule on.
@@ -362,6 +365,7 @@ class App:
         if self._state in (AppState.STOPPING, AppState.STOPPED):
             handle.set_exception(AppClosedError(self._name))
             return handle
+        log.debug("scheduling sync task: %s", fn)
         concurrent_future = pool.submit(lambda: fn(*args, **kwargs))
         return Task._from_future(concurrent_future)
 
@@ -369,19 +373,22 @@ class App:
 
     def _dispatch_handlers(
         self, handlers: list[_Handler], event: AppBaseEvent
-    ) -> "Future[None] | None":
+    ) -> "Task[None] | None":
         """Run *handlers* for *event* on the asyncio loop.
 
-        Returns a completion signal (a plain
-        :class:`concurrent.futures.Future` resolved when all handlers
-        finish) or None when there is no loop or no handlers. Shared by
-        :meth:`_emit` and the per-item menu activation callbacks.
+        Returns a completion signal (a :class:`Task` resolved when all
+        handlers finish) or None when there is no loop or no handlers.
+        Shared by :meth:`_emit` and the per-item menu activation
+        callbacks.
         """
         loop = self._async_loop
         if loop is None or not handlers:
             return None
 
-        done: Future[None] = Future()
+        log.debug(
+            "dispatching %s to %d handler(s)", type(event).__name__, len(handlers)
+        )
+        done: Task[None] = Task()
 
         async def _dispatch() -> None:
             try:
@@ -396,12 +403,12 @@ class App:
         loop.call_soon_threadsafe(lambda: asyncio.create_task(_dispatch()))
         return done
 
-    def _emit(self, event: AppBaseEvent) -> "Future[None] | None":
+    def _emit(self, event: AppBaseEvent) -> "Task[None] | None":
         """Dispatch an app event to registered handlers on the asyncio loop.
 
-        Returns a completion signal (a plain
-        :class:`concurrent.futures.Future` resolved when all handlers
-        finish) or None when there is no loop or no handlers. Callers
+        Returns a completion signal (a :class:`Task` resolved when all
+        handlers finish) or None when there is no loop or no handlers.
+        Callers
         that don't need to wait may ignore the return value — only
         ``_handle_exit_event`` consumes it.
         """
@@ -493,6 +500,7 @@ class App:
             raise RuntimeError("App.run() must be called from the main thread")
 
         self._state = AppState.STARTING
+        log.info("App %r starting", self._name)
 
         self._event_loop = TaoEventLoop()
         self._proxy = self._event_loop.create_proxy()
@@ -567,6 +575,7 @@ class App:
                 raise RuntimeError("Failed to start the asyncio thread")
 
             self._state = AppState.RUNNING
+            log.info("App %r running", self._name)
 
             # Run the Tao event loop (blocks main thread).
             self._event_loop.run(self._on_tao_event)
@@ -574,6 +583,7 @@ class App:
             log.exception("Event loop crashed")
         finally:
             self._state = AppState.STOPPED
+            log.info("App %r stopped", self._name)
 
             signal.signal(signal.SIGINT, original_sigint)
 
@@ -732,6 +742,7 @@ class App:
 
     def _remove_window(self, win_id: int) -> None:
         """Called when a Window is closed — clean up tracking."""
+        log.info("Window closed (id=%s)", win_id)
         self._windows.pop(win_id, None)
         if self._exit_on_last_window and not self._windows:
             self.exit()
@@ -795,9 +806,7 @@ class App:
             return EventLoopControl.Continue
 
         if isinstance(event, DeviceMouseMotionEvent):
-            self._emit(
-                AppEvent.DeviceMouseMotionEvent(dx=event.dx, dy=event.dy)
-            )
+            self._emit(AppEvent.DeviceMouseMotionEvent(dx=event.dx, dy=event.dy))
             return EventLoopControl.Continue
 
         if isinstance(event, DeviceMouseWheelEvent):
