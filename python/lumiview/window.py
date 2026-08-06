@@ -15,7 +15,7 @@ from lumiview.app import App, WindowClosedError
 from lumiview.scope import InitContext
 from lumiview.serve.base import Serve
 from lumiview.utils import copy_signature_for_classmethod, main_thread
-from wryview import DragDropEvent, PageLoadEvent, WebView
+from wryview import DragDropEvent, PageLoadEvent, Theme as WryTheme, WebView
 from wryview._core import NewWindowResponse, WindowHandleKind as WryKind
 
 from lumiview.bridge import BRIDGE_SCRIPT, Bridge
@@ -144,6 +144,12 @@ class WindowOptions:
     icon: _IconSource | None = None
     """Window icon — a file path, ``(rgba_bytes, width, height)``
     tuple, or ``PIL.Image.Image`` object."""
+    theme: Theme | None = None
+    """Initial page theme — ``Dark`` / ``Light`` force the WebView
+    ``prefers-color-scheme``; ``None`` follows the system. Windows only
+    (wry has no theme API on macOS / Linux — the page always follows
+    the system there). See :meth:`Window.set_theme` for the runtime
+    version, which also affects the window chrome."""
     # Behavior
     focused: bool = True
     """Whether the window starts focused."""
@@ -452,6 +458,7 @@ class Window:
                 autoplay=options.autoplay,
                 javascript_enabled=options.javascript,
                 hotkeys_zoom=options.hotkeys_zoom,
+                theme=_to_wry_theme(options.theme),
                 initialization_script=None if self._untrusted else ctx.inject_script,
                 ipc_handler=self._make_ipc_handler(),
                 on_navigation=self._dispatch_navigation,
@@ -720,10 +727,23 @@ class Window:
 
     @main_thread
     def set_theme(self, theme: Theme | None = None) -> None:
-        """Force the window theme (``None`` restores the system default)."""
+        """Force the window chrome and page theme (``None`` restores the
+        system default).
+
+        The window chrome follows on all platforms (tao); the WebView
+        ``prefers-color-scheme`` follows only on Windows — macOS / Linux
+        always follow the system preference.
+        """
         if self._window is None:
             raise WindowClosedError(self._win_id)
         self._window.set_theme(theme)
+        if self._webview is not None:
+            try:
+                self._webview.set_theme(_to_wry_theme(theme))
+            except NotImplementedError:
+                log.debug(
+                    "WebView theme is Windows-only — window theme still applied"
+                )
 
     @main_thread
     def inner_size(self) -> tuple[float, float]:
@@ -1787,6 +1807,14 @@ def _propagate_dispatch_failure(
 
 
 # Helpers
+
+
+def _to_wry_theme(theme: Theme | None) -> WryTheme:
+    """Map the window theme (``None`` = follow the system) to wryview's
+    WebView theme (``Auto`` / ``Dark`` / ``Light``)."""
+    if theme is None:
+        return WryTheme.Auto
+    return WryTheme.Light if theme is Theme.Light else WryTheme.Dark
 
 
 def _icon_tuple(icon: _IconSource) -> tuple[int, int, bytes]:

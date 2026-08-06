@@ -1,6 +1,6 @@
 [package]
 name = "lumiview"
-version = "0.1.0-dev4"
+version = "0.1.0-dev5"
 edition = "2021"
 description = "Python binding for tao — cross-platform window management."
 
