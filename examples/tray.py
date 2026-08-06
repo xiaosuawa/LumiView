@@ -112,7 +112,7 @@ async def main():
     menu = await Menu.create(
         items=[show_item, close_item, PredefinedMenuItem.separator(), quit_item]
     )
-    tray = await TrayIcon.create(
+    await TrayIcon.create(
         TrayIconOptions(
             icon=(make_icon(), 32, 32),
             tooltip="LumiView Tray Demo",

@@ -181,8 +181,11 @@ class WindowOptions:
     """Custom user agent for the WebView."""
     autoplay: bool = False
     """Allow autoplaying media."""
-    hotkeys_zoom: bool = True
-    """Enable the browser zoom shortcuts."""
+    hotkeys_zoom: bool = False
+    """Enable zoom hotkeys (Ctrl+/-/wheel) and touchpad pinch zoom.
+
+    Windows WebView2 only — no effect on macOS and Linux. Disabled by
+    default to match Tauri (WebView2 defaults both to enabled)."""
     clipboard: bool = True
     """Enable clipboard access."""
     javascript: bool = True
