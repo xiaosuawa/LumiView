@@ -90,6 +90,8 @@ app.run(main)
 - **🌉 JS ↔ Python Bridge** — Python 函数通过 `window.lumiview.invoke()` 暴露给 JS。无需 HTTP 服务器，无需手动序列化。
 - **🪟 原生窗口效果** — Acrylic、Mica、Vibrancy `window-vibrancy`。
 - **🎨 自定义标题栏** — 声明式 `data-lumiview-drag-region` 拖动区域 + 内置 `lumiview.window.*` JS API（最小化/最大化/关闭）。
+- **📋 原生菜单** — 条目 `on_activate` 回调 + 全局 `MenuItemActivatedEvent`；macOS 默认应用菜单自动安装，Windows 支持窗口菜单栏。
+- **🎛️ 系统托盘** — 跨平台托盘图标，支持右键菜单与点击事件；close-to-tray 模式。
 - **📁 静态服务 & WSGI & ASGI** — 可直接加载本地文件、代理到 WSGI 应用（Flask、Django 等），或运行 FastAPI/Starlette 应用，无需外部服务器。
 
 可运行代码见 [`examples/`](examples/) 目录。
@@ -105,6 +107,8 @@ app.run(main)
 | [`custom_titlebar.py`](examples/custom_titlebar.py) | 无系统标题栏 + 原生效果 + 拖动区域 |
 | [`events.py`](examples/events.py) | App/Window 钩子事件 + JS 事件推送 |
 | [`fastapi_demo.py`](examples/fastapi_demo.py) | FastAPI 通过 ``source=ASGI(...)`` 运行 |
+| [`menu.py`](examples/menu.py) | 原生菜单 — 加速键、`on_activate` 回调、macOS 应用菜单 / Windows 窗口菜单栏 |
+| [`tray.py`](examples/tray.py) | 系统托盘 — close-to-tray 模式、托盘右键菜单 |
 
 ## 开发状态
 
@@ -117,7 +121,9 @@ app.run(main)
 - [x] ASGI 适配 (FastAPI, Starlette 等)
 - [x] 原生窗口效果 (Acrylic / Mica / Vibrancy)
 - [x] 自定义标题栏
-- [ ] API 稳定化 (may 0.2.x)
+- [x] 原生菜单 (muda)
+- [x] 系统托盘 (tray-icon)
+- [ ] API 稳定化 (maybe 0.2.x)
 - [ ] 完整文档站点
 
 ## 参与贡献

@@ -60,7 +60,14 @@ from lumiview.events import (
     AppEvent,
     AppBaseEvent,
 )
-from lumiview._core import ActivationPolicy
+from lumiview._core import (
+    ActivationPolicy,
+    ElementState,
+    MouseButton,
+    ScrollDeltaKind,
+    StartCause,
+    TouchPhase,
+)
 from lumiview import utils
 from lumiview import plugins
 from lumiview import serve
@@ -101,6 +108,12 @@ __all__ = [
     "WindowBaseEvent",
     "AppEvent",
     "AppBaseEvent",
+    # Event field types
+    "MouseButton",
+    "ElementState",
+    "ScrollDeltaKind",
+    "StartCause",
+    "TouchPhase",
     # IPC
     "Bridge",
     "BridgeError",

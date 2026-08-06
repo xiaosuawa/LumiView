@@ -20,8 +20,10 @@ from lumiview import (
     App,
     AppEvent,
     CloseBehavior,
+    ElementState,
     Menu,
     MenuItem,
+    MouseButton,
     PredefinedMenuItem,
     TrayIcon,
     TrayIconOptions,
@@ -29,7 +31,6 @@ from lumiview import (
     WindowEvent,
     WindowOptions,
 )
-from lumiview._core import ElementState, MouseButton
 
 app = App(name="TrayDemo", exit_on_last_window=False)
 

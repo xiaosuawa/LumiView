@@ -90,6 +90,8 @@ app.run(main)
 - **🌉 JS ↔ Python Bridge** — Expose Python functions to JS via `window.lumiview.invoke()`. No HTTP server, no manual serialization required.
 - **🪟 Native window effects** — Acrylic, Mica, Vibrancy via `window-vibrancy`.
 - **🎨 Custom titlebar** — Declarative `data-lumiview-drag-region` drag areas + built-in `lumiview.window.*` JS API (minimize / maximize / close).
+- **📋 Native menus** — Per-item `on_activate` callbacks + global `MenuItemActivatedEvent`; macOS default app menu installed automatically, window menu bars on Windows.
+- **🎛️ System tray** — Cross-platform tray icons with context menus and click events; close-to-tray pattern.
 - **📁 Static serving & WSGI & ASGI** — Directly load local files, proxy to WSGI apps (Flask, Django, etc.), or run FastAPI/Starlette apps without external servers.
 
 For runnable code, see the [`examples/`](examples/) directory.
@@ -105,6 +107,8 @@ For runnable code, see the [`examples/`](examples/) directory.
 | [`custom_titlebar.py`](examples/custom_titlebar.py) | Frameless window + native effects + drag regions |
 | [`events.py`](examples/events.py) | App/Window hook events + JS event emission |
 | [`fastapi_demo.py`](examples/fastapi_demo.py) | FastAPI running via `source=ASGI(...)` |
+| [`menu.py`](examples/menu.py) | Native menus — accelerators, `on_activate` callbacks, macOS app menu / Windows window menu bar |
+| [`tray.py`](examples/tray.py) | System tray — close-to-tray pattern, tray context menu |
 
 ## Development Status
 
@@ -117,7 +121,9 @@ For runnable code, see the [`examples/`](examples/) directory.
 - [x] ASGI adapter (FastAPI, Starlette, etc.)
 - [x] Native window effects (Acrylic / Mica / Vibrancy)
 - [x] Custom titlebar
-- [ ] API stabilization (may 0.2.x)
+- [x] Native menus (muda)
+- [x] System tray (tray-icon)
+- [ ] API stabilization (maybe 0.2.x)
 - [ ] Complete documentation site
 
 ## Contributing
