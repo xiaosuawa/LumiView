@@ -150,7 +150,7 @@ logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + 调度 / 事件派发
 - 💡 [分享想法](https://github.com/xiaosuawa/LumiView/discussions)
 - 🔧 [贡献指南](CONTRIBUTING.md)
 
-在提交 PR 之前请先阅读 [贡献指南.md](CONTRIBUTING.md)——API 仍处于不稳定阶段，重大变更需要先讨论。
+在提交 PR 之前请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)——API 仍处于不稳定阶段，重大变更需要先讨论。
 
 ## License
 

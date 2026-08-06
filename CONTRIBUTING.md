@@ -8,8 +8,8 @@ Thank you for your interest in contributing! LumiView is in early development, a
 
 ### 🐛 Bug Reports
 
-- Check existing [Issues](https://github.com/xiaosuawa/LumiView/issues) first.
-- Include: OS + version, Python version, `lumiview` version, minimal repro code.
+- Check existing [Issues](https://github.com/xiaosuawa/LumiView/issues) first
+- Include: OS + version, Python version, `lumiview` version, minimal repro code
 - **Include logs**: run the repro with DEBUG logging enabled and paste
   the relevant output:
 
@@ -24,19 +24,19 @@ Thank you for your interest in contributing! LumiView is in early development, a
 
 ### 💡 Feature Ideas
 
-- Use [Discussions](https://github.com/xiaosuawa/LumiView/discussions) for brainstorming.
-- Tell us about your use case — it helps us prioritize.
+- Use [Discussions](https://github.com/xiaosuawa/LumiView/discussions) for brainstorming
+- Tell us about your use case — it helps us prioritize
 
 ### 📖 Examples & Documentation
 
-- Improvements to the [`examples/`](examples/) directory are always welcome forever.
-- Docstring improvements and typo fixes don't need prior discussion.
+- Improvements to the [`examples/`](examples/) directory are always welcome
+- Docstring improvements and typo fixes don't need prior discussion
 
 ### 🔧 Code Contributions
 
-1. **Discuss first** — open an issue or discussion for anything beyond small fixes.
-2. **Follow existing patterns** — match the code style, type annotations, and docstring conventions.
-3. **Keep PRs focused** — one thing per PR.
+1. **Discuss first** — open an issue or discussion for anything beyond small fixes
+2. **Follow existing patterns** — match the code style, type annotations, and docstring conventions
+3. **Keep PRs focused** — one thing per PR
 
 ## Development Setup
 
