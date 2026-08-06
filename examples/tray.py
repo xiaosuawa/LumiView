@@ -49,51 +49,7 @@ def make_icon() -> bytes:
     return bytes(rgba)
 
 
-win: Window | None = None
-
-
-async def toggle_window():
-    if win is None:
-        return
-    await win.toggle_visibility()
-    if await win.is_visible():
-        await win.focus()
-    print(f"Window {'hidden' if not await win.is_visible() else 'shown'} (tray click)")
-
-
-# Tray menu — same MenuItem type as menu bars.
-
-show_item = MenuItem(text="Show Window", id="show")
-close_item = MenuItem(text="Close Window", id="close")
-quit_item = MenuItem(text="Quit", id="quit")
-
-
-@show_item.on_activate
-async def on_show(_):
-    if win is None:
-        return
-    await win.show()
-    await win.focus()
-    print("Window shown from tray menu")
-
-
-@close_item.on_activate
-async def on_close(_):
-    if win is None:
-        return
-    await win.request_close()
-    print("Close requested from tray menu")
-
-
-@quit_item.on_activate
-async def on_quit(_):
-    print("Quit from tray menu")
-    app.exit()
-
-
 async def main():
-    global win
-
     win = await Window.create(
         WindowOptions(
             title="Tray Demo",
@@ -101,6 +57,10 @@ async def main():
             html="<h1>LumiView Tray Demo</h1><p>Close the window to hide it to the tray.</p>",
         )
     )
+
+    async def show_win():
+        await win.show()
+        await win.focus()
 
     @win.on(WindowEvent.CloseRequestedEvent)
     async def on_close_requested(event):
@@ -110,24 +70,43 @@ async def main():
 
     # macOS: reopen from the Dock.
     @app.on(AppEvent.ReopenEvent)
-    async def on_reopen(event: AppEvent.ReopenEvent):
+    async def on_reopen(event):
         # Fires on any Dock click (visible or not). When windows are
         # still visible the system already re-activated the app — only
         # restore when they are hidden (e.g. after App.hide()).
-        if win is None or event.has_visible_windows:
+        if event.has_visible_windows:
             return
-        await win.show()
-        await win.focus()
+        await show_win()
         print("App reopened from the Dock")
 
     @app.on(AppEvent.TrayIconClickEvent)
-    async def on_tray_click(event: AppEvent.TrayIconClickEvent):
+    async def on_tray_click(event):
         if event.button == MouseButton.Left and event.button_state == ElementState.Released:
-            await toggle_window()
+            await win.toggle_visibility()
+
+    # Tray menu — same MenuItem type as menu bars.
+    show_item = MenuItem(text="Show Window", id="show")
+    close_item = MenuItem(text="Close Window", id="close")
+    quit_item = MenuItem(text="Quit", id="quit")
+
+    @show_item.on_activate
+    async def on_show(_):
+        await show_win()
+        print("Window shown from tray menu")
+
+    @close_item.on_activate
+    async def on_close(_):
+        await win.request_close()
+        print("Close requested from tray menu")
+
+    @quit_item.on_activate
+    async def on_quit(_):
+        print("Quit from tray menu")
+        app.exit()
 
     # Global channel — fires after each item's own on_activate.
     @app.on(AppEvent.MenuItemActivatedEvent)
-    async def on_any_menu(event: AppEvent.MenuItemActivatedEvent):
+    async def on_any_menu(event):
         print(f"global menu event: id={event.id!r}")
 
     menu = await Menu.create(
@@ -141,7 +120,7 @@ async def main():
             menu_on_left_click=False,
         )
     )
-    print(f"Tray icon created (id={tray.id})")
+    print(f"Tray icon created")
     print("Left-click the tray icon to toggle the window; right-click for the menu.")
 
 
