@@ -1,9 +1,11 @@
-name: CI
+name: Build
 
 on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
