@@ -16,6 +16,7 @@ import re
 from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
 
 from lumiview.events import WindowEvent
+from lumiview.task import Task
 
 
 P = ParamSpec("P")
@@ -31,7 +32,7 @@ def copy_signature_for_classmethod(_: Callable[P, Any]):
     return decorator
 
 
-def main_thread(fn: Callable[P, R]) -> Callable[P, "Task[R]"]:
+def main_thread(fn: Callable[P, R]) -> Callable[P, Task[R]]:
     """
     Decorate a sync ``def`` method to run on the main thread.
 
@@ -39,7 +40,7 @@ def main_thread(fn: Callable[P, R]) -> Callable[P, "Task[R]"]:
     in sync code.
     """
     @functools.wraps(fn)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> "Task[R]":
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> Task[R]:
         from lumiview.app import App  # deferred — avoids an import cycle
 
         return App.get().call_on_main(fn, *args, **kwargs)
