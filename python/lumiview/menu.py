@@ -478,6 +478,8 @@ class Menu:
                 PredefinedMenuItem.minimize(),
                 PredefinedMenuItem.maximize(),
                 PredefinedMenuItem.separator(),
+                PredefinedMenuItem.close_window(),
+                PredefinedMenuItem.separator(),
                 PredefinedMenuItem.bring_all_to_front(),
             ],
         )
