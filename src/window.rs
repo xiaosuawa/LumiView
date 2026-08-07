@@ -128,6 +128,11 @@ impl TaoWindow {
         always_on_top = None, focused = None, focusable = None,
         content_protection = None, visible_on_all_workspaces = None,
         transparent = None, icon = None,
+        always_on_bottom = None, background_color = None,
+        titlebar_transparent = None, titlebar_hidden = None,
+        title_hidden = None, titlebar_buttons_hidden = None,
+        fullsize_content_view = None, traffic_light_inset = None,
+        movable_by_background = None,
     ))]
     fn new(
         event_loop: &TaoEventLoop,
@@ -152,6 +157,16 @@ impl TaoWindow {
         visible_on_all_workspaces: Option<bool>,
         transparent: Option<bool>,
         icon: Option<(u32, u32, Vec<u8>)>,
+        always_on_bottom: Option<bool>,
+        background_color: Option<(u8, u8, u8, u8)>,
+        // macOS titlebar group (see TitleBarOptions in the Python layer)
+        titlebar_transparent: Option<bool>,
+        titlebar_hidden: Option<bool>,
+        title_hidden: Option<bool>,
+        titlebar_buttons_hidden: Option<bool>,
+        fullsize_content_view: Option<bool>,
+        traffic_light_inset: Option<(f64, f64)>,
+        movable_by_background: Option<bool>,
     ) -> PyResult<TaoWindow> {
         let elwt = event_loop.target().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
@@ -219,6 +234,52 @@ impl TaoWindow {
         if let Some(v) = always_on_top {
             b = b.with_always_on_top(v);
         }
+        // tao treats always-on-top/bottom as mutually exclusive — the
+        // later call wins.
+        if let Some(v) = always_on_bottom {
+            b = b.with_always_on_bottom(v);
+        }
+        if let Some(color) = background_color {
+            // Windows ignores the alpha channel (tao behavior).
+            b = b.with_background_color(color);
+        }
+        // macOS titlebar group — mirrors TitleBarOptions in the Python
+        // layer; silently ignored on other platforms.
+        #[cfg(target_os = "macos")]
+        {
+            use tao::platform::macos::WindowBuilderExtMacOS;
+            if let Some(v) = titlebar_transparent {
+                b = b.with_titlebar_transparent(v);
+            }
+            if let Some(v) = titlebar_hidden {
+                b = b.with_titlebar_hidden(v);
+            }
+            if let Some(v) = title_hidden {
+                b = b.with_title_hidden(v);
+            }
+            if let Some(v) = titlebar_buttons_hidden {
+                b = b.with_titlebar_buttons_hidden(v);
+            }
+            if let Some(v) = fullsize_content_view {
+                b = b.with_fullsize_content_view(v);
+            }
+            if let Some((x, y)) = traffic_light_inset {
+                b = b.with_traffic_light_inset(LogicalPosition::new(x, y));
+            }
+            if let Some(v) = movable_by_background {
+                b = b.with_movable_by_window_background(v);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (
+            titlebar_transparent,
+            titlebar_hidden,
+            title_hidden,
+            titlebar_buttons_hidden,
+            fullsize_content_view,
+            traffic_light_inset,
+            movable_by_background,
+        );
         if let Some(v) = focused {
             b = b.with_focused(v);
         }
@@ -467,6 +528,12 @@ impl TaoWindow {
             WindowEffect::Vibrancy => window_vibrancy::clear_vibrancy(&self.inner).map(|_| ()),
         };
         result.map_err(effect_error)
+    }
+
+    /// Set the window background color (``None`` restores the platform
+    /// default). On Windows the alpha channel is ignored.
+    fn set_background_color(&self, color: Option<(u8, u8, u8, u8)>) {
+        self.inner.set_background_color(color);
     }
 
     // State
@@ -858,6 +925,14 @@ impl TaoWindow {
     fn set_traffic_light_inset(&self, x: f64, y: f64) {
         use tao::platform::macos::WindowExtMacOS;
         self.inner.set_traffic_light_inset(LogicalPosition::new(x, y));
+    }
+
+    /// Make the window content appear behind the titlebar
+    /// (``NSFullSizeContentViewWindowMask``). **macOS only.**
+    #[cfg(target_os = "macos")]
+    fn set_fullsize_content_view(&self, fullsize: bool) {
+        use tao::platform::macos::WindowExtMacOS;
+        self.inner.set_fullsize_content_view(fullsize);
     }
 
     /// Toggle the window shadow. **macOS only.**

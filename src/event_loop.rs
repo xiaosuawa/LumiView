@@ -187,8 +187,25 @@ pub struct TaoEventLoop {
 #[pymethods]
 impl TaoEventLoop {
     #[new]
-    fn new() -> Self {
-        let el = EventLoopBuilder::<String>::with_user_event().build();
+    #[pyo3(signature = (app_id = None))]
+    fn new(app_id: Option<String>) -> Self {
+        // app_id is the GTK application id (Linux only) — needed for
+        // application uniqueness and desktop integration on Wayland.
+        // Silently ignored on other platforms.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let el = {
+            use tao::platform::unix::EventLoopBuilderExtUnix;
+            let mut builder = EventLoopBuilder::<String>::with_user_event();
+            if let Some(id) = app_id {
+                builder.with_app_id(id);
+            }
+            builder.build()
+        };
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        let el = {
+            let _ = app_id;
+            EventLoopBuilder::<String>::with_user_event().build()
+        };
         TaoEventLoop {
             inner: RefCell::new(Some(el)),
             target: Cell::new(None),
@@ -283,6 +300,18 @@ impl TaoEventLoop {
         use tao::platform::macos::EventLoopWindowTargetExtMacOS;
         let target = self.running_target()?;
         target.hide_other_applications();
+        Ok(())
+    }
+
+    /// Show (``True``) or hide (``False``) the Dock icon (macOS only).
+    ///
+    /// Combined with ``App(activation_policy=Accessory)`` this makes a
+    /// menu-bar/tray application.
+    #[cfg(target_os = "macos")]
+    fn set_dock_visibility(&self, visible: bool) -> PyResult<()> {
+        use tao::platform::macos::EventLoopWindowTargetExtMacOS;
+        let target = self.running_target()?;
+        target.set_dock_visibility(visible);
         Ok(())
     }
 

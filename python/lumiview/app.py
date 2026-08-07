@@ -94,6 +94,9 @@ class App:
            (e.g. ``Accessory`` for menu-bar/agent apps without a Dock
            icon). Must be set before :meth:`run`; ignored on other
            platforms.
+        app_id: Linux only — the GTK application id (application
+           uniqueness and desktop integration on Wayland). Ignored on
+           other platforms.
 
     Lifecycle: register an entry via :meth:`run` (main flow) and/or
     observe via :meth:`on` with :class:`AppEvent.ReadyEvent`. Request
@@ -111,6 +114,7 @@ class App:
         exit_on_last_window: bool = True,
         max_workers: int | None = 6,
         activation_policy: ActivationPolicy | None = None,
+        app_id: str | None = None,
     ) -> None:
         if App._instance is not None:
             raise RuntimeError(
@@ -124,6 +128,7 @@ class App:
         self._exit_on_last_window = exit_on_last_window
         self._max_workers = max_workers
         self._activation_policy: ActivationPolicy | None = activation_policy
+        self._app_id: str | None = app_id
 
         # State
         self._state = AppState.CREATED
@@ -502,7 +507,7 @@ class App:
         self._state = AppState.STARTING
         log.info("App %r starting", self._name)
 
-        self._event_loop = TaoEventLoop()
+        self._event_loop = TaoEventLoop(app_id=self._app_id)
         self._proxy = self._event_loop.create_proxy()
         self._main_tid = threading.get_ident()
 
@@ -711,6 +716,18 @@ class App:
             for win in list(self._windows.values()):
                 if win._window is not None:
                     win._window.set_visible(True)
+
+    @main_thread
+    def set_dock_visibility(self, visible: bool) -> None:
+        """Show (``True``) or hide (``False``) the macOS Dock icon.
+
+        Combined with ``App(activation_policy=ActivationPolicy.Accessory)``
+        this makes a menu-bar/tray application. **macOS only** — raises
+        :class:`AttributeError` elsewhere.
+        """
+        if self._event_loop is None:
+            return
+        self._event_loop.set_dock_visibility(visible)
 
     def _run_asyncio(self, entry: Callable[..., Any] | None) -> None:
         try:

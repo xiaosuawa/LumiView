@@ -83,6 +83,36 @@ class CloseBehavior(Enum):
     Ignore = auto()
 
 
+@dataclass(kw_only=True)
+class TitleBarOptions:
+    """macOS titlebar appearance options (the pieces tao exposes instead
+    of a single ``titleBarStyle``).
+
+    Passed to :class:`WindowOptions` as ``titlebar=TitleBarOptions(...)``.
+    Silently ignored on non-macOS platforms (like
+    ``undecorated_shadow`` outside Windows).
+    """
+
+    transparent: bool = False
+    """Make the titlebar transparent so content appears behind it."""
+    hidden: bool = False
+    """Hide the titlebar entirely."""
+    title_hidden: bool = False
+    """Hide the title text, keeping the titlebar and its buttons."""
+    buttons_hidden: bool = False
+    """Hide the traffic-light (window control) buttons."""
+    fullsize_content_view: bool = False
+    """Let the content view extend behind the titlebar (overlay style).
+    Combine with ``transparent=True`` for a Tauri-style ``Overlay``
+    titlebar."""
+    traffic_light_inset: tuple[float, float] | None = None
+    """Traffic-light (window controls) inset ``(x, y)`` in logical
+    points, relative to the upper-left corner."""
+    movable_by_background: bool = False
+    """Let the window be dragged from anywhere on its background, not
+    just the titlebar."""
+
+
 # Window
 @dataclass(kw_only=True)
 class WindowOptions:
@@ -138,6 +168,12 @@ class WindowOptions:
     """Whether the window starts maximized."""
     always_on_top: bool = False
     """Whether the window floats above other windows."""
+    always_on_bottom: bool = False
+    """Whether the window stays below other windows. Mutually
+    exclusive with ``always_on_top`` — the last one set wins."""
+    titlebar: TitleBarOptions | None = None
+    """macOS titlebar appearance — see :class:`TitleBarOptions`.
+    Silently ignored on other platforms."""
     undecorated_shadow: bool | None = None
     """Shadow for undecorated windows — ``None`` lets the platform
     decide."""
@@ -212,7 +248,9 @@ class WindowOptions:
     — it cannot be enabled lazily after the WebView exists.
     """
     background_color: tuple[int, int, int, int] | None = None
-    """WebView background ``(r, g, b, a)``."""
+    """Window and WebView background ``(r, g, b, a)`` — applied to the
+    native window (the alpha channel is ignored there on Windows) and
+    the WebView."""
     headers: dict[str, str] | None = None
     """Extra HTTP headers for the initial load."""
     devtools: bool = False
@@ -404,6 +442,7 @@ class Window:
                 "App is not running — create windows inside app.run(entry)"
             )
 
+        tb = options.titlebar
         tao_win = TaoWindow(
             app._event_loop,
             title=options.title,
@@ -421,6 +460,15 @@ class Window:
             decorations=options.decorations,
             undecorated_shadow=options.undecorated_shadow,
             always_on_top=options.always_on_top,
+            always_on_bottom=options.always_on_bottom,
+            background_color=options.background_color,
+            titlebar_transparent=tb.transparent if tb else None,
+            titlebar_hidden=tb.hidden if tb else None,
+            title_hidden=tb.title_hidden if tb else None,
+            titlebar_buttons_hidden=tb.buttons_hidden if tb else None,
+            fullsize_content_view=tb.fullsize_content_view if tb else None,
+            traffic_light_inset=tb.traffic_light_inset if tb else None,
+            movable_by_background=tb.movable_by_background if tb else None,
             focused=options.focused,
             focusable=options.focusable,
             content_protection=options.content_protection,
@@ -1243,6 +1291,14 @@ class Window:
         self._window.set_traffic_light_inset(x, y)
 
     @main_thread
+    def set_fullsize_content_view(self, fullsize: bool) -> None:
+        """Let the content view extend behind the titlebar
+        (``NSFullSizeContentViewWindowMask``). **macOS only.**"""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_fullsize_content_view(fullsize)
+
+    @main_thread
     def set_has_shadow(self, has_shadow: bool) -> None:
         """Toggle the window shadow. **macOS only.**"""
         if self._window is None:
@@ -1677,11 +1733,16 @@ class Window:
     @main_thread
     def set_background_color(self, r: int, g: int, b: int, a: int = 255) -> None:
         """
-        Set the WebView background colour before content loads.
+        Set the window and WebView background colour.
+
+        The native window gets the colour too (its alpha channel is
+        ignored on Windows).
         """
-        if self._webview is None:
+        if self._window is None:
             raise WindowClosedError(self._win_id)
-        self._webview.set_background_color(r, g, b, a)
+        self._window.set_background_color((r, g, b, a))
+        if self._webview is not None:
+            self._webview.set_background_color(r, g, b, a)
 
     @main_thread
     def cookies(self) -> list[dict]:

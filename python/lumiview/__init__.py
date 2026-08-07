@@ -36,6 +36,7 @@ from lumiview.window import (
     ProgressState,
     ResizeDirection,
     Theme,
+    TitleBarOptions,
     VibrancyMaterial,
     VideoMode,
     Window,
@@ -83,6 +84,7 @@ __all__ = [
     # Window layer
     "Window",
     "WindowOptions",
+    "TitleBarOptions",
     "CloseBehavior",
     "WindowEffect",
     "ResizeDirection",

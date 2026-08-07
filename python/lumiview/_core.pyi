@@ -22,7 +22,10 @@ class TaoEventLoop:
         on the main thread, especially on macOS.
     """
 
-    def __init__(self) -> None: ...
+    def __init__(self, app_id: str | None = None) -> None:
+        """Create the event loop. *app_id* is the GTK application id
+        (Linux only); ignored elsewhere."""
+        ...
     def create_proxy(self) -> "TaoEventLoopProxy":
         """Create a thread-safe proxy for sending events from other threads.
 
@@ -76,6 +79,11 @@ class TaoEventLoop:
         ...
     def hide_other_applications(self) -> None:
         """Hide every other running application; typically Cmd+Option+H.
+        Requires a running loop."""
+        ...
+    def set_dock_visibility(self, visible: bool) -> None:
+        """Show or hide the Dock icon. Combined with an Accessory
+        activation policy this makes a menu-bar/tray application.
         Requires a running loop."""
         ...
 
@@ -133,6 +141,16 @@ class TaoWindow:
         visible_on_all_workspaces: bool | None = None,
         transparent: bool | None = None,
         icon: tuple[int, int, bytes] | None = None,  # (width, height, rgba)
+        always_on_bottom: bool | None = None,
+        background_color: tuple[int, int, int, int] | None = None,
+        # macOS titlebar group (see TitleBarOptions) — ignored elsewhere
+        titlebar_transparent: bool | None = None,
+        titlebar_hidden: bool | None = None,
+        title_hidden: bool | None = None,
+        titlebar_buttons_hidden: bool | None = None,
+        fullsize_content_view: bool | None = None,
+        traffic_light_inset: tuple[float, float] | None = None,
+        movable_by_background: bool | None = None,
     ) -> None: ...
 
     def id(self) -> int:
@@ -175,6 +193,12 @@ class TaoWindow:
         material: "VibrancyMaterial | None" = None,
     ) -> None: ...
     def clear_effect(self, effect: "WindowEffect") -> None: ...
+    def set_background_color(
+        self, color: "tuple[int, int, int, int] | None"
+    ) -> None:
+        """Set the window background color (``None`` restores the
+        platform default). The alpha channel is ignored on Windows."""
+        ...
 
     # State
     def is_minimized(self) -> bool: ...
@@ -301,6 +325,9 @@ class TaoWindow:
         ...
     def set_titlebar_transparent(self, transparent: bool) -> None: ...
     def set_traffic_light_inset(self, x: float, y: float) -> None: ...
+    def set_fullsize_content_view(self, fullsize: bool) -> None:
+        """Let the content view extend behind the titlebar."""
+        ...
     def set_has_shadow(self, has_shadow: bool) -> None: ...
     def has_shadow(self) -> bool: ...
 
