@@ -206,7 +206,7 @@ class Bridge:
                 from lumiview._binding import bind_arguments  # avoid import cycle
 
                 kwargs = bind_arguments(cmd, payload, window)
-                result = await run_async(cmd.fn, pool=app._threadpool, **kwargs)
+                result = await run_async(cmd.fn, **kwargs)
                 self._respond(window, call_id, result=result)
             except BridgeError as e:
                 self._respond(window, call_id, error=e)

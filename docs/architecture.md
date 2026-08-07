@@ -78,7 +78,7 @@ assert e is not None and e.title == "x"
 | `app.call_on_main(fn, *args)` | 把 *fn* 排到主线程执行，返回 `Task[T]`；主线程上直接执行 |
 | `@main_thread` | 装饰器版：同步方法变成返回 `Task[R]` 并在主线程跑方法体 |
 | `Task` | `concurrent.futures.Future` 子类；`await` / `.result()` / `.on_done()` |
-| `run_async(fn, pool=...)` | 轻量派发（无 Task 开销）：async 直接 await，sync 走线程池 |
+| `run_async(fn)` | 轻量派发（无 Task 开销）：async 直接 await，sync 走线程池 |
 
 ```python
 from lumiview import App
@@ -93,7 +93,7 @@ result = await app.call_on_main(lambda: window_op())
 result = app.call_on_main(lambda: window_op()).result()
 
 # 混合回调：async 直接跑、sync 去线程池
-await run_async(mixed_callback, pool=app._threadpool)
+await run_async(mixed_callback)
 ```
 
 > 经验：任何「从别的线程操作原生窗口」的崩溃（尤其 macOS）基本都是没走 `call_on_main`。典型案例：TimeFlow 用 pystray 时，状态栏菜单回调线程直接操作 `NSWindow` 崩溃——改为主线程调度后稳定。见 [integrations.md](integrations.md)。

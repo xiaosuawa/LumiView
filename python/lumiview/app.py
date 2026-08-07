@@ -399,7 +399,7 @@ class App:
             try:
                 for fn in handlers:
                     try:
-                        await run_async(fn, event, pool=self._threadpool)
+                        await run_async(fn, event)
                     except Exception:
                         log.exception(f"Error in {type(event).__name__} handler: {fn}")
             finally:
@@ -739,7 +739,7 @@ class App:
 
                 if entry is not None:
                     try:
-                        await run_async(entry, pool=self._threadpool)
+                        await run_async(entry)
                     except Exception:
                         log.exception("Error in entry point")
 

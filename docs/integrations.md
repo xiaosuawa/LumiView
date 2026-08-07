@@ -116,5 +116,5 @@ def on_title(event):
 from lumiview.task import run_async
 
 # 在异步上下文里混合同步/异步回调
-await run_async(sync_work, pool=app._threadpool)
+await run_async(sync_work)
 ```

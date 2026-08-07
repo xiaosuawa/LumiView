@@ -237,11 +237,10 @@ class Task(concurrent.futures.Future, Generic[T]):
 
 
 async def run_async(
-    fn: Callable[..., Any],
-    *args: Any,
-    pool: concurrent.futures.ThreadPoolExecutor | None = None,
-    **kwargs: Any,
-) -> Any:
+    fn: Callable[P, T],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> T:
     """Execute *fn* on the asyncio loop — no Task created.
 
     - async functions: awaited directly (zero overhead).
@@ -256,9 +255,8 @@ async def run_async(
     if inspect.iscoroutinefunction(fn):
         return await fn(*args, **kwargs)
     loop = asyncio.get_running_loop()
-    if pool is None:
-        raise RuntimeError("Thread pool required for sync function dispatch")
-    return await loop.run_in_executor(pool, lambda: fn(*args, **kwargs))
+    from lumiview.app import App
+    return await loop.run_in_executor(App.get()._threadpool, lambda: fn(*args, **kwargs))
 
 
 # Public factory: task()
@@ -280,6 +278,6 @@ def task(
     Raises:
         RuntimeError: If no :class:`App` instance has been created yet.
     """
-    from lumiview.app import App  # deferred import to avoid circular dep
+    from lumiview.app import App
 
     return App.get()._schedule_task(fn, args, kwargs)

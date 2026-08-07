@@ -151,7 +151,6 @@ class Handler(Serve):
         """
         from lumiview.app import App
 
-        app = App.get()
         loop = app._async_loop
         if loop is None:
             respond(500, [("Content-Type", "text/plain")], b"App not running")
@@ -159,7 +158,7 @@ class Handler(Serve):
 
         async def _run() -> None:
             try:
-                result = await run_async(self._fn, request, pool=app._threadpool)
+                result = await run_async(self._fn, request)
                 respond(result.status, result.headers, result.body)
             except Exception:
                 log.exception("Serve handler raised an exception")

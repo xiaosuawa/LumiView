@@ -1419,7 +1419,7 @@ class Window:
             try:
                 for fn in handlers:
                     try:
-                        await run_async(fn, event, pool=self._app._threadpool)
+                        await run_async(fn, event)
                     except Exception:
                         logging.getLogger("lumiview.window").exception(
                             f"Error in {type(event).__name__} handler: {fn}",
