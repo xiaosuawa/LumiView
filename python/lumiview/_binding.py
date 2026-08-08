@@ -4,7 +4,7 @@ import inspect
 from typing import TYPE_CHECKING, Any, get_type_hints
 
 from cattrs import Converter
-from cattrs.errors import ClassValidationError, StructureHandlerNotFoundError
+from cattrs.errors import BaseValidationError, StructureHandlerNotFoundError
 
 from lumiview.bridge import BridgeError
 from lumiview.scope import BridgeContext, Command
@@ -80,7 +80,7 @@ def bind_arguments(
             bound[param.name] = _converter.structure(
                 payload[param.name], annotation
             )
-        except (StructureHandlerNotFoundError, ClassValidationError) as exc:
+        except (StructureHandlerNotFoundError, BaseValidationError) as exc:
             raise BridgeError(
                 "invalid_argument",
                 f"Invalid argument {param.name!r}: {exc}",
