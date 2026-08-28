@@ -137,7 +137,7 @@ logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + 调度 / 事件派发
 - [x] 自定义标题栏
 - [x] 原生菜单 (muda)
 - [x] 系统托盘 (tray-icon)
-- [ ] API 稳定化 (maybe 0.2.x)
+- [ ] API 稳定化
 - [ ] 完整文档站点
 
 ## 参与贡献

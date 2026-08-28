@@ -141,7 +141,7 @@ For runnable code, see the [`examples/`](examples/) directory.
 - [x] Custom titlebar
 - [x] Native menus (muda)
 - [x] System tray (tray-icon)
-- [ ] API stabilization (maybe 0.2.x)
+- [ ] API stabilization
 - [ ] Complete documentation site
 
 ## Contributing
