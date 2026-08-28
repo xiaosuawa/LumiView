@@ -693,6 +693,8 @@ class App:
             return
         if sys.platform == "darwin":
             self._event_loop.hide_application()
+            for win in list(self._windows.values()):
+                win._sync_webview_visibility()
         else:
             for win in list(self._windows.values()):
                 win.hide()
@@ -710,6 +712,8 @@ class App:
             return
         if sys.platform == "darwin":
             self._event_loop.show_application()
+            for win in list(self._windows.values()):
+                win._sync_webview_visibility()
         else:
             for win in list(self._windows.values()):
                 win.show()

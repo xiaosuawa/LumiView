@@ -737,21 +737,37 @@ class Window:
         self._window.set_inner_size(width, height)
 
     @main_thread
+    def set_visible(self, flag: bool):
+        """Show (``True``) or hide (``False``) the window, re-syncing the
+        WebView to match (a no-op when ``sync_visibility`` is ``False``)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_visible(flag)
+        self._sync_webview_visibility()
+
+    @main_thread
+    def set_webview_visible(self, flag: bool):
+        """Show (``True``) or hide (``False``) the WebView independently of
+        the window. The next window visibility change re-syncs it as long
+        as ``sync_visibility`` is ``True``."""
+        if self._webview is None:
+            raise WindowClosedError(self._win_id)
+        self._webview.set_visible(flag)
+
+    @main_thread
     def show(self) -> None:
         """Show the window (and un-minimize it if needed)."""
         if self._window is None:
             raise WindowClosedError(self._win_id)
-        self._window.set_visible(True)
+        self.set_visible(True)
         self._window.set_minimized(False)
-        self._sync_webview_visibility()
 
     @main_thread
     def hide(self) -> None:
         """Hide the window."""
         if self._window is None:
             raise WindowClosedError(self._win_id)
-        self._window.set_visible(False)
-        self._sync_webview_visibility()
+        self.set_visible(False)
 
     @main_thread
     def _sync_webview_visibility(self) -> None:
@@ -764,14 +780,10 @@ class Window:
         ``WindowOptions.sync_visibility`` is ``False`` this is a no-op,
         and the WebView keeps its own visibility (the old behavior).
         """
-        if (
-            self._window is None
-            or self._webview is None
-            or not self._sync_visibility
-        ):
+        if self._window is None or self._webview is None or not self._sync_visibility:
             return
         visible = self._window.is_visible() and not self._window.is_minimized()
-        self._webview.set_visible(visible)
+        self.set_webview_visible(visible)
 
     @main_thread
     def focus(self, flag: bool = True) -> None:
@@ -789,6 +801,13 @@ class Window:
         self._sync_webview_visibility()
 
     @main_thread
+    def set_maximize(self, flag: bool = True) -> None:
+        """Maximize (``True``) or restore the window (``flag`` = maximize)."""
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        self._window.set_maximized(flag)
+
+    @main_thread
     def toggle_maximize(self) -> bool:
         """Toggle maximize state.
 
@@ -798,7 +817,7 @@ class Window:
         if self._window is None:
             raise WindowClosedError(self._win_id)
         maximized = not self._window.is_maximized()
-        self._window.set_maximized(maximized)
+        self.set_maximize(maximized)
         return maximized
 
     @main_thread
@@ -1175,13 +1194,12 @@ class Window:
         """
         if self._window is None:
             raise WindowClosedError(self._win_id)
+
         if self._window.is_visible() and not self._window.is_minimized():
-            self._window.set_visible(False)
-            self._sync_webview_visibility()
+            self.set_visible(False)
         else:
-            self._window.set_visible(True)
-            self._window.set_minimized(False)
-            self._sync_webview_visibility()
+            self.set_visible(True)
+            self.set_minimized(False)
 
     @main_thread
     def request_redraw(self) -> None:
@@ -1628,9 +1646,14 @@ class Window:
 
         elif isinstance(event, FocusedEvent):
             self._emit(WindowEvent.FocusedEvent())
+            # Re-sync on focus change: restoring a window from the OS
+            # (e.g. the taskbar) does not go through show()/toggle, so
+            # re-derive the WebView visibility from the window's real state.
+            self._sync_webview_visibility()
 
         elif isinstance(event, UnfocusedEvent):
             self._emit(WindowEvent.UnfocusedEvent())
+            self._sync_webview_visibility()
 
         elif isinstance(event, ScaleFactorChangedEvent):
             self._emit(
