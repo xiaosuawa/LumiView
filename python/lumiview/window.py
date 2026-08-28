@@ -222,6 +222,15 @@ class WindowOptions:
     the system there). See :meth:`Window.set_theme` for the runtime
     version, which also affects the window chrome."""
     # Behavior
+    sync_visibility: bool = True
+    """Whether the WebView follows the window's visibility.
+
+    When ``True`` (default), hiding / minimizing / toggling the window
+    also hides the underlying WebView (its ``set_visible(False)``), which
+    lets the platform webview enter a low-power / throttled state (reduced
+    CPU & GPU while not visible). Set to ``False`` to keep the old
+    behavior — only the window chrome is hidden and the WebView keeps
+    rendering independently."""
     focused: bool = True
     """Whether the window starts focused."""
     focusable: bool = True
@@ -333,6 +342,7 @@ class Window:
         self._close_pending: bool
         self._drag_enabled: bool
         self._untrusted: bool
+        self._sync_visibility: bool
 
         raise RuntimeError("Use 'await Window.create(...)' instead")
 
@@ -405,6 +415,7 @@ class Window:
         self._drag_enabled = options.drag_drop
         self._bridge = options.bridge or Bridge()
         self._untrusted = options.untrusted
+        self._sync_visibility = options.sync_visibility
 
         # Resolve source → url / html / custom_protocols
         custom_protocols: dict[str, Callable] = {}
@@ -732,6 +743,7 @@ class Window:
             raise WindowClosedError(self._win_id)
         self._window.set_visible(True)
         self._window.set_minimized(False)
+        self._sync_webview_visibility()
 
     @main_thread
     def hide(self) -> None:
@@ -739,6 +751,27 @@ class Window:
         if self._window is None:
             raise WindowClosedError(self._win_id)
         self._window.set_visible(False)
+        self._sync_webview_visibility()
+
+    @main_thread
+    def _sync_webview_visibility(self) -> None:
+        """Sync the WebView to the window's real on-screen state.
+
+        Called by :meth:`show`, :meth:`hide`, :meth:`minimize` and
+        :meth:`toggle_visibility` after they change the window. Derives
+        the visibility from the window's actual state, so callers don't
+        have to remember whether to hide the WebView themselves. When
+        ``WindowOptions.sync_visibility`` is ``False`` this is a no-op,
+        and the WebView keeps its own visibility (the old behavior).
+        """
+        if (
+            self._window is None
+            or self._webview is None
+            or not self._sync_visibility
+        ):
+            return
+        visible = self._window.is_visible() and not self._window.is_minimized()
+        self._webview.set_visible(visible)
 
     @main_thread
     def focus(self, flag: bool = True) -> None:
@@ -753,6 +786,7 @@ class Window:
         if self._window is None:
             raise WindowClosedError(self._win_id)
         self._window.set_minimized(flag)
+        self._sync_webview_visibility()
 
     @main_thread
     def toggle_maximize(self) -> bool:
@@ -1143,9 +1177,11 @@ class Window:
             raise WindowClosedError(self._win_id)
         if self._window.is_visible() and not self._window.is_minimized():
             self._window.set_visible(False)
+            self._sync_webview_visibility()
         else:
             self._window.set_visible(True)
             self._window.set_minimized(False)
+            self._sync_webview_visibility()
 
     @main_thread
     def request_redraw(self) -> None:
