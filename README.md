@@ -17,7 +17,7 @@
 
 > ⚠️ **Early Development Stage — APIs May Change**
 >
-> LumiView is currently in **pre-alpha**. The API is functional but **not yet stable** — method names, parameter structures, and import paths may change between dev releases. We use dev releases to gather early feedback while retaining the flexibility to adjust the API.
+> LumiView is currently in **alpha**. The API is functional but **not yet fully stable** — method names, parameter structures, and import paths may still change between releases. We use alpha releases to gather early feedback while retaining the flexibility to adjust the API.
 >
 > **Early adopters welcome!** Try building an app with it and tell us what works well and what doesn't. Your feedback will directly shape the final stable API. When upgrading, please check the changelog and be prepared to adjust your code.
 
@@ -61,7 +61,7 @@ flowchart TB
 ## Installation
 
 ```bash
-pip install --pre lumiview
+pip install lumiview
 ```
 
 ## Quick Start

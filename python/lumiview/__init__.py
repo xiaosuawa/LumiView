@@ -74,7 +74,7 @@ from lumiview import utils
 from lumiview import plugins
 from lumiview import serve
 
-__version__ = "0.1.0.dev5"
+__version__ = "0.1.0"
 
 __all__ = [
     # Application layer

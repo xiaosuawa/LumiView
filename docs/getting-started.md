@@ -3,10 +3,10 @@
 ## 安装
 
 ```bash
-pip install --pre lumiview
+pip install lumiview
 ```
 
-当前为预览阶段（`0.1.0.dev*`），API 尚未冻结，升级时请留意变更。
+当前为 alpha 阶段（`0.1.0`），API 尚未完全冻结，升级时请留意变更。
 
 ## 最小应用
 

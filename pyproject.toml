@@ -7,7 +7,7 @@ name = "lumiview"
 authors = [{ name = "校溯", email = "xiaosu@xiaosu.icu" }]
 description = "Pythonic desktop window + webview — lightweight, async-first, no toolchain required."
 readme = "README.md"
-version = "0.1.0.dev5"
+version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = ["wryview>=0.5.4", "cattrs>=26.1", "typing_extensions~=4.11"]
 license = "MPL-2.0"
@@ -22,7 +22,7 @@ keywords = [
     "wry",
 ]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
