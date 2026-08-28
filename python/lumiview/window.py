@@ -551,6 +551,7 @@ class Window:
                 height=options.height,
                 url=resolved_url,
                 html=resolved_html,
+                visible=options.visible,
                 transparent=options.transparent,
                 background_color=options.background_color,
                 devtools=options.devtools,
