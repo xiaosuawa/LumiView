@@ -51,7 +51,7 @@ body:
       description: |
         Run `pip show lumiview` to check. LumiView is still in alpha, so please always test with the latest version first.
         运行 `pip show lumiview` 查看。LumiView 仍处于 alpha 阶段，请务必先测试最新版本再提交。
-      placeholder: 0.1.0
+      placeholder: 0.1.1
     validations:
       required: true
 

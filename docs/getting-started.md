@@ -6,7 +6,7 @@
 pip install lumiview
 ```
 
-当前为 alpha 阶段（`0.1.0`），API 尚未完全冻结，升级时请留意变更。
+当前为 alpha 阶段，API 尚未完全冻结，升级时请留意变更。
 
 ## 最小应用
 
