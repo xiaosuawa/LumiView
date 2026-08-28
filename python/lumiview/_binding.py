@@ -19,7 +19,21 @@ _converter = Converter(forbid_extra_keys=True)
 
 # cattrs structures basic types via their constructors (int("3") == 3),
 # which would silently coerce — register exact-match hooks instead.
-def _strict_scalar(value: Any, typ: type) -> Any:
+def _strict_scalar(value, typ):
+    if typ is float:
+        if type(value) is not bool and isinstance(value, (int, float)):
+            return value
+        raise StructureHandlerNotFoundError(repr(value), typ)
+
+    if typ is int:
+        if type(value) is not bool and isinstance(value, int):
+            return value
+
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+
+        raise StructureHandlerNotFoundError(repr(value), typ)
+
     if type(value) is typ:
         return value
     raise StructureHandlerNotFoundError(repr(value), typ)
@@ -41,7 +55,8 @@ def bind_arguments(
     """
     if not isinstance(payload, dict):
         raise BridgeError(
-            "invalid_argument", f"Payload must be an object, got {type(payload).__name__}"
+            "invalid_argument",
+            f"Payload must be an object, got {type(payload).__name__}",
         )
 
     try:
@@ -77,9 +92,7 @@ def bind_arguments(
             continue  # use the Python default
 
         try:
-            bound[param.name] = _converter.structure(
-                payload[param.name], annotation
-            )
+            bound[param.name] = _converter.structure(payload[param.name], annotation)
         except (StructureHandlerNotFoundError, BaseValidationError) as exc:
             raise BridgeError(
                 "invalid_argument",
