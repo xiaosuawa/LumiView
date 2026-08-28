@@ -83,13 +83,13 @@ class Bridge:
 
     def command(
         self,
-        fn: Callable[..., Any] | None = None,
+        fn: Callable | None = None,
         /,
         *,
         name: str | None = None,
         replace: bool = False,
         strict: bool = True,
-    ) -> Callable[..., Any]:
+    ) -> Callable:
         """Register a command on the root scope (decorator or direct
         call) — see :meth:`Scope.command`."""
 

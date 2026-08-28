@@ -5,13 +5,13 @@
 ```
 Rust 层                       Python 层
 ──────────────────────       ──────────────────────────────────
-tao（窗口/事件循环）           lumiview.app    — App 单例、2+N 线程编排
-  │                            lumiview.window — Window / WindowOptions
-  ▼                            lumiview.bridge — Bridge / BridgeError（IPC）
-wryview（WebView 绑定）        lumiview.scope  — Scope / Plugin / 权限链
-  │                            lumiview.task   — Task / run_async
-  ▼                            lumiview.events — 事件类体系
-lumiview._core（PyO3）         lumiview.utils  — match_pattern / navigation_policy
+tao（窗口/事件循环）          lumiview.app    — App 单例、2+N 线程编排
+  │                           lumiview.window — Window / WindowOptions
+  ▼                           lumiview.bridge — Bridge / BridgeError（IPC）
+wryview（WebView 绑定）       lumiview.scope  — Scope / Plugin / 权限链
+  │                           lumiview.task   — Task / run_async
+  ▼                           lumiview.events — 事件类体系
+lumiview._core（PyO3）        lumiview.utils  — match_pattern / navigation_policy
                               lumiview.serve  — lumiview:// 自定义协议
 ```
 
@@ -27,10 +27,9 @@ lumiview._core（PyO3）         lumiview.utils  — match_pattern / navigation_
 | **asyncio 线程** | 运行用户协程（`app.run(entry)` 的 entry）与事件 handler |
 | **线程池** | 同步 `task()` 调用、同步事件 handler（大小由 `App(max_workers=N)` 配置） |
 
-关键推论：
-
-- **事件 handler 从不运行在主线程**——它们跑在 asyncio 线程（同步 handler 经由线程池）。
-- 主线程 GUI 库操作必须显式调度：`app.call_on_main(...)`。
+通常来说，你的代码不会运行在主线程上，它们跑在 asyncio 线程（同步 handler 经由线程池）。
+因此，主线程 GUI 库操作必须通过 `app.call_on_main(...)` 显式调度到主线程执行。
+对于你能够使用到的各种操作，我们已经为你封装好主线程调度的逻辑（通过 Task），你可以直接使用他们。
 
 ## 事件流
 
@@ -96,7 +95,7 @@ result = app.call_on_main(lambda: window_op()).result()
 await run_async(mixed_callback)
 ```
 
-> 经验：任何「从别的线程操作原生窗口」的崩溃（尤其 macOS）基本都是没走 `call_on_main`。典型案例：TimeFlow 用 pystray 时，状态栏菜单回调线程直接操作 `NSWindow` 崩溃——改为主线程调度后稳定。见 [integrations.md](integrations.md)。
+> 经验：任何「从别的线程操作原生窗口」的崩溃基本都是没走 `call_on_main`。
 
 ## 不可跨线程对象（unsendable）
 

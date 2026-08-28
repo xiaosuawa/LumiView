@@ -15,8 +15,15 @@ from lumiview.app import App, WindowClosedError
 from lumiview.scope import InitContext
 from lumiview.serve.base import Serve
 from lumiview.utils import copy_signature_for_classmethod, main_thread
-from wryview import DragDropEvent, PageLoadEvent, Theme as WryTheme, WebView
-from wryview._core import NewWindowResponse, WindowHandleKind as WryKind
+from wryview import (
+    DragDropEvent,
+    PageLoadEvent,
+    Theme as WryTheme,
+    WebView,
+    WebContext as WryWebContext,
+    NewWindowResponse,
+    WindowHandleKind as WryKind,
+)
 
 from lumiview.bridge import BRIDGE_SCRIPT, Bridge
 from lumiview._core import (
@@ -111,6 +118,34 @@ class TitleBarOptions:
     movable_by_background: bool = False
     """Let the window be dragged from anywhere on its background, not
     just the titlebar."""
+
+
+class WebContext:
+    """A shared WebView context, owned by the main thread.
+
+    ``wryview.WebContext`` wraps an unsendable, main-thread-bound native
+    handle, so constructing it on the async thread and handing it to a
+    :class:`Window` transfers the object across threads and panics. Create
+    it with :meth:`create` (``@main_thread``) instead, then pass the same
+    instance to several windows via :attr:`WindowOptions.web_context` to
+    share one browser process / cache / localStorage.
+    """
+
+    _inner: WryWebContext | None
+    """The wrapped wryview context — unsendable, main-thread bound."""
+
+    def __init__(self, inner: WryWebContext) -> None:
+        self._inner = inner
+
+    @classmethod
+    @main_thread
+    def create(cls, *, data_directory: str | None = None) -> "WebContext":
+        """Create a shared WebContext on the main thread.
+
+        Returns a :class:`~lumiview.task.Task` — ``await`` it in async
+        code, or ``.result()`` in sync code.
+        """
+        return cls(WryWebContext(data_directory=data_directory))
 
 
 # Window
@@ -212,8 +247,15 @@ class WindowOptions:
     """Skip bridge-script injection entirely; ``emit()`` events are
     never delivered to the page."""
     # WebView
-    web_context: Any = None
-    """Shared WebView context passed to wryview."""
+    web_context: WebContext | None = None
+    """Shared WebView context passed to wryview.
+
+    Create it with ``await WebContext.create(data_directory=...)`` and
+    pass the *same* instance to several windows to share one browser
+    process / cache / localStorage. Each window consumes the underlying
+    native context on the main thread. Passing ``None`` lets wryview
+    build an owned context from :attr:`data_directory` (or an ephemeral
+    one when that is also ``None``)."""
     data_directory: str | None = None
     """WebView user-data folder."""
     incognito: bool = False
@@ -256,7 +298,7 @@ class WindowOptions:
     devtools: bool = False
     """Whether developer tools are available."""
     # Pre-creation hook
-    prepare: Callable[[Window], None] | None = None
+    prepare: Callable[[Window], Any] | None = None
     """Called with the :class:`Window` shell before the native window
     and WebView are created — the earliest point to register event
     handlers."""
@@ -279,19 +321,19 @@ class Window:
     """
 
     def __init__(self) -> None:
-        if TYPE_CHECKING:
-            self._app: App
-            self._win_id: int
-            self._window: TaoWindow | None
-            """Unsendable, main-thread bound. Never hold on other threads."""
-            self._webview: WebView | None
-            """Unsendable, main-thread bound. Never hold on other threads."""
-            self._bridge: Bridge
-            self._hooks: dict[type[WindowBaseEvent], list[Callable[..., Any]]]
-            self._close_behavior: CloseBehavior
-            self._close_pending: bool
-            self._drag_enabled: bool
-            self._untrusted: bool
+        self._app: App
+        self._win_id: int
+        self._window: TaoWindow | None
+        """Unsendable, main-thread bound. Never hold on other threads."""
+        self._webview: WebView | None
+        """Unsendable, main-thread bound. Never hold on other threads."""
+        self._bridge: Bridge
+        self._hooks: dict[type[WindowBaseEvent], list[Callable]]
+        self._close_behavior: CloseBehavior
+        self._close_pending: bool
+        self._drag_enabled: bool
+        self._untrusted: bool
+
         raise RuntimeError("Use 'await Window.create(...)' instead")
 
     @overload
@@ -365,7 +407,7 @@ class Window:
         self._untrusted = options.untrusted
 
         # Resolve source → url / html / custom_protocols
-        custom_protocols: dict[str, Any] = {}
+        custom_protocols: dict[str, Callable] = {}
         resolved_url: str | None = None
         resolved_html: str | None = None
 
@@ -525,7 +567,11 @@ class Window:
                 back_forward_gestures=options.back_forward_gestures,
                 clipboard=options.clipboard,
                 data_directory=options.data_directory,
-                web_context=options.web_context,
+                web_context=(
+                    options.web_context._inner
+                    if options.web_context is not None
+                    else None
+                ),
                 headers=(
                     list(options.headers.items())
                     if options.headers is not None
@@ -789,9 +835,7 @@ class Window:
             try:
                 self._webview.set_theme(_to_wry_theme(theme))
             except NotImplementedError:
-                log.debug(
-                    "WebView theme is Windows-only — window theme still applied"
-                )
+                log.debug("WebView theme is Windows-only — window theme still applied")
 
     @main_thread
     def inner_size(self) -> tuple[float, float]:
@@ -1660,22 +1704,16 @@ class Window:
         leaving ``self._window is None`` as the guard for any later
         request.
         """
+        self._close_pending = False
+
         if event.prevented:
-            self._close_pending = False
             return
 
         behavior = self._close_behavior
-        if behavior == CloseBehavior.Ignore:
-            self._close_pending = False
-        elif behavior == CloseBehavior.Hide:
 
-            def _hide() -> None:
-                if self._window is not None:
-                    self._window.set_visible(False)
-                self._close_pending = False
-
-            self._app.call_on_main(_hide)
-        else:
+        if behavior == CloseBehavior.Hide:
+            self.hide()
+        elif behavior == CloseBehavior.Close:
             self.close()
 
     @main_thread
@@ -1826,7 +1864,7 @@ class Window:
 
     # IPC handler
 
-    def _make_ipc_handler(self) -> Callable[[str], None]:
+    def _make_ipc_handler(self) -> Callable[[str], Any]:
         """
         Create an IPC handler that forwards messages to the Bridge.
         """
@@ -1961,7 +1999,7 @@ def _parse_proxy(proxy: str) -> dict[str, str]:
 # Custom protocol handler
 
 
-def _make_protocol_handler(serve: Serve) -> Callable[..., None]:
+def _make_protocol_handler(serve: Serve) -> Callable:
     """
     Create a wryview custom protocol handler from a Serve instance.
     """

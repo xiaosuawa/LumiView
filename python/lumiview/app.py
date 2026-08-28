@@ -27,7 +27,6 @@ from lumiview._core import (
     EventLoopControl,
     LoopDestroyedEvent,
     MainEventsClearedEvent,
-    MenuItemActivatedEvent,
     NewEventsEvent,
     OpenedEvent,
     RedrawEventsClearedEvent,
@@ -51,10 +50,10 @@ from lumiview.utils import main_thread
 
 P = ParamSpec("P")
 T = TypeVar("T")
-F = TypeVar("F", bound=Callable[..., Any])
+F = TypeVar("F", bound=Callable)
 
 _Handler = Callable[..., Any]
-_Command = tuple[str, Callable[..., Any], tuple, dict[str, Any]]
+_Command = tuple[str, Callable, tuple, dict[str, Any]]
 
 log = logging.getLogger("lumiview.app")
 
@@ -305,7 +304,7 @@ class App:
 
     def _schedule_task(
         self,
-        fn: Callable[..., Any],
+        fn: Callable,
         args: tuple[object, ...],
         kwargs: dict[str, object],
     ) -> Task[Any]:
@@ -317,7 +316,7 @@ class App:
 
     def _submit_async(
         self,
-        fn: Callable[..., Any],
+        fn: Callable,
         args: tuple[object, ...],
         kwargs: dict[str, object],
     ) -> Task[Any]:
@@ -356,7 +355,7 @@ class App:
 
     def _submit_sync(
         self,
-        fn: Callable[..., Any],
+        fn: Callable,
         args: tuple[object, ...],
         kwargs: dict[str, object],
     ) -> Task[Any]:
@@ -481,7 +480,7 @@ class App:
     def run(
         self,
         entry: (
-            Callable[[], Coroutine[Any, Any, Any]] | Callable[..., Any] | None
+            Callable[[], Coroutine[Any, Any, Any]] | Callable | None
         ) = None,
     ) -> int:
         """Start the application. Blocks until exit.
@@ -696,8 +695,7 @@ class App:
             self._event_loop.hide_application()
         else:
             for win in list(self._windows.values()):
-                if win._window is not None:
-                    win._window.set_visible(False)
+                win.hide()
 
     @main_thread
     def show(self) -> None:
@@ -714,8 +712,7 @@ class App:
             self._event_loop.show_application()
         else:
             for win in list(self._windows.values()):
-                if win._window is not None:
-                    win._window.set_visible(True)
+                win.show()
 
     @main_thread
     def set_dock_visibility(self, visible: bool) -> None:
@@ -729,7 +726,7 @@ class App:
             return
         self._event_loop.set_dock_visibility(visible)
 
-    def _run_asyncio(self, entry: Callable[..., Any] | None) -> None:
+    def _run_asyncio(self, entry: Callable | None) -> None:
         try:
             self._async_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._async_loop)

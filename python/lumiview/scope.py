@@ -46,7 +46,7 @@ class ScopePermission:
 class Command:
     """A registered command bound to its registration node."""
 
-    fn: Callable[..., Any]
+    fn: Callable
     name: str
     scope: "Scope"
     strict: bool = True
@@ -153,13 +153,13 @@ class Scope:
 
     def command(
         self,
-        fn: Callable[..., Any] | None = None,
+        fn: Callable | None = None,
         /,
         *,
         name: str | None = None,
         replace: bool = False,
         strict: bool = True,
-    ) -> Callable[..., Any]:
+    ) -> Callable:
         """Register a command — decorator or direct call.
 
         ``@scope.command`` / ``@scope.command(name=...)`` /
@@ -176,7 +176,7 @@ class Scope:
         """
         if fn is None:
 
-            def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
+            def decorator(f: Callable) -> Callable:
                 self._register(f, name=name, replace=replace, strict=strict)
                 return f
 
@@ -186,7 +186,7 @@ class Scope:
 
     def _register(
         self,
-        fn: Callable[..., Any],
+        fn: Callable,
         *,
         name: str | None,
         replace: bool,

@@ -39,6 +39,7 @@ from lumiview.window import (
     TitleBarOptions,
     VibrancyMaterial,
     VideoMode,
+    WebContext,
     Window,
     WindowEffect,
     WindowOptions,
@@ -82,6 +83,7 @@ __all__ = [
     "AppClosedError",
     "WindowClosedError",
     # Window layer
+    "WebContext",
     "Window",
     "WindowOptions",
     "TitleBarOptions",
