@@ -151,7 +151,7 @@ class Handler(Serve):
         """
         from lumiview.app import App
 
-        loop = app._async_loop
+        loop = App.get()._async_loop
         if loop is None:
             respond(500, [("Content-Type", "text/plain")], b"App not running")
             return
