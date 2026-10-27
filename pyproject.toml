@@ -49,3 +49,7 @@ python-source = "python"
 module-name = "lumiview._core"
 features = ["pyo3/extension-module", "pyo3/abi3-py310"]
 manylinux = "off"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

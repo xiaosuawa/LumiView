@@ -1,0 +1,95 @@
+name: Test
+
+# Every commit on a PR, and every push to main, runs the cross-platform e2e
+# suite. Kept separate from build.yml (which handles release wheels).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Linux: webkit2gtk is the WebKit engine; xvfb provides a virtual X
+      # display (LumiView windows are real GTK windows — there is no headless
+      # mode, unlike Playwright's Chromium).
+      - name: Install Linux webview + Xvfb deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libxdo-dev \
+            xvfb
+
+      # Reuse the cargo build cache so the debug wheel build is fast.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pytest
+
+      - name: Build native module wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --out dist
+          # Native build (no manylinux container) so the apt-installed
+          # webkit2gtk/gtk dev libraries are visible; the wheel only needs
+          # to run on this runner.
+          manylinux: off
+
+      # bash expands the wheel glob on every runner (pwsh on Windows does
+      # not expand globs for native commands, so pip would see the literal
+      # pattern). pip then pulls the runtime deps from PyPI.
+      - name: Install lumiview from the built wheel
+        shell: bash
+        run: python -m pip install dist/lumiview-*.whl
+
+      # Fail fast (and friendlily) before shelling out to the suite.
+      - name: Confirm lumiview importable
+        run: python -c "import lumiview; print('lumiview', lumiview.__version__)"
+
+      - name: Run pytest (Linux, xvfb + webkit env)
+        if: runner.os == 'Linux'
+        env:
+          WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+          GDK_BACKEND: "x11"
+          NO_AT_BRIDGE: "1"
+          WEBKIT_FORCE_SANDBOX: "0"
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest -ra
+
+      - name: Run pytest (Windows, WebView2 via desktop session)
+        if: runner.os == 'Windows'
+        run: python -m pytest -ra
+
+      - name: Run pytest (macOS, WebKit via WindowServer)
+        if: runner.os == 'macOS'
+        run: python -m pytest -ra
