@@ -107,7 +107,7 @@ logging.getLogger("lumiview").setLevel(logging.INFO)   # 生命周期事件
 logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + 调度 / 事件派发详情
 ```
 
-**报告 Bug 时请附上 DEBUG 级别的日志输出**——它覆盖窗口/托盘生命周期与事件派发，通常能直接定位问题。参见 [CONTRIBUTING.md](CONTRIBUTING.md#-bug-reports)。
+**报告 Bug 时请附上 DEBUG 级别的日志输出**，它通常能直接定位问题。参见 [CONTRIBUTING.md](CONTRIBUTING.md#-bug-reports)。
 
 ## 示例
 

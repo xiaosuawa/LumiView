@@ -107,9 +107,8 @@ logging.getLogger("lumiview").setLevel(logging.INFO)   # lifecycle events
 logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + scheduling / dispatch
 ```
 
-When reporting a bug, please include the DEBUG log output from your
-repro — it covers window / tray lifecycle and event dispatch, which
-usually pinpoints the issue. See [CONTRIBUTING.md](CONTRIBUTING.md#-bug-reports).
+When reporting a bug, please include the DEBUG log output — it usually
+pinpoints the issue. See [CONTRIBUTING.md](CONTRIBUTING.md#-bug-reports).
 
 For runnable code, see the [`examples/`](examples/) directory.
 

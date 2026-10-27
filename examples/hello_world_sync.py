@@ -9,7 +9,7 @@ Run:
 """
 
 import time
-from lumiview import App, Window, WindowOptions
+from lumiview import App, Window
 
 app = App(name="HelloWorld")
 
