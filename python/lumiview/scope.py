@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence, get_type_hints
 
 if TYPE_CHECKING:
     from lumiview.window import Window
@@ -50,6 +50,17 @@ class Command:
     name: str
     scope: "Scope"
     strict: bool = True
+
+    # Cached introspection — computed once at registration, reused on every
+    # bridge call so bind_arguments doesn't re-resolve the type hints + signature
+    # per IPC message. Excluded from repr/eq (the signature object is not a
+    # meaningful equality key).
+    signature: inspect.Signature | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    type_hints: dict[str, Any] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     @property
     def full_name(self) -> str:
@@ -204,9 +215,21 @@ class Scope:
                 f"Command {local!r} already registered in scope "
                 f"{self._full_name('')!r}. Use replace=True to overwrite."
             )
-        self._commands[local] = Command(
-            fn=fn, name=local, scope=self, strict=strict
-        )
+        # Resolve the signature and type hints once here — the fn is immutable
+        # by registration, so bindings reuse these across every IPC call. The
+        # hints may fail on forward refs that are not yet defined
+        # (NameError/TypeError); cache None so bind_arguments retries at IPC
+        # time instead of freezing an empty dict (raw string annotations
+        # would then fail every call).
+        try:
+            type_hints = get_type_hints(fn)
+        except (NameError, TypeError):
+            type_hints = None
+        cmd = Command(fn=fn, name=local, scope=self, strict=strict)
+        # init=False fields — assign after construction.
+        cmd.signature = sig
+        cmd.type_hints = type_hints
+        self._commands[local] = cmd
 
     def include(self, other: Scope) -> None:
         """Mount another scope onto this tree — pure mounting, no copying,

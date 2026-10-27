@@ -59,12 +59,16 @@ def bind_arguments(
             f"Payload must be an object, got {type(payload).__name__}",
         )
 
-    try:
-        hints = get_type_hints(cmd.fn)
-    except (NameError, TypeError):
-        hints = {}
-
-    sig = inspect.signature(cmd.fn)
+    # Precomputed at registration and cached on the Command — no per-call
+    # introspection. Fall back to a fresh compute for a Command constructed
+    # directly (tests) or one whose hints failed to resolve earlier.
+    hints = cmd.type_hints
+    if hints is None:
+        try:
+            hints = get_type_hints(cmd.fn)
+        except (NameError, TypeError):
+            hints = {}
+    sig = cmd.signature if cmd.signature is not None else inspect.signature(cmd.fn)
     bound: dict[str, Any] = {}
     has_regular_params = False
 
