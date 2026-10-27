@@ -51,15 +51,19 @@ async def _entry() -> None:
     # busy machine can stall engine creation. `multi_window` covers the
     # simultaneous case.
     for name, source, expect in specs:
+        print(f"[scenario] {name}: create", flush=True)
         win = await Window.create(WindowOptions(
             source=source,
             visible=False,
         ))
         try:
+            print(f"[scenario] {name}: wait_loaded", flush=True)
             await win.wait_loaded(timeout=30)
+            print(f"[scenario] {name}: eval_js", flush=True)
             val = await win.eval_js("document.querySelector('h1').textContent")
             assert expect in str(val), f"{name}: {expect} -> {val!r}"
         finally:
+            print(f"[scenario] {name}: close", flush=True)
             await win.close()
 
     assert len(App.get()._windows) == 0, (

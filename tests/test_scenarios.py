@@ -8,21 +8,38 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _dump_child_output(label: str, data: str | bytes | None, *, tail: int = 150) -> None:
+    """Print the tail of a child's captured stream so a CI failure shows the
+    step the scenario actually reached."""
+
+    if not data:
+        return
+    text = data if isinstance(data, str) else data.decode("utf-8", "replace")
+    lines = text.splitlines()
+    if len(lines) > tail:
+        omitted = len(lines) - tail
+        lines = [f"... ({omitted} earlier line(s) omitted) ..."] + lines[-tail:]
+    print(f"--- {label} ---", file=sys.stderr)
+    print("\n".join(lines), file=sys.stderr)
+
+
 def run_scenario(
     name: str,
     *,
     env: dict[str, str] | None = None,
-    timeout: int = 45,
+    timeout: int = 120,
 ) -> int:
     """Run ``tests/scenarios/<name>.py`` as a child process.
 
-    Returns ``(exit_code, stdout, stderr)``.
+    Returns the child's exit code. The child reuses ``sys.executable`` (so
+    it imports the *installed* ``lumiview``) with cwd pinned to the repo
+    root. On failure or timeout the tail of the child's stdout/stderr is
+    printed, so the scenario's last step is visible in CI. A timeout yields
+    ``exit_code == -1`` with a ``[TEST TIMEOUT]`` marker.
 
-    The child reuses ``sys.executable`` (so it imports the *installed*
-    ``lumiview`` from ``maturin develop``) with cwd pinned to the repo root.
-    A timeout yields ``exit_code == -1`` with a ``[TEST TIMEOUT]`` marker
-    appended to stderr, so "stuck" (GUI thread deadlock / WebView2 renderer
-    hang) is distinguishable from a plain failure.
+    The budget is generous because CI runners without a GPU can take tens of
+    seconds per WebView2/WebKitGTK instance; it is a hang detector, not a
+    performance assertion.
     """
     script = ROOT / "tests" / "scenarios" / f"{name}.py"
     if not script.exists():
@@ -40,11 +57,17 @@ def run_scenario(
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            capture_output=True,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         print(f"[TEST TIMEOUT] {name} (timeout={timeout}s)", file=sys.stderr)
+        _dump_child_output("child stdout", exc.stdout)
+        _dump_child_output("child stderr", exc.stderr)
         return -1
 
+    if proc.returncode != 0:
+        _dump_child_output("child stdout", proc.stdout)
+        _dump_child_output("child stderr", proc.stderr)
     return proc.returncode
 
 
@@ -104,7 +127,10 @@ def test_multi_window():
 
 
 def test_serve_adapters():
-    code = run_scenario("serve_all")
+    # Four adapters, one window each. WebKitGTK on the Linux CI runner
+    # (software rendering under Xvfb) needs well over the default budget
+    # for four sequential WebView instances.
+    code = run_scenario("serve_all", timeout=180)
     assert code == 0
 
 
