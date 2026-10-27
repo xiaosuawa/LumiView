@@ -15,7 +15,7 @@ is a real dataclass field, so static type checkers see the full shape
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from lumiview.window import Window
@@ -199,6 +199,17 @@ class WindowEvent:
 
         ...
 
+    class ClosedEvent(WindowBaseEvent):
+        """The window has closed.
+
+        Emitted once, after the native window and WebView are gone.
+        Handlers run on the asyncio loop like every other event; pending
+        :meth:`~lumiview.window.Window.wait_for` waiters fail with
+        :class:`~lumiview.app.WindowClosedError` when it is dispatched.
+        """
+
+        ...
+
     @dataclass(slots=True, kw_only=True)
     class ResizedEvent(WindowBaseEvent):
         """The window was resized.
@@ -339,6 +350,22 @@ class WindowEvent:
         id: int
 
     # IPC
+
+    @dataclass(slots=True, kw_only=True)
+    class JsEvent(WindowBaseEvent):
+        """An event emitted by the page via ``window.lumiview.emit``.
+
+        The JS→Python counterpart of :meth:`Window.emit` — a
+        fire-and-forget notification, not a request/response call (use
+        a :class:`~lumiview.bridge.Bridge` command for the latter).
+
+        Attributes:
+            event: The event name passed to ``window.lumiview.emit()``.
+            payload: The JSON payload, or ``None``.
+        """
+
+        event: str
+        payload: Any = None
 
     @dataclass(slots=True, kw_only=True)
     class WebMessageReceivedEvent(WindowBaseEvent):

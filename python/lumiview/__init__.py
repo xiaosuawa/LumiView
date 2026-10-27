@@ -71,6 +71,7 @@ from lumiview._core import (
     TouchPhase,
 )
 from lumiview import utils
+from lumiview.utils import Where, contains, when
 from lumiview import plugins
 from lumiview import serve
 
@@ -132,6 +133,9 @@ __all__ = [
     "TaskDeadlockError",
     # Subpackages
     "utils",
+    "Where",
+    "when",
+    "contains",
     "plugins",
     "serve",
 ]

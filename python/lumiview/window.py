@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 import webbrowser
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Callable, ParamSpec, TypeVar, overload
@@ -14,7 +15,14 @@ from dataclasses import dataclass
 from lumiview.app import App, WindowClosedError
 from lumiview.scope import InitContext
 from lumiview.serve.base import Serve
-from lumiview.utils import copy_signature_for_classmethod, main_thread
+from lumiview.utils import (
+    copy_signature_for_classmethod,
+    fmt_ms,
+    main_thread,
+    passes_where,
+    validate_where,
+    wait_for_event,
+)
 from wryview import (
     DragDropEvent,
     PageLoadEvent,
@@ -72,6 +80,8 @@ _IconSource = str | tuple[bytes, int, int] | _PILImage
 
 P = ParamSpec("P")
 R = TypeVar("R")
+_E = TypeVar("_E", bound=WindowBaseEvent)
+_HandlerEntry = tuple[Callable, Callable[[Any], bool] | None]
 
 log = logging.getLogger("lumiview.window")
 
@@ -249,9 +259,15 @@ class WindowOptions:
     """Whether window content is hidden from screenshots (Windows)."""
     # Bridge
     bridge: Bridge | None = None
-    """The :class:`~lumiview.bridge.Bridge` for IPC. ``None`` isolates
-    the window — raw messages still surface as
-    :class:`~lumiview.events.WindowEvent.WebMessageReceivedEvent`."""
+    """The :class:`~lumiview.bridge.Bridge` for IPC. ``None`` creates an
+    empty :class:`~lumiview.bridge.Bridge` — the page still gets
+    ``window.lumiview`` (so ``emit()``/``listen()`` work), but every
+    ``invoke()`` resolves with ``unknown_command``. Raw messages still
+    surface as
+    :class:`~lumiview.events.WindowEvent.WebMessageReceivedEvent`.
+
+    The resulting instance is exposed as :attr:`Window.bridge` and can be
+    replaced at runtime."""
     untrusted: bool = False
     """Skip bridge-script injection entirely; ``emit()`` events are
     never delivered to the page."""
@@ -336,8 +352,16 @@ class Window:
         """Unsendable, main-thread bound. Never hold on other threads."""
         self._webview: WebView | None
         """Unsendable, main-thread bound. Never hold on other threads."""
-        self._bridge: Bridge
-        self._hooks: dict[type[WindowBaseEvent], list[Callable]]
+        self.bridge: Bridge
+        """The IPC :class:`~lumiview.bridge.Bridge`. Never ``None``.
+
+        Public and mutable — ``win.bridge = new_bridge`` swaps the
+        command/permission tree for subsequent ``invoke()`` calls. Page
+        scripts and plugin ``on_init``/``on_ready`` hooks were applied
+        at creation and are not re-run."""
+        self._handlers: dict[type[WindowBaseEvent], list[_HandlerEntry]]
+        self._closed: bool
+        self._loaded: Task[WindowBaseEvent]
         self._close_behavior: CloseBehavior
         self._close_pending: bool
         self._drag_enabled: bool
@@ -404,7 +428,15 @@ class Window:
         self._app = app
         self._window = None
         self._webview = None
-        self._hooks = {}
+        self._win_id = 0  # real id assigned after the tao window exists
+        self._handlers = {}
+
+        # Close flag / load latch. `_loaded` is pre-registered here —
+        # before `prepare` runs and long before the WebView exists — so
+        # `wait_loaded()` cannot race the PageLoadFinished event.
+        self._closed = False
+        self._loaded = self.wait_for(WindowEvent.PageLoadFinishedEvent)
+        self._loaded.on_exception(_consume_task_error)
 
         ctx = InitContext(inject_script=BRIDGE_SCRIPT, window=self, options=options)
         if not options.untrusted and options.bridge is not None:
@@ -413,7 +445,7 @@ class Window:
         self._close_behavior = options.close_behavior
         self._close_pending = False
         self._drag_enabled = options.drag_drop
-        self._bridge = options.bridge or Bridge()
+        self.bridge = options.bridge or Bridge()
         self._untrusted = options.untrusted
         self._sync_visibility = options.sync_visibility
 
@@ -496,6 +528,7 @@ class Window:
             )
 
         tb = options.titlebar
+        _t0 = time.monotonic()
         tao_win = TaoWindow(
             app._event_loop,
             title=options.title,
@@ -529,10 +562,12 @@ class Window:
             transparent=options.transparent,
             icon=icon_data,
         )
+        win_id = tao_win.id()
+        log.debug("tao window created in %.1fms", fmt_ms(_t0))
 
         try:
+            _t1 = time.monotonic()
             # WebView
-
             if sys.platform == "linux":
                 handle = tao_win.gtk_container()
                 kind = WryKind.Gtk
@@ -596,6 +631,7 @@ class Window:
                 as_child=True,
                 parent_hwnd_kind=kind,
             )
+            log.debug("webview created in %.1fms", fmt_ms(_t1))
         except Exception:
             del tao_win
             raise
@@ -603,10 +639,13 @@ class Window:
         self._webview = webview
         self._window = tao_win
 
-        win_id = tao_win.id()
         self._win_id = win_id
         app._windows[win_id] = self
-        log.info("Window created (id=%s)", win_id)
+        log.info(
+            "Window created (id=%s) in %.1fms",
+            win_id,
+            fmt_ms(_t0),
+        )
 
         try:
             if options.transparent:
@@ -615,8 +654,11 @@ class Window:
                 # composited frame cannot reuse Tao's opaque creation bitmap.
                 tao_win._redraw_transparent_surface()
 
-            if options.bridge is not None:
-                options.bridge._run_on_ready(self)
+            # Use the window's *current* bridge: options.prepare runs
+            # before this and may have swapped it in (options.bridge is
+            # only the constructor value). An auto-created empty Bridge
+            # has no Plugin nodes, so the call is a no-op there.
+            self.bridge._run_on_ready(self)
         except Exception:
             self.close()
             del tao_win
@@ -1425,13 +1467,17 @@ class Window:
 
     def emit(self, event: str, payload: Any = None) -> Task[None]:
         """
-        Send an event to JavaScript ``window.lumiview.listen`` listeners.
+        Send an event to the page.
 
-        JS side::
+        The event is dispatched on ``window.lumiview`` — a dedicated
+        ``EventTarget`` isolated from the DOM event namespace (so
+        ``emit("click")`` cannot trigger real click handlers)::
 
+            // Either form works:
             const unlisten = window.lumiview.listen("my-event", (payload) => {
                 console.log(payload);
             });
+            window.lumiview.addEventListener("my-event", (e) => console.log(e.detail));
 
         Python side::
 
@@ -1439,11 +1485,16 @@ class Window:
 
         The returned :class:`Task` resolves when the script has been
         delivered to the WebView (not when listeners have processed it).
+        In untrusted mode no bridge script is injected, so the task fails
+        with :class:`RuntimeError` instead.
         """
         if self._untrusted:
-            # untrusted mode injects no bridge script — nothing can
-            # receive the event, so complete immediately.
-            return Task._done(None)
+            return Task._failed(
+                RuntimeError(
+                    "emit() is not available in untrusted mode — "
+                    "use WindowOptions.untrusted=False to enable it"
+                )
+            )
 
         app = App.get()
         handle: Task[None] = Task()
@@ -1471,13 +1522,32 @@ class Window:
 
     # Events
 
-    def on(self, event: type[WindowBaseEvent]):
+    def on(
+        self,
+        event: type[_E],
+        *,
+        where: Callable[[_E], bool] | None = None,
+    ):
         """
         Register a handler for an event class::
 
             win.on(WindowEvent.TitleChangedEvent)(handler)
 
         The handler receives the event object.
+
+        *where* filters dispatch with a predicate — build one with
+        :func:`~lumiview.utils.when` or pass a plain callable::
+
+            from lumiview import when
+
+            win.on(WindowEvent.TitleChangedEvent, where=when(title="Done"))(fn)
+            win.on(WindowEvent.JsEvent, where=lambda e: e.event.startswith("doc."))(fn)
+
+        Parameters:
+            event: The event class to handle.
+            where: Optional predicate ``(event) -> bool``; only matching
+                events reach the handler. Field names in
+                :func:`~lumiview.utils.when` are validated here.
         """
         if event is WindowEvent.DragEvent and not self._drag_enabled:
             raise RuntimeError(
@@ -1487,8 +1557,10 @@ class Window:
                 "enabled lazily after the WebView exists."
             )
 
+        validate_where(event, where)
+
         def decorator(fn):
-            self._hooks.setdefault(event, []).append(fn)
+            self._handlers.setdefault(event, []).append((fn, where))
             return fn
 
         return decorator
@@ -1499,24 +1571,28 @@ class Window:
 
         Returns a completion :class:`Task` or ``None`` when there is
         no loop or no handlers. ``event.window`` is set to this window.
+        ``where`` predicates run on the asyncio loop, alongside the
+        handlers themselves.
         """
         event.window = self
         if self._app._async_loop is None:
             return
 
-        handlers = self._hooks.get(type(event), [])
+        # Snapshot: handlers and one-shot waiters mutate the list while
+        # dispatch is running.
+        entries = list(self._handlers.get(type(event), ()))
 
-        if not handlers:
+        if not entries:
             return
 
-        log.debug(
-            "dispatching %s to %d handler(s)", type(event).__name__, len(handlers)
-        )
+        log.debug("dispatching %s to %d handler(s)", type(event).__name__, len(entries))
         done: Task[None] = Task()
 
         async def _dispatch() -> None:
             try:
-                for fn in handlers:
+                for fn, where in entries:
+                    if not passes_where(where, event):
+                        continue
                     try:
                         await run_async(fn, event)
                     except Exception:
@@ -1532,6 +1608,114 @@ class Window:
         loop.call_soon_threadsafe(lambda: asyncio.create_task(_dispatch()))
 
         return done
+
+    # Waiting
+
+    def wait_for(
+        self,
+        event: type[_E],
+        *,
+        where: Callable[[_E], bool] | None = None,
+        timeout: float | None = None,
+    ) -> Task[_E]:
+        """Wait for the next event of *event* that matches *where*.
+
+        One-shot: the returned :class:`~lumiview.task.Task` resolves with
+        the event and the temporary handler is removed. Must be registered
+        before the event fires — for early events (``PageLoadStarted``,
+        ``PageLoadFinished``) call it from
+        :attr:`~lumiview.window.WindowOptions.prepare`::
+
+            def on_prepare(win):
+                ready = win.wait_for(WindowEvent.PageLoadFinishedEvent)
+
+            win = await Window.create(WindowOptions(prepare=on_prepare))
+            await ready
+
+        The task fails with :class:`~lumiview.app.WindowClosedError` if
+        the window closes first, and with :class:`TimeoutError` when
+        *timeout* seconds elapse. For preventable events the decision
+        has already been made by the time the event is delivered — use
+        :meth:`on` and :meth:`~lumiview.events.WindowBaseEvent.prevent`
+        to influence it.
+        """
+        return wait_for_event(
+            self._handlers,
+            event,
+            where=where,
+            timeout=timeout,
+            loop=self._app._async_loop,
+            close_event=WindowEvent.ClosedEvent,
+            is_closed=lambda: self._closed,
+            closed_error=lambda: WindowClosedError(self._win_id),
+            logger=log,
+            label=f"win {self._win_id}",
+        )
+
+    def wait_loaded(self, *, timeout: float | None = None) -> Task[WindowBaseEvent]:
+        """Wait for the initial page load to finish.
+
+        Unlike ``wait_for(PageLoadFinishedEvent)``, this is safe to call
+        at any time — the waiter is pre-registered inside
+        :meth:`create`, before the page can start loading, so a window
+        whose page already finished resolves immediately. Resolves with
+        the ``PageLoadFinishedEvent``.
+
+        The underlying latch is shared: *timeout* only bounds this
+        caller's view and never cancels the latch for other waiters.
+        """
+        if timeout is None:
+            return self._loaded
+        return self._derive_timeout(
+            self._loaded,
+            timeout,
+            f"wait_loaded() timed out after {timeout}s",
+        )
+
+    def _derive_timeout(
+        self,
+        source: Task[Any],
+        timeout: float,
+        message: str,
+    ) -> Task[Any]:
+        """Bound a shared latch with a timeout, without cancelling it."""
+
+        loop = self._app._async_loop
+        if loop is None:
+            return Task._failed(RuntimeError("App is not running"))
+
+        outer: Task[Any] = Task()
+        timer: list[Any] = []
+
+        def _forward(_: Any) -> None:
+            if outer.done():
+                return
+            if timer:
+                try:
+                    timer[0].cancel()
+                except Exception:
+                    pass
+            try:
+                outer.set_result(source.result())
+            except BaseException as exc:
+                outer.set_exception(exc)
+
+        def _expire() -> None:
+            if not outer.done():
+                outer.set_exception(TimeoutError(message))
+
+        source.add_done_callback(_forward)
+
+        def _arm() -> None:
+            if outer.done():
+                return
+            timer.append(loop.call_later(timeout, _expire))
+
+        try:
+            loop.call_soon_threadsafe(_arm)
+        except RuntimeError:
+            pass
+        return outer
 
     def _dispatch_page_load(self, ev: PageLoadEvent, url: str) -> None:
         """
@@ -1550,6 +1734,11 @@ class Window:
         done = self._emit(event)
         if done is not None:
             done.result()
+        log.debug(
+            "navigation to %s -> %s",
+            url,
+            "blocked" if event.prevented else "allowed",
+        )
         return not event.prevented
 
     def _dispatch_new_window(self, url: str) -> NewWindowResponse:
@@ -1566,15 +1755,19 @@ class Window:
             done.result()
         open_url = event._open_url
         if open_url is not None:
+            log.debug("new-window %s -> open external (%s)", url, open_url)
             try:
                 webbrowser.open(open_url)
             except Exception:
-                pass
+                log.warning("failed to open url: %s", open_url, exc_info=True)
         elif not event.prevented:
+            log.debug("new-window %s -> open external", url)
             try:
                 webbrowser.open(url)
             except Exception:
-                pass
+                log.warning("failed to open url: %s", url, exc_info=True)
+        else:
+            log.debug("new-window %s -> deny (prevented)", url)
         return NewWindowResponse.Deny
 
     def _dispatch_download_started(self, url: str, suggested_path: str) -> bool | str:
@@ -1590,9 +1783,12 @@ class Window:
             done.result()
         save_path = event._save_path
         if save_path is not None:
+            log.debug("download %s -> redirect to %s", url, save_path)
             return save_path
         if event.prevented:
+            log.debug("download %s -> blocked", url)
             return False
+        log.debug("download %s -> allowed", url)
         return True
 
     def _dispatch_download_completed(
@@ -1721,6 +1917,7 @@ class Window:
                     pass
             self._window = None
             self._webview = None
+            self._fail_closed()
             self._app._remove_window(self._win_id)
 
     @main_thread
@@ -1767,14 +1964,33 @@ class Window:
         self._close_pending = False
 
         if event.prevented:
+            log.debug("window close prevented (id=%s)", self._win_id)
             return
 
         behavior = self._close_behavior
+        log.debug(
+            "window close proceeding (id=%s), behavior=%s",
+            self._win_id,
+            behavior,
+        )
 
         if behavior == CloseBehavior.Hide:
             self.hide()
         elif behavior == CloseBehavior.Close:
             self.close()
+
+    def _fail_closed(self) -> Task[None] | None:
+        """Emit :class:`~lumiview.events.WindowEvent.ClosedEvent` once.
+
+        Returns the dispatch completion signal (``None`` when there is no
+        loop or no handler) so app shutdown can wait for it before the
+        asyncio loop stops.
+        """
+
+        if self._closed:
+            return None
+        self._closed = True
+        return self._emit(WindowEvent.ClosedEvent())
 
     @main_thread
     def close(self) -> None:
@@ -1785,9 +2001,10 @@ class Window:
             self._webview.close()
         self._window = None
         self._webview = None
+        self._fail_closed()
         self._app._remove_window(self._win_id)
 
-    # WebView capabilities (§11)
+    # WebView capabilities
 
     @main_thread
     def open_devtools(self) -> None:
@@ -1935,7 +2152,7 @@ class Window:
             else:
                 try:
                     if self._webview is not None:
-                        self._bridge._on_message(self, raw)
+                        self.bridge._on_message(self, raw)
                 except Exception:
                     log.exception("IPC handler raised an unexpected exception")
                 finally:
@@ -1963,6 +2180,16 @@ def _propagate_dispatch_failure(
         handle.cancel()
     elif (exc := dispatched.exception()) is not None:
         handle.set_exception(exc)
+
+
+def _consume_task_error(_exception: BaseException) -> None:
+    """Mark a task's exception as retrieved.
+
+    Used for the pre-registered ``_loaded`` latch: nobody may ever await
+    it, and an unretrieved ``WindowClosedError`` would otherwise be
+    logged by ``Task.__del__`` when the window is garbage-collected.
+    """
+    pass
 
 
 # Helpers

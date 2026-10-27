@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import inspect
 import logging
 import threading
@@ -182,6 +183,19 @@ class Task(concurrent.futures.Future, Generic[T]):
 
         self.add_done_callback(_wrapper)
 
+    def on_exception(self, callback: Callable[[BaseException], Any]) -> None:
+        """Register a callback for exceptions — a convenience wrapper around
+        :meth:`~concurrent.futures.Future.add_done_callback`.
+
+        The callback receives the exception (not the Future).
+        """
+
+        def _wrapper(fut: concurrent.futures.Future) -> None:
+            if not fut.cancelled() and (exc := fut.exception()) is not None:
+                callback(exc)
+
+        self.add_done_callback(_wrapper)
+
     def __del__(self) -> None:
         """
         Surface unhandled task failures via logging.
@@ -233,9 +247,6 @@ class Task(concurrent.futures.Future, Generic[T]):
         return task
 
 
-# Public: lightweight async/sync dispatch (no Task overhead)
-
-
 async def run_async(
     fn: Callable[P, T],
     *args: P.args,
@@ -256,10 +267,14 @@ async def run_async(
         return await fn(*args, **kwargs)
     loop = asyncio.get_running_loop()
     from lumiview.app import App
-    return await loop.run_in_executor(App.get()._threadpool, lambda: fn(*args, **kwargs))
 
-
-# Public factory: task()
+    # Threads do not inherit the caller's contextvars; carry them so a sync
+    # callback sees the caller's context (e.g. a window handler's id).
+    ctx = contextvars.copy_context()
+    return await loop.run_in_executor(
+        App.get()._threadpool,
+        lambda: ctx.run(lambda: fn(*args, **kwargs)),
+    )
 
 
 def task(

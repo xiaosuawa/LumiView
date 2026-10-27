@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
+from lumiview.events import WindowEvent
 from lumiview.scope import (
     InitContext,
     Plugin,
@@ -14,6 +16,7 @@ from lumiview.scope import (
     iter_tree,
 )
 from lumiview.task import run_async
+from lumiview.utils import fmt_ms
 
 if TYPE_CHECKING:
     from lumiview.window import Window
@@ -134,13 +137,17 @@ class Bridge:
 
     # IPC dispatch
 
-    def _on_message(self, window: "Window", raw: str) -> None:
+    def _on_message(self, window: "Window", raw: str, *, send: Callable[[str], None] | None = None) -> None:
         """Called from the main thread by wryview's IPC handler.
 
         *window* is passed by the Window's own IPC handler (which closes
         over ``self``) — no webview → Window mapping needed. The unsendable
         WebView is never captured into the asyncio coroutine below; it is
         only touched on the main thread (inside ``_respond``'s callback).
+
+        *send* is a test-only injection forwarded to :meth:`_respond` so a
+        synchronous branch (e.g. an unknown command) can be asserted without
+        a live app/WebView. Defaults to ``None`` — no behaviour change.
         """
         try:
             data = json.loads(raw)
@@ -151,6 +158,21 @@ class Bridge:
             return
 
         msg_type = data.get("type", "")
+        if msg_type == "emit":
+            event_name = data.get("event")
+            if not isinstance(event_name, str) or not event_name:
+                log.debug(f"Ignoring emit without a valid event name: {raw[:200]!r}")
+                return
+            # Fire-and-forget notification — not a command, so it does
+            # not go through the scope permission chain. `untrusted`
+            # windows never reach this method (no bridge script).
+            window._emit(
+                WindowEvent.JsEvent(
+                    event=event_name,
+                    payload=data.get("payload"),
+                )
+            )
+            return
         if msg_type != "invoke":
             log.warning(f"Unknown bridge message type: {msg_type!r}")
             return
@@ -168,6 +190,7 @@ class Bridge:
                 window,
                 call_id,
                 error=BridgeError("unknown_command", f"Unknown command: {command}"),
+                send=send,
             )
             return
 
@@ -176,6 +199,7 @@ class Bridge:
                 window,
                 call_id,
                 error=BridgeError("forbidden", f"Command {command!r} is not allowed"),
+                send=send,
             )
             return
 
@@ -189,6 +213,7 @@ class Bridge:
                 window,
                 call_id,
                 error=BridgeError("internal_error", "App not running"),
+                send=send,
             )
             return
 
@@ -198,20 +223,33 @@ class Bridge:
                 window,
                 call_id,
                 error=BridgeError("internal_error", "App not running"),
+                send=send,
             )
             return
 
         async def _run_async_cmd() -> None:
+            t0 = time.monotonic()
+            log.debug("IPC invoke %s (id=%s) start", cmd.full_name, call_id)
             try:
                 from lumiview._binding import bind_arguments  # avoid import cycle
 
                 kwargs = bind_arguments(cmd, payload, window)
                 result = await run_async(cmd.fn, **kwargs)
+                log.debug(
+                    "IPC invoke %s (id=%s) ok in %.1fms",
+                    cmd.full_name, call_id, fmt_ms(t0),
+                )
                 self._respond(window, call_id, result=result)
             except BridgeError as e:
+                log.debug(
+                    "IPC invoke %s (id=%s) rejected in %.1fms: %s",
+                    cmd.full_name, call_id, fmt_ms(t0), e,
+                )
                 self._respond(window, call_id, error=e)
             except Exception as e:
-                log.exception(f"Bridge command {cmd.full_name!r} failed")
+                log.exception(
+                    "Bridge command %r failed in %.1fms", cmd.full_name, fmt_ms(t0)
+                )
                 self._respond(
                     window,
                     call_id,
@@ -229,12 +267,19 @@ class Bridge:
         *,
         result: Any = None,
         error: BridgeError | None = None,
+        send: Callable[[str], None] | None = None,
     ) -> None:
         """Send a response back to JavaScript via eval_js on the main thread.
 
         The WebView is read from *window* inside the main-thread callback
         so the unsendable object is only ever referenced on the main
         thread.
+
+        *send* is a test-only injection: when provided, it receives the
+        ready ``window.lumiview._dispatchResponse(...)`` script instead of
+        dispatching it through the app on the main thread (which needs a
+        live :class:`~lumiview.app.App` and a real WebView). Defaults to
+        ``None``, preserving the production path unchanged.
         """
         from lumiview.app import App
 
@@ -246,6 +291,10 @@ class Bridge:
             payload = json.dumps({"type": "resolve", "id": call_id, "value": result})
 
         script = f"window.lumiview._dispatchResponse({payload})"
+
+        if send is not None:
+            send(script)
+            return
 
         def _send() -> None:
             webview = window._webview  # main thread — safe to touch and drop
@@ -268,77 +317,93 @@ BRIDGE_SCRIPT = """\
   if (window.lumiview && window.lumiview.invoke) return;
 
   const _pending = {};
-  const _listeners = {};
 
-  window.lumiview = {
-    _nextId: 0,
+  // Dedicated EventTarget — its listener registry lives outside the DOM
+  // event namespace, so `emit("click")` cannot trigger real click
+  // handlers and no type prefix is needed.
+  const lv = new EventTarget();
+  lv._nextId = 0;
 
-    /** Call a Python command. Returns a Promise. */
-    invoke(command, payload = {}) {
-      return new Promise((resolve, reject) => {
-        const id = String(++window.lumiview._nextId);
-        _pending[id] = { resolve, reject };
-        window.ipc.postMessage(JSON.stringify({
-          type: "invoke",
-          id: id,
-          command: command,
-          payload: payload,
-        }));
-      });
-    },
-
-    /**
-     * Listen for events sent from Python via ``window.emit()``.
-     *
-     * Returns an unsubscribe function::
-     *
-     *     const unlisten = window.lumiview.listen("scheduler.updated", (payload) => {
-     *         console.log(payload);
-     *     });
-     *
-     *     // Later:
-     *     unlisten();
-     */
-    listen(event, handler) {
-      if (!_listeners[event]) {
-        _listeners[event] = [];
-      }
-      _listeners[event].push(handler);
-      return () => {
-        const handlers = _listeners[event];
-        if (handlers) {
-          const idx = handlers.indexOf(handler);
-          if (idx >= 0) handlers.splice(idx, 1);
-        }
-      };
-    },
-
-    // ── Direct dispatch (called by Python via eval_js) ──────────────────
-
-    /** Resolve or reject a pending invoke() Promise. */
-    _dispatchResponse(detail) {
-      const p = _pending[detail.id];
-      if (!p) return;
-      delete _pending[detail.id];
-
-      if (detail.type === "reject") {
-        const err = detail.error || {};
-        const e = new Error(err.message || "Bridge error");
-        e.code = err.code || "internal_error";
-        e.data = err.data;
-        p.reject(e);
-      } else {
-        p.resolve(detail.value);
-      }
-    },
-
-    /** Dispatch a Python-emitted event to JS listeners. */
-    _dispatchEvent(detail) {
-      const handlers = _listeners[detail.event] || [];
-      for (const h of handlers) {
-        try { h(detail.payload); } catch (e) { console.error(e); }
-      }
-    },
+  /** Call a Python command. Returns a Promise. */
+  lv.invoke = function (command, payload = {}) {
+    return new Promise((resolve, reject) => {
+      const id = String(++lv._nextId);
+      _pending[id] = { resolve, reject };
+      window.ipc.postMessage(JSON.stringify({
+        type: "invoke",
+        id: id,
+        command: command,
+        payload: payload,
+      }));
+    });
   };
+
+  /**
+   * Send a fire-and-forget event to Python.
+   *
+   * Received as `WindowEvent.JsEvent`; filter it with `where=`:
+   *
+   *     win.on(WindowEvent.JsEvent, where=when(event="data.changed"))(fn)
+   *
+   * Use `invoke()` instead when you need a return value.
+   */
+  lv.emit = function (event, payload = null) {
+    window.ipc.postMessage(JSON.stringify({
+      type: "emit",
+      event: event,
+      payload: payload,
+    }));
+  };
+
+  /**
+   * Listen for an event sent from Python via `win.emit()`.
+   *
+   * Sugar over `window.lumiview.addEventListener(event, (e) => e.detail)`.
+   * Returns an unsubscribe function::
+   *
+   *     const unlisten = window.lumiview.listen("scheduler.updated", (p) => {
+   *         console.log(p);
+   *     });
+   *     unlisten();
+   */
+  lv.listen = function (event, handler, options) {
+    const wrapped = (e) => {
+      try { handler(e.detail); } catch (err) { console.error(err); }
+    };
+    // removeEventListener only matches on `capture`.
+    const capture = !!(options && typeof options === "object"
+      ? options.capture
+      : options);
+    lv.addEventListener(event, wrapped, options);
+    return () => lv.removeEventListener(event, wrapped, capture);
+  };
+
+  // ── Direct dispatch (called by Python via eval_js) ──────────────────
+
+  /** Resolve or reject a pending invoke() Promise. */
+  lv._dispatchResponse = function (detail) {
+    const p = _pending[detail.id];
+    if (!p) return;
+    delete _pending[detail.id];
+
+    if (detail.type === "reject") {
+      const err = detail.error || {};
+      const e = new Error(err.message || "Bridge error");
+      e.code = err.code || "internal_error";
+      e.data = err.data;
+      p.reject(e);
+    } else {
+      p.resolve(detail.value);
+    }
+  };
+
+  /** Dispatch a Python-emitted event on this EventTarget. */
+  lv._dispatchEvent = function (detail) {
+    lv.dispatchEvent(new CustomEvent(detail.event, {
+      detail: detail.payload,
+    }));
+  };
+
+  window.lumiview = lv;
 })();
 """
