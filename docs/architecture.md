@@ -111,6 +111,6 @@ await run_async(mixed_callback)
 
 ## 设计原则
 
-1. **跨线程/延迟操作返回 `Task`** —— 类型和行为可预测，不做上下文相关的自动解包。
+1. **跨线程/异步操作返回 `Task`** —— 类型和行为可预测，不做上下文相关的自动解包。
 2. **事件 handler 不跑主线程** —— 主线程只属于 tao 循环与原生操作，事件处理在 asyncio 线程。
 3. **配置即数据** —— `WindowOptions` 是（可变的）dataclass：可 `replace`、可子类做模板（子类需重新应用 `@dataclass`）、可跨线程传递。

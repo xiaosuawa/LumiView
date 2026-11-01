@@ -213,7 +213,8 @@ python/**/*.pyd
 python/**/*.pdb
 
 .claude
-CLAUDE.md
+
+AGENTS.md
 
 .DS_Store
 

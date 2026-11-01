@@ -7,15 +7,11 @@ constructed as ``WindowControls(name="x")``).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from lumiview.bridge import BridgeError
 from lumiview._core import ResizeDirection
 from lumiview.events import WindowBaseEvent, WindowEvent
 from lumiview.scope import BridgeContext, InitContext, Plugin
-
-if TYPE_CHECKING:
-    from lumiview.window import Window
+from lumiview.window import Window
 
 API_SCRIPT_TEMPLATE = """\
 (() => {
@@ -105,9 +101,6 @@ class WindowControls(Plugin):
     """Custom titlebar controls (window.* JS API + drag regions + fullscreen
     and maximize-state sync).
 
-    All commands resolve their Task synchronously via ``.result()`` —
-    they run on the thread pool, never on the GUI thread.
-
     NOTE: window-edge resizing needs no markup — for undecorated windows tao
     already handles the 8 edge/corner hit-tests natively (WM_NCHITTEST) and
     disables them when maximized/fullscreen. Use data-lumiview-resize-region
@@ -177,32 +170,32 @@ class WindowControls(Plugin):
         )
 
     # Commands (called from JS via the bridge)
-    def minimize(self, ctx: BridgeContext) -> None:
+    async def minimize(self, ctx: BridgeContext) -> None:
         """Minimize the window."""
 
-        ctx.window.minimize().result()
+        await ctx.window.minimize()
 
-    def toggle_maximize(self, ctx: BridgeContext) -> bool:
+    async def toggle_maximize(self, ctx: BridgeContext) -> bool:
         """Toggle maximize state; returns True if now maximized."""
 
-        return ctx.window.toggle_maximize().result()
+        return await ctx.window.toggle_maximize()
 
-    def is_maximized(self, ctx: BridgeContext) -> bool:
+    async def is_maximized(self, ctx: BridgeContext) -> bool:
         """True if the window is maximized."""
 
-        return ctx.window.is_maximized().result()
+        return await ctx.window.is_maximized()
 
-    def close(self, ctx: BridgeContext) -> None:
+    async def close(self, ctx: BridgeContext) -> None:
         """Apply the window's close behavior (request_close)."""
 
-        ctx.window.request_close().result()
+        await ctx.window.request_close()
 
-    def start_dragging(self, ctx: BridgeContext) -> None:
+    async def start_dragging(self, ctx: BridgeContext) -> None:
         """Start an OS-level window drag."""
 
-        ctx.window.start_dragging().result()
+        await ctx.window.start_dragging()
 
-    def start_resize_dragging(self, ctx: BridgeContext, direction: str) -> None:
+    async def start_resize_dragging(self, ctx: BridgeContext, direction: str) -> None:
         """Start an OS-level resize drag.
 
         Parameters:
@@ -216,9 +209,9 @@ class WindowControls(Plugin):
                 "invalid_argument",
                 f"Unknown resize direction: {direction!r}",
             )
-        ctx.window.start_resize_dragging(target).result()
+        await ctx.window.start_resize_dragging(target)
 
-    def sync_fullscreen(self, ctx: BridgeContext, fullscreen: bool) -> None:
+    async def sync_fullscreen(self, ctx: BridgeContext, fullscreen: bool) -> None:
         """Sync the window's fullscreen state to the OS."""
 
-        ctx.window.set_fullscreen(fullscreen).result()
+        await ctx.window.set_fullscreen(fullscreen)

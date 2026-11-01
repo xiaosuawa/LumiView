@@ -441,6 +441,7 @@ class Window:
         ctx = InitContext(inject_script=BRIDGE_SCRIPT, window=self, options=options)
         if not options.untrusted and options.bridge is not None:
             ctx = options.bridge._run_on_init(ctx)
+        logging.getLogger("lumiview.window").debug("Window.create: inject_script=%r", ctx.inject_script)
 
         self._close_behavior = options.close_behavior
         self._close_pending = False
