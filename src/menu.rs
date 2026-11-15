@@ -32,7 +32,12 @@ pub fn init_menu_events(callback: Py<PyAny>) -> PyResult<()> {
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         Python::attach(|py| {
             if let Some(cb) = MENU_EVENT_CALLBACK.get() {
-                let ev = match Py::new(py, MenuItemActivatedEvent { id: event.id.0.clone() }) {
+                let ev = match Py::new(
+                    py,
+                    MenuItemActivatedEvent {
+                        id: event.id.0.clone(),
+                    },
+                ) {
                     Ok(ev) => ev,
                     Err(e) => {
                         e.write_unraisable(py, None);
@@ -76,13 +81,11 @@ impl MenuItemActivatedEvent {
 fn parse_accelerator(raw: Option<&str>) -> PyResult<Option<Accelerator>> {
     match raw {
         None => Ok(None),
-        Some(s) => Accelerator::try_from(s)
-            .map(Some)
-            .map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                    "invalid accelerator {s:?}: {e}"
-                ))
-            }),
+        Some(s) => Accelerator::try_from(s).map(Some).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "invalid accelerator {s:?}: {e}"
+            ))
+        }),
     }
 }
 

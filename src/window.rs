@@ -448,10 +448,7 @@ impl TaoWindow {
 
     /// Logical cursor position inside the window client area.
     fn cursor_position(&self) -> PyResult<(f64, f64)> {
-        let pos = self
-            .inner
-            .cursor_position()
-            .map_err(interaction_error)?;
+        let pos = self.inner.cursor_position().map_err(interaction_error)?;
         let sf = self.inner.scale_factor();
         Ok((pos.x as f64 / sf, pos.y as f64 / sf))
     }
@@ -509,9 +506,7 @@ impl TaoWindow {
             WindowEffect::Mica => window_vibrancy::apply_mica(&self.inner, None),
             WindowEffect::Vibrancy => window_vibrancy::apply_vibrancy(
                 &self.inner,
-                material
-                    .unwrap_or(VibrancyMaterial::Sidebar)
-                    .into(),
+                material.unwrap_or(VibrancyMaterial::Sidebar).into(),
                 Some(NSVisualEffectState::FollowsWindowActiveState),
                 None,
             ),
@@ -830,9 +825,10 @@ impl TaoWindow {
     fn set_taskbar_icon(&self, icon: Option<(u32, u32, Vec<u8>)>) -> PyResult<()> {
         use tao::platform::windows::WindowExtWindows;
         let icon = match icon {
-            Some((w, h, rgba)) => Some(Icon::from_rgba(rgba, w, h).map_err(|e| {
-                PyErr::new::<PyValueError, _>(format!("invalid icon: {e}"))
-            })?),
+            Some((w, h, rgba)) => Some(
+                Icon::from_rgba(rgba, w, h)
+                    .map_err(|e| PyErr::new::<PyValueError, _>(format!("invalid icon: {e}")))?,
+            ),
             None => None,
         };
         self.inner.set_taskbar_icon(icon);
@@ -845,9 +841,10 @@ impl TaoWindow {
     fn set_overlay_icon(&self, icon: Option<(u32, u32, Vec<u8>)>) -> PyResult<()> {
         use tao::platform::windows::WindowExtWindows;
         let icon = match icon {
-            Some((w, h, rgba)) => Some(Icon::from_rgba(rgba, w, h).map_err(|e| {
-                PyErr::new::<PyValueError, _>(format!("invalid icon: {e}"))
-            })?),
+            Some((w, h, rgba)) => Some(
+                Icon::from_rgba(rgba, w, h)
+                    .map_err(|e| PyErr::new::<PyValueError, _>(format!("invalid icon: {e}")))?,
+            ),
             None => None,
         };
         self.inner.set_overlay_icon(icon.as_ref());
@@ -924,7 +921,8 @@ impl TaoWindow {
     #[cfg(target_os = "macos")]
     fn set_traffic_light_inset(&self, x: f64, y: f64) {
         use tao::platform::macos::WindowExtMacOS;
-        self.inner.set_traffic_light_inset(LogicalPosition::new(x, y));
+        self.inner
+            .set_traffic_light_inset(LogicalPosition::new(x, y));
     }
 
     /// Make the window content appear behind the titlebar

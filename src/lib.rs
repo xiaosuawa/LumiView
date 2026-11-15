@@ -8,7 +8,11 @@ mod window;
 
 use pyo3::prelude::*;
 
-#[pymodule]
+// Free-threading: the GIL is not used for synchronization here. Native window
+// and webview objects are unsendable, callbacks run on the main thread, and
+// cross-thread work is queued to it — so free-threaded builds can keep the GIL
+// disabled (required for the abi3t stable ABI).
+#[pymodule(gil_used = false)]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Event loop
     m.add_class::<event_loop::TaoEventLoop>()?;

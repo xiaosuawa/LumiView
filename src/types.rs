@@ -19,7 +19,7 @@ pub enum EventLoopControl {
 ///
 /// Use ``isinstance(event, ResizedEvent)`` for type-safe dispatch instead
 /// of matching on this enum directly.
-#[pyclass(eq, frozen, skip_from_py_object)]
+#[pyclass(eq, frozen)]
 #[derive(Clone, PartialEq, Debug)]
 pub enum EventKind {
     Resized,
@@ -76,7 +76,7 @@ pub enum EventKind {
 ///
 /// Immutable — each event carries the modifier state at the moment it fired.
 /// For live modifier tracking, listen to :class:`ModifiersChangedEvent`.
-#[pyclass(frozen, skip_from_py_object)]
+#[pyclass(frozen)]
 #[derive(Clone, Debug)]
 pub struct ModifiersState {
     /// Shift key is held down.
@@ -133,7 +133,7 @@ impl ModifiersState {
 macro_rules! simple_enum {
     ($name:ident, $doc:expr, { $($variant:ident => $str:literal),+ $(,)? }) => {
         #[doc = $doc]
-        #[pyclass(eq, frozen, hash, skip_from_py_object)]
+        #[pyclass(eq, frozen, hash)]
         #[derive(Clone, PartialEq, Debug, Hash)]
         pub enum $name {
             $($variant),+
@@ -407,7 +407,7 @@ impl From<tao::window::Theme> for Theme {
 // WindowHandleKind
 
 /// Identifies the native window handle type.
-#[pyclass(eq, frozen, hash, skip_from_py_object)]
+#[pyclass(eq, frozen, hash)]
 #[derive(Clone, PartialEq, Hash)]
 pub enum WindowHandleKind {
     /// Windows HWND.

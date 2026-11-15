@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 /// :meth:`TaoWindow.primary_monitor`, :meth:`TaoWindow.current_monitor`
 /// or :meth:`TaoWindow.monitor_from_point`. Size and position are in
 /// physical pixels; use :meth:`scale_factor` to convert.
-#[pyclass(skip_from_py_object)]
+#[pyclass]
 #[derive(Clone)]
 pub struct Monitor {
     pub(crate) inner: tao::monitor::MonitorHandle,
@@ -40,7 +40,10 @@ impl Monitor {
 
     /// All display modes supported by this monitor, best first.
     fn video_modes(&self) -> Vec<VideoMode> {
-        self.inner.video_modes().map(|m| VideoMode { inner: m }).collect()
+        self.inner
+            .video_modes()
+            .map(|m| VideoMode { inner: m })
+            .collect()
     }
 }
 
@@ -50,7 +53,7 @@ impl Monitor {
 ///
 /// Obtained from :meth:`Monitor.video_modes` — pass one to
 /// :meth:`TaoWindow.set_exclusive_fullscreen`.
-#[pyclass(skip_from_py_object)]
+#[pyclass]
 #[derive(Clone)]
 pub struct VideoMode {
     pub(crate) inner: tao::monitor::VideoMode,

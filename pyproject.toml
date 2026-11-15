@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.0"]
+requires = ["maturin>=1.9.4"]
 build-backend = "maturin"
 
 [project]
@@ -7,9 +7,9 @@ name = "lumiview"
 authors = [{ name = "校溯", email = "xiaosu@xiaosu.icu" }]
 description = "Pythonic desktop window + webview — lightweight, async-first, no toolchain required."
 readme = "README.md"
-version = "0.2.0"
+version = "0.2.0rc1"
 requires-python = ">=3.10"
-dependencies = ["wryview>=0.5.4", "cattrs>=26.1", "typing_extensions~=4.11"]
+dependencies = ["wryview~=0.5.5", "cattrs~=26.1", "typing_extensions~=4.11"]
 license = "MPL-2.0"
 license-files = ["LICENSE"]
 keywords = [
@@ -29,6 +29,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Programming Language :: Rust",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: MacOS",
@@ -47,8 +48,11 @@ Discussions = "https://github.com/xiaosuawa/LumiView/discussions"
 [tool.maturin]
 python-source = "python"
 module-name = "lumiview._core"
-features = ["pyo3/extension-module", "pyo3/abi3-py310"]
+features = ["pyo3/extension-module", "pyo3/abi3-py310", "pyo3/abi3t-py315"]
 manylinux = "off"
+# The page-side JS client is generated from js/ and git-ignored, so maturin
+# would otherwise skip it in both the wheel and the sdist.
+include = [{ path = "python/lumiview/_bridge_client.py", format = ["sdist", "wheel"] }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

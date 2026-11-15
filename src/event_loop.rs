@@ -10,9 +10,9 @@ use tao::platform::run_return::EventLoopExtRunReturn;
 
 use crate::events::build_event;
 use crate::monitor::Monitor;
-use crate::types::EventLoopControl;
 #[cfg(target_os = "macos")]
 use crate::types::ActivationPolicy;
+use crate::types::EventLoopControl;
 
 // LOOP_RUNNING — crate-level flag distinct from TaoEventLoop::target
 //
@@ -331,9 +331,7 @@ impl TaoEventLoop {
     /// All monitors currently connected.
     fn available_monitors(&self) -> PyResult<Vec<Monitor>> {
         let elwt = self.target().ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "EventLoop is not running",
-            )
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("EventLoop is not running")
         })?;
         Ok(elwt
             .available_monitors()
@@ -344,9 +342,7 @@ impl TaoEventLoop {
     /// The primary monitor, if any.
     fn primary_monitor(&self) -> PyResult<Option<Monitor>> {
         let elwt = self.target().ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "EventLoop is not running",
-            )
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("EventLoop is not running")
         })?;
         Ok(elwt.primary_monitor().map(|m| Monitor { inner: m }))
     }
@@ -354,9 +350,7 @@ impl TaoEventLoop {
     /// The monitor that contains the given physical screen point.
     fn monitor_from_point(&self, x: f64, y: f64) -> PyResult<Option<Monitor>> {
         let elwt = self.target().ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "EventLoop is not running",
-            )
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("EventLoop is not running")
         })?;
         Ok(elwt.monitor_from_point(x, y).map(|m| Monitor { inner: m }))
     }

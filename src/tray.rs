@@ -130,7 +130,10 @@ pub struct TrayIconEnterEvent {
 #[pymethods]
 impl TrayIconEnterEvent {
     fn __repr__(&self) -> String {
-        format!("TrayIconEnterEvent(id={:?}, position={:?})", self.id, self.position)
+        format!(
+            "TrayIconEnterEvent(id={:?}, position={:?})",
+            self.id, self.position
+        )
     }
 }
 
@@ -151,7 +154,10 @@ pub struct TrayIconMoveEvent {
 #[pymethods]
 impl TrayIconMoveEvent {
     fn __repr__(&self) -> String {
-        format!("TrayIconMoveEvent(id={:?}, position={:?})", self.id, self.position)
+        format!(
+            "TrayIconMoveEvent(id={:?}, position={:?})",
+            self.id, self.position
+        )
     }
 }
 
@@ -172,7 +178,10 @@ pub struct TrayIconLeaveEvent {
 #[pymethods]
 impl TrayIconLeaveEvent {
     fn __repr__(&self) -> String {
-        format!("TrayIconLeaveEvent(id={:?}, position={:?})", self.id, self.position)
+        format!(
+            "TrayIconLeaveEvent(id={:?}, position={:?})",
+            self.id, self.position
+        )
     }
 }
 
@@ -193,7 +202,8 @@ fn build_tray_event(py: Python<'_>, event: TrayIconEvent) -> PyResult<Py<PyAny>>
                 button: MouseButton::from(button),
                 button_state: ElementState::from(button_state),
             },
-        )?.into(),
+        )?
+        .into(),
         TrayIconEvent::DoubleClick {
             id,
             position,
@@ -207,43 +217,35 @@ fn build_tray_event(py: Python<'_>, event: TrayIconEvent) -> PyResult<Py<PyAny>>
                 rect: rect_tuple(&rect),
                 button: MouseButton::from(button),
             },
-        )?.into(),
-        TrayIconEvent::Enter {
-            id,
-            position,
-            rect,
-        } => Py::new(
+        )?
+        .into(),
+        TrayIconEvent::Enter { id, position, rect } => Py::new(
             py,
             TrayIconEnterEvent {
                 id: id.0.clone(),
                 position: (position.x, position.y),
                 rect: rect_tuple(&rect),
             },
-        )?.into(),
-        TrayIconEvent::Move {
-            id,
-            position,
-            rect,
-        } => Py::new(
+        )?
+        .into(),
+        TrayIconEvent::Move { id, position, rect } => Py::new(
             py,
             TrayIconMoveEvent {
                 id: id.0.clone(),
                 position: (position.x, position.y),
                 rect: rect_tuple(&rect),
             },
-        )?.into(),
-        TrayIconEvent::Leave {
-            id,
-            position,
-            rect,
-        } => Py::new(
+        )?
+        .into(),
+        TrayIconEvent::Leave { id, position, rect } => Py::new(
             py,
             TrayIconLeaveEvent {
                 id: id.0.clone(),
                 position: (position.x, position.y),
                 rect: rect_tuple(&rect),
             },
-        )?.into(),
+        )?
+        .into(),
         // TrayIconEvent is non-exhaustive (platform-specific variants may
         // be added) — surface unknown events as errors instead of dropping.
         _ => {
