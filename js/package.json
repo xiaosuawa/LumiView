@@ -1,0 +1,57 @@
+{
+  "name": "lumiview",
+  "version": "0.2.0-rc.1",
+  "description": "TypeScript client for the LumiView JS <-> Python bridge.",
+  "homepage": "https://github.com/xiaosuawa/LumiView",
+  "author": {
+    "name": "校溯",
+    "email": "xiaosu@xiaosu.icu"
+  },
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaosuawa/LumiView.git",
+    "directory": "js"
+  },
+  "bugs": {
+    "url": "https://github.com/xiaosuawa/LumiView/issues"
+  },
+  "keywords": [
+    "lumiview",
+    "tauri",
+    "webview",
+    "ipc",
+    "bridge",
+    "desktop"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./window-controls": {
+      "types": "./dist/window-controls.d.ts",
+      "import": "./dist/window-controls.mjs",
+      "require": "./dist/window-controls.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^7.0.2"
+  }
+}

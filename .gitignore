@@ -221,3 +221,8 @@ AGENTS.md
 plan.md
 TODO.md
 docs/superpowers
+
+# JS client (js/) — sources are committed, build outputs are not.
+js/node_modules/
+js/dist/
+python/lumiview/_bridge_client.py
