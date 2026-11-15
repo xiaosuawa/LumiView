@@ -25,6 +25,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The page-side JS client is generated (git-ignored) — the wheel needs it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build JS client
+        run: |
+          npm --prefix js ci
+          npm --prefix js run build
+      - name: Test JS client
+        run: npm --prefix js test
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
