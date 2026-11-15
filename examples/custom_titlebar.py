@@ -4,8 +4,8 @@ custom_titlebar.py — Frameless window with custom titlebar and native effects.
 Shows:
   - decorations=False — hide the system titlebar
   - transparent=True — transparent window background
-  - bridge.include(WindowControls()) — window.* JS API + drag regions
-  - data-lumiview-drag-region — declarative drag area
+  - bridge.include(WindowControls()) — plugins.window JS API + drag regions
+  - data-lumiview-drag-region — declarative drag area (no JS)
   - apply_effect() — native window material (Acrylic / Mica / Vibrancy)
 
 Run:
@@ -42,9 +42,9 @@ HTML = """<!doctype html>
     <div class="drag" data-lumiview-drag-region>
       <span style="font-weight:600;">LumiView</span>
     </div>
-    <button onclick="lumiview.window.minimize()" title="Minimize">&#x2014;</button>
-    <button onclick="lumiview.window.toggleMaximize()" title="Maximize">&#9744;</button>
-    <button onclick="lumiview.window.close()" title="Close">&#x2715;</button>
+    <button onclick="__LUMIVIEW__.plugins.window.minimize()" title="Minimize">&#x2014;</button>
+    <button onclick="__LUMIVIEW__.plugins.window.toggleMaximize()" title="Maximize">&#9744;</button>
+    <button onclick="__LUMIVIEW__.plugins.window.close()" title="Close">&#x2715;</button>
   </header>
   <div class="content">
     Drag here to move the window

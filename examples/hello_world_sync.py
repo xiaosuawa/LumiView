@@ -15,7 +15,7 @@ app = App(name="HelloWorld")
 
 
 def main():
-    # Create a window — returns Task[Window], so we await it.
+    # Create a window — returns Task[Window], so we block on it.
     win = Window.create(
         title="Hello LumiView!",
         url="https://example.com",
@@ -24,10 +24,13 @@ def main():
         devtools=True
     ).result()
 
-    # eval_js returns Task[str] — await to get the result.
+    # wait_loaded() is the sync-safe equivalent of awaiting the page load.
+    win.wait_loaded().result()
+
+    # eval_js returns Task[str] — block to get the result.
     title = win.eval_js("document.title").result()
     print(f"Page title: {title}")
-    
+
     time.sleep(1)  # Wait a bit before loading the next URL
 
     # load_url is fire-and-forget, no Task needed.

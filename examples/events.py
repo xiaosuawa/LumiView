@@ -1,19 +1,43 @@
 """
-events.py — App and Window events, plus Python-to-JS event emission.
+events.py — Events in both directions, plus one-shot waits.
 
 Shows:
-  - AppEvent.ReadyEvent — fires once when the app is ready
-  - AppEvent.AppCloseEvent — fires on graceful shutdown
-  - WindowEvent.TitleChangedEvent — fires when the page title changes
-  - win.emit() — push events from Python to JS (window.lumiview.listen)
+  - AppEvent.ReadyEvent / AppEvent.AppCloseEvent
+  - WindowEvent.TitleChangedEvent with a cancellable Subscription
+  - win.wait_for(...) — one-shot wait for the next matching event
+  - WindowEvent.JsEvent — page -> Python notifications via __LUMIVIEW__.emit()
+  - win.emit() — Python -> page events via __LUMIVIEW__.listen()
+  - WindowEvent.ClosedEvent — fires once after the native window is gone
 
 Run:
     python examples/events.py
 """
 
+import asyncio
+
 from lumiview import App, AppEvent, Window, WindowEvent, WindowOptions
 
 app = App(name="EventsDemo")
+
+HTML = """<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Events Demo</title></head>
+<body style="font-family:sans-serif;padding:2rem;">
+  <h2>LumiView Events Demo</h2>
+  <button id="ping">Send page.ping to Python</button>
+  <pre id="log" style="background:#1e1e2e;color:#cdd6f4;padding:1em;"></pre>
+<script>
+  const log = document.getElementById('log');
+  document.getElementById('ping').onclick = () => {
+    window.__LUMIVIEW__.emit('page.ping', {n: Date.now()});
+  };
+  window.__LUMIVIEW__.listen('py.event', (payload) => {
+    log.textContent += `[py.event] ${JSON.stringify(payload)}\n`;
+  });
+</script>
+</body>
+</html>"""
+
 
 # ── App-level events ─────────────────────────────────────────────────────────
 
@@ -30,33 +54,50 @@ async def on_close(event: AppEvent.AppCloseEvent):
 
 async def main():
     win = await Window.create(
-        title="Events Demo",
-        url="https://www.example.com",
-        width=800,
-        height=600,
-        devtools=True,
+        WindowOptions(
+            title="Events Demo",
+            html=HTML,
+            width=800,
+            height=600,
+            devtools=True,
+        )
     )
+    await win.wait_loaded()
 
-    # ── Window-level event: TitleChanged ────────────────────────────────
+    # ── Window closed ─────────────────────────────────────────────────────
 
-    @win.on(WindowEvent.TitleChangedEvent)
+    @win.on(WindowEvent.ClosedEvent)
+    async def on_closed(event: WindowEvent.ClosedEvent):
+        print("[WindowEvent] Closed — native window is gone.")
+
+    # ── Window-level event + cancellable subscription ─────────────────────
+
+    title_sub = win.on(WindowEvent.TitleChangedEvent)
+
+    @title_sub
     async def on_title_changed(event: WindowEvent.TitleChangedEvent):
-        print(f"[WindowEvent] Title changed → '{event.title}'")
+        print(f"[WindowEvent] Title changed -> {event.title!r}")
 
-    # Trigger a title change to fire the hook
+    # Register the one-shot waiter *before* triggering the event.
+    title_waiter = win.wait_for(WindowEvent.TitleChangedEvent, timeout=5)
     await win.eval_js("document.title = 'LumiView Events!'")
+    event = await title_waiter
+    print(f"[wait_for] got {type(event).__name__}: {event.title!r}")
 
-    # ── Push events from Python to JS ───────────────────────────────────
+    title_sub.cancel()  # no more title callbacks
 
-    # Register a JS-side listener
-    await win.eval_js(
-        "window.lumiview.listen('my.event', (p) => { window.__evt = p.data; });"
-    )
-    await win.emit("my.event", {"data": "Hello from Python!", "ts": 42})
-    print("[emit] Sent 'my.event' to JS.")
+    # ── Page -> Python: WindowEvent.JsEvent ───────────────────────────────
 
-    received = await win.eval_js("window.__evt")
-    print(f"[emit] JS received payload: {received!r}")
+    @win.on(WindowEvent.JsEvent, where=lambda e: e.event == "page.ping")
+    async def on_ping(event: WindowEvent.JsEvent):
+        print(f"[JsEvent] page.ping payload={event.payload!r}")
+
+        # ── Python -> page: __LUMIVIEW__.listen('py.event', ...) ──────────
+        await win.emit("py.event", {"reply": "pong", "payload": event.payload})
+
+    # Fire the page button from Python (a user would click it).
+    await win.eval_js("document.getElementById('ping').click()")
+    await asyncio.sleep(0.5)  # let the JS listener print
 
     print("App running — close the window or press Ctrl+C.")
 

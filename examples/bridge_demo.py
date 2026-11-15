@@ -7,7 +7,7 @@ Shows:
   - @bridge.command (async) — expose async Python functions
   - Structured error handling (BridgeError)
 
-JS calls Python via ``window.lumiview.invoke(command, payload)``,
+JS calls Python via ``window.__LUMIVIEW__.invoke(command, payload)``,
 which returns a Promise that resolves with the Python return value.
 
 Run:
@@ -48,7 +48,7 @@ HTML = """<!doctype html>
 <body style="font-family:sans-serif;padding:2rem;">
   <h2>LumiView Bridge Demo</h2>
   <p>Each button calls a Python function via
-     <code>window.lumiview.invoke(command, payload)</code>.</p>
+     <code>window.__LUMIVIEW__.invoke(command, payload)</code>.</p>
   <button onclick="call('greet',{name:'LumiView'})">Greet</button>
   <button onclick="call('delayed_greet',{name:'Async'})">Delayed Greet (1.5s)</button>
   <button onclick="call('maybe_fail',{msg:'demo error'})">Trigger Error</button>
@@ -59,7 +59,7 @@ HTML = """<!doctype html>
   async function call(cmd, payload) {
     try {
       const t0 = performance.now();
-      const result = await window.lumiview.invoke(cmd, payload);
+      const result = await window.__LUMIVIEW__.invoke(cmd, payload);
       const ms = (performance.now() - t0).toFixed(0);
       log.textContent += `[OK ${ms}ms] ${cmd} => ${JSON.stringify(result)}\n`;
     } catch (e) {

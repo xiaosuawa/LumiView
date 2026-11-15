@@ -16,6 +16,9 @@ on the asyncio loop, sync handlers run on the app's thread pool — never
 on the GUI thread. Equivalent forms: pass ``on_activate=fn`` at
 construction, or register later via ``item.on_activate(fn)`` (decorator).
 
+``Menu.items`` is a read-only snapshot; use ``MenuItem.copy(**changes)``
+to derive a variant while keeping the id and activation handlers.
+
 Note: on Windows the accelerator is shown in the menu but is not
 triggered by the keyboard (the tao message loop does not translate
 accelerators).
@@ -93,6 +96,9 @@ async def main():
         print(f"global: id={event.id!r} item={event.menu_item!r}")
 
     menu = await Menu.create(items=[file_menu])
+
+    # Menu.items is a read-only snapshot (tuple[Item, ...]).
+    print("menu bar:", [item.text for item in menu.items])
 
     if sys.platform == "win32":
         await menu.attach_to_window(win)

@@ -18,6 +18,7 @@ Run:
 import json
 import platform
 
+import django
 from django import get_version
 from django.conf import settings
 from django.core.wsgi import get_wsgi_application

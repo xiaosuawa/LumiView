@@ -9,24 +9,12 @@ Run:
 """
 
 import asyncio
-from lumiview import App, Window, WindowOptions, WindowEvent
+from lumiview import App, Window, WindowOptions
 
 app = App(name="HelloWorld")
 
 
 async def main():
-    # Page-load completion signal. Async handlers run on the asyncio
-    # thread, so set() on an asyncio.Event is safe here (a sync handler
-    # would run on the thread pool instead).
-    load_done = asyncio.Event()
-
-    def prepare(win):
-        # The prepare hook fires before the WebView exists — no page
-        # event can slip past this registration.
-        @win.on(WindowEvent.PageLoadFinishedEvent)
-        async def on_page_load(event):
-            load_done.set()
-
     # Create a window — returns Task[Window], so we await it.
     win = await Window.create(WindowOptions(
         title="Hello LumiView!",
@@ -34,12 +22,12 @@ async def main():
         width=900,
         height=640,
         devtools=True,
-        prepare=prepare,
     ))
 
-    # Wait for the page to finish loading before reading the title
-    # (create() returns before the load completes).
-    await load_done.wait()
+    # Wait for PageLoadFinishedEvent. wait_loaded() is registered inside
+    # create(), so it cannot miss a fast load (create() returns before the
+    # page finishes loading).
+    await win.wait_loaded()
 
     # eval_js returns Task[str] — await to get the result.
     title = await win.eval_js("document.title")
