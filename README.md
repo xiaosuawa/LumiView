@@ -7,6 +7,7 @@
     <a href="https://pypi.org/project/lumiview/"><img src="https://img.shields.io/pypi/v/lumiview?label=pypi" alt="PyPI"></a>
     <a href="https://pypi.org/project/lumiview/"><img src="https://img.shields.io/pypi/pyversions/lumiview" alt="Python versions"></a>
     <a href="https://github.com/xiaosuawa/LumiView/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/lumiview" alt="License: MPL-2.0"></a>
+    <a href="https://github.com/xiaosuawa/LumiView/actions/workflows/test.yml"><img src="https://github.com/xiaosuawa/LumiView/actions/workflows/test.yml/badge.svg" alt="CI"></a>
   </p>
   <p align="center">
     <a href="README_zh.md">中文</a>
@@ -19,7 +20,7 @@
 >
 > LumiView is currently in **alpha**. The API is functional but **not yet fully stable** — method names, parameter structures, and import paths may still change between releases. We use alpha releases to gather early feedback while retaining the flexibility to adjust the API.
 >
-> **Early adopters welcome!** Try building an app with it and tell us what works well and what doesn't. Your feedback will directly shape the final stable API. When upgrading, please check the changelog and be prepared to adjust your code.
+> **Early adopters welcome!** Try building an app with it and tell us what works well and what doesn't. Your feedback will directly shape the final stable API. When upgrading, please check the [changelog](CHANGELOG.md) and be prepared to adjust your code.
 
 ---
 
@@ -55,8 +56,14 @@ flowchart TB
 - [Getting Started](docs/getting-started.md)
 - [Architecture & Threading Model](docs/architecture.md)
 - [Custom Plugins](docs/plugins.md)
+- [Menus & Tray Icons](docs/menus.md)
+- [JS Client (npm / `window.__LUMIVIEW__`)](docs/js-client.md)
 - [Third-Party Integrations](docs/integrations.md)
 - [Serve Protocol](docs/serve.md)
+- [Changelog](CHANGELOG.md)
+
+> Chinese translations live next to the English docs (`docs/*.zh.md`), e.g.
+> [快速入门](docs/getting-started.zh.md).
 
 ## Installation
 
@@ -78,6 +85,7 @@ async def main():
         width=900, height=640,
         devtools=True,
     ))
+    await win.wait_loaded()          # PageLoadFinishedEvent, race-free
     title = await win.eval_js("document.title")
     print(f"Page title: {title}")
 
@@ -87,9 +95,10 @@ app.run(main)
 ## Key Features
 
 - **🧵 Unified async/sync** — All cross-thread / async operations return `Task`. `await`, `.result()`, or `.on_done()` — same API, your choice.
-- **🌉 JS ↔ Python Bridge** — Expose Python functions to JS via `window.lumiview.invoke()`. No HTTP server, no manual serialization required.
+- **⏳ Event filters & one-shot waits** — `where=` predicates, `wait_for()` / `wait_loaded()`, cancellable `Subscription`s, and `WindowEvent.JsEvent` for page-to-Python notifications.
+- **🌉 JS ↔ Python Bridge** — Expose Python functions to JS via `window.__LUMIVIEW__.invoke()`. No HTTP server, no manual serialization required. The optional `lumiview` npm package adds typings for bundled frontends.
 - **🪟 Native window effects** — Acrylic, Mica, Vibrancy via `window-vibrancy`.
-- **🎨 Custom titlebar** — Declarative `data-lumiview-drag-region` drag areas + built-in `lumiview.window.*` JS API (minimize / maximize / close).
+- **🎨 Custom titlebar** — Declarative `data-lumiview-drag-region` drag areas + built-in `__LUMIVIEW__.plugins.window.*` JS API (minimize / maximize / close).
 - **📋 Native menus** — Per-item `on_activate` callbacks + global `MenuItemActivatedEvent`; macOS default app menu installed automatically, window menu bars on Windows.
 - **🎛️ System tray** — Cross-platform tray icons with context menus and click events; close-to-tray pattern.
 - **📁 Static serving & WSGI & ASGI** — Directly load local files, proxy to WSGI apps (Flask, Django, etc.), or run FastAPI/Starlette apps without external servers.
@@ -116,12 +125,12 @@ For runnable code, see the [`examples/`](examples/) directory.
 
 | Example | Description |
 |---|---|
-| [`hello_world.py`](examples/hello_world.py) | Minimal app — create window, load URL (async) |
+| [`hello_world.py`](examples/hello_world.py) | Minimal app — create window, `wait_loaded()`, load URL (async) |
 | [`hello_world_sync.py`](examples/hello_world_sync.py) | Same as above, using `.result()` — pure synchronous style |
 | [`bridge_demo.py`](examples/bridge_demo.py) | JS ↔ Python IPC — sync/async commands, error handling |
-| [`multi_window.py`](examples/multi_window.py) | Multi-window + shared WebContext |
+| [`multi_window.py`](examples/multi_window.py) | Multi-window + shared WebContext + app window registry |
 | [`custom_titlebar.py`](examples/custom_titlebar.py) | Frameless window + native effects + drag regions |
-| [`events.py`](examples/events.py) | App/Window hook events + JS event emission |
+| [`events.py`](examples/events.py) | App/Window events, JS→Python `JsEvent`, one-shot waits, Python→JS `emit` |
 | [`fastapi_demo.py`](examples/fastapi_demo.py) | FastAPI running via `source=ASGI(...)` |
 | [`django_demo.py`](examples/django_demo.py) | Django running via `source=WSGI(...)` — template rendering, form POST, JSON APIs |
 | [`menu.py`](examples/menu.py) | Native menus — accelerators, `on_activate` callbacks, macOS app menu / Windows window menu bar |
@@ -131,8 +140,10 @@ For runnable code, see the [`examples/`](examples/) directory.
 
 - [x] Window management (TaoWindow + Window)
 - [x] WebView embedding (wryview)
-- [x] JS ↔ Python Bridge (invoke/listen IPC)
+- [x] JS ↔ Python Bridge (invoke/emit/listen IPC)
+- [x] TypeScript client + optional `lumiview` npm package
 - [x] Event class system (WindowEvent / AppEvent)
+- [x] Event filters, one-shot waits and cancellable subscriptions
 - [x] Unified async/sync `Task` interface
 - [x] Static file serving + WSGI proxy
 - [x] ASGI adapter (FastAPI, Starlette, etc.)
@@ -140,6 +151,7 @@ For runnable code, see the [`examples/`](examples/) directory.
 - [x] Custom titlebar
 - [x] Native menus (muda)
 - [x] System tray (tray-icon)
+- [x] abi3 + abi3t wheel builds (CPython 3.10+ / free-threaded 3.15)
 - [ ] API stabilization
 - [ ] Complete documentation site
 

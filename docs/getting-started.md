@@ -1,157 +1,290 @@
-# 快速入门
+# Getting Started
 
-## 安装
+LumiView is a Python runtime for desktop windows with a WebView. You write Python;
+the window, the WebView and the native chrome are Rust underneath. No Rust toolchain,
+no Node.js, no `tauri.conf.json` — `pip install` and go.
+
+> **Status:** 0.2.0rc1, alpha. The API is not frozen yet; read the
+> [changelog](../CHANGELOG.md) before upgrading between minor versions.
+
+## Requirements
+
+- Python 3.10+
+- A system WebView: WebView2 (Windows), WKWebView (macOS) or WebKitGTK (Linux)
+- Linux only: GTK 3 and `libwebkit2gtk-4.1`
+
+## Install
 
 ```bash
 pip install lumiview
 ```
 
-当前为 alpha 阶段，API 尚未完全冻结，升级时请留意变更。
-
-## 最小应用
+## Hello, window
 
 ```python
 import asyncio
 
 from lumiview import App, Window, WindowOptions
 
-app = App(name="MyApp")
+app = App(name="Hello")
 
 
-async def main():
-    win = await Window.create(WindowOptions(
-        title="Hello",
-        html="<h1>Hello from LumiView!</h1>",
-    ))
+async def main() -> None:
+    win = await Window.create(
+        WindowOptions(
+            title="Hello LumiView",
+            width=900,
+            height=640,
+            html="<h1>Hello from LumiView!</h1>",
+        )
+    )
 
-    # 演示：5 秒后自动关闭。默认 exit_on_last_window=True，
-    # 最后一个窗口关闭时应用自动退出。
+    await win.wait_loaded()
+    print("page is ready")
+
     await asyncio.sleep(5)
     await win.close()
+
+
+if __name__ == "__main__":
+    app.run(main)
+```
+
+Three things are worth noticing:
+
+- `Window.create(...)` returns a `Task[Window]`, so you `await` it in async code and
+  call `.result()` in sync code.
+- `app.run(main)` blocks the main thread until the app exits. `main` may be an
+  `async def` (runs on the asyncio thread) or a plain function (runs on the thread
+  pool).
+- Closing the last window exits the app by default (`exit_on_last_window=True`).
+
+## The sync flavour
+
+The same API works without `async`. `app.run()` starts the loop before any window
+can be created, so pass a plain function as the entry point and block on each
+`Task`:
+
+```python
+from lumiview import App, Window, WindowOptions
+
+app = App(name="HelloSync")
+
+
+def main() -> None:
+    win = Window.create(WindowOptions(title="Sync", html="<p>hi</p>")).result()
+    win.set_title("Sync — renamed").result()
 
 
 app.run(main)
 ```
 
-要点：
+`main` runs on the thread pool (never the GUI thread), which is exactly where
+`.result()` is safe.
 
-- `Window.create(options)` 是 `@main_thread` 方法，返回 `Task[Window]` —— 异步代码里 `await`，同步代码里 `.result()`。
-- `app.run(main)` 阻塞主线程直到应用退出；`main` 可以是异步函数（跑在 asyncio 线程）或同步函数（跑在线程池）。
-- `html=` 直接渲染字符串；加载 URL 用 `url=`；加载本地目录用 `source=`（见 [serve.md](serve.md)）。
+## Window options
 
-## 事件订阅
+All window configuration is one mutable dataclass. `Window.create` accepts either a
+`WindowOptions` object or the fields as keyword arguments.
 
-用 `win.on(事件类)` 装饰器注册 handler，handler 收到**事件对象**：
-
-```python
-from lumiview import App, Window, WindowOptions
-from lumiview.events import WindowEvent
-
-
-async def main():
-    win = await Window.create(WindowOptions(
-        title="Events",
-        html="<p id='t'>hi</p>",
-    ))
-
-    @win.on(WindowEvent.TitleChangedEvent)
-    def on_title(event):
-        print("新标题:", event.title)
-
-    @win.on(WindowEvent.NavigationRequestedEvent)
-    def on_navigation(event):
-        print("导航到:", event.url)
-        if event.url.startswith("https://evil.com"):
-            event.prevent()          # 阻止这次导航
-
-    @win.on(WindowEvent.CloseRequestedEvent)
-    def on_close(event):
-        if not saved:
-            event.prevent()          # 取消关闭
-```
-
-- 事件类集中在 `WindowEvent` 命名空间。
-- 所有 handler 都运行在 **asyncio 线程**（不是主线程、不是 wryview 回调线程）——不要在里面直接操作原生 GUI。
-- 可阻止事件（`CloseRequestedEvent` / `NavigationRequestedEvent` / `NewWindowRequestedEvent` / `DownloadStartedEvent`）调用 `event.prevent()` 后，默认行为会被取消。
-- `event.window` 指向触发事件的窗口实例。
-
-## 窗口配置：WindowOptions
-
-所有配置集中在一个（可变的）dataclass 里，字段即 `create()` 的旧关键字参数：
-
-| 字段 | 说明 |
+| Group | Fields |
 |---|---|
-| `title` / `width` / `height` | 标题与尺寸（逻辑像素） |
-| `transparent` | 透明背景（配合 CSS `background: transparent`） |
-| `decorations` | 原生标题栏与边框（自定义标题栏时设 `False`） |
-| `devtools` | 启用浏览器开发者工具 |
-| `visible` / `resizable` / `focused` | 可见 / 可缩放 / 聚焦 |
-| `always_on_top` / `maximized` | 置顶 / 启动即最大化 |
-| `close_behavior` | 关闭行为（见下文「关闭流程」） |
-| `bridge` | `Bridge` 实例（JS ↔ Python IPC，见 [plugins.md](plugins.md)） |
-| `untrusted` | 不注入任何初始化脚本（与 `bridge` 互斥） |
-| `prepare` | 创建前钩子（见下文） |
+| Content | `url`, `html`, `source` (`Serve`, see [serve.md](serve.md)); `headers`, `user_agent`, `proxy`, `incognito`, `javascript`, `autoplay`, `clipboard`, `hotkeys_zoom`, `https_scheme`, `devtools` |
+| Geometry | `width`, `height`, `position`, `monitor`, `min_size`, `max_size`, `maximized` |
+| Chrome | `title`, `decorations`, `transparent`, `titlebar` (`TitleBarOptions`, macOS), `undecorated_shadow` (Windows), `theme`, `background_color`, `icon` |
+| Behaviour | `visible`, `focused`, `focusable`, `resizable`, `minimizable`, `maximizable`, `closable`, `always_on_top`, `always_on_bottom`, `visible_on_all_workspaces`, `content_protection`, `sync_visibility`, `close_behavior` |
+| WebView env | `data_directory`, `web_context`, `drag_drop`, `default_context_menus`, `back_forward_gestures` |
+| IPC | `bridge`, `untrusted` (see [plugins.md](plugins.md), [js-client.md](js-client.md)) |
+| Hook | `prepare` (see below) |
 
-局部修改用 `dataclasses.replace`；配置模板用**子类**：
+Content precedence when several are given: `html=` wins over `source=`, `url=`
+wins over `source=`. The custom protocol from `source=` is registered either way,
+so the page can still `fetch("lumiview://...")`.
+
+`untrusted=True` disables IPC in both directions — nothing is injected and
+incoming messages are not parsed; see [js-client.md](js-client.md#untrustedtrue).
+
+Reuse and tweak options with `dataclasses.replace`; subclass them for templates:
 
 ```python
 from dataclasses import dataclass, replace
 
+from lumiview import WindowOptions
+
 base = WindowOptions(title="A", width=800)
-opts = replace(base, width=1024)      # 新对象；base 不变
+wide = replace(base, width=1280)   # new object; `base` is untouched
 
 
-@dataclass(frozen=True)
-class MyAppOptions(WindowOptions):
+@dataclass
+class AppOptions(WindowOptions):
     title: str = "MyApp"
     devtools: bool = True
-
-
-opts2 = MyAppOptions()                # title="MyApp", devtools=True
 ```
 
-> **注意**：子类模板**必须重新应用 `@dataclass(...)`**（是否 `frozen` 自选）。dataclass 生成的 `__init__` 在生成时固化基类默认值——不加装饰器的普通子类继承到的仍是基类默认值（`"lumiview"`），类属性声明不会生效。
+A `WindowOptions` subclass must re-apply `@dataclass` — the generated `__init__`
+captures base defaults at class-creation time.
 
-## `prepare` 钩子：注册早期事件
+## Events
 
-tao 窗口创建、webview 加载的那一刻事件流就开始了（`PageLoadStarted` 等可能立即触发），而 `win.on()` 通常只能在 `create()` 返回后调用。`prepare` 在 tao/webview 创建**之前**收到 Window 空壳实例（hooks 注册能力已就绪），可以提前订阅：
+Handlers are registered per event class and receive the event object:
+
+```python
+from lumiview import WindowEvent
+
+@win.on(WindowEvent.TitleChangedEvent)
+def on_title(event):
+    print("new title:", event.title)
+
+@win.on(WindowEvent.NavigationRequestedEvent)
+def on_navigation(event):
+    if event.url.startswith("https://example.com"):
+        event.prevent()          # cancel this navigation
+
+@win.on(WindowEvent.JsEvent, where=lambda e: e.event == "data.changed")
+async def on_js(event):
+    print("from the page:", event.payload)
+```
+
+- Handlers run off the GUI thread: `async def` on the asyncio loop, `def` on the
+  thread pool. Never touch native window objects directly — use `Window` methods
+  (they marshal to the GUI thread).
+- `where=` is a plain `(event) -> bool` filter function, run inline before the
+  handler. A filter that raises is treated as a non-match and logged — it never
+  breaks dispatch.
+- Preventable events: `CloseRequestedEvent`, `NavigationRequestedEvent`,
+  `NewWindowRequestedEvent`, `DownloadStartedEvent` (the last one can also
+  `save_to(path)`).
+
+`event.window` is the `Window` the event belongs to.
+
+### Subscriptions
+
+`win.on(...)` and `app.on(...)` return a `Subscription`: a callable, so the
+decorator form still works, with an extra `cancel()` to unregister:
+
+```python
+sub = win.on(WindowEvent.TitleChangedEvent)
+
+
+@sub
+def on_title(event):
+    print("new title:", event.title)
+
+
+sub.cancel()   # idempotent
+```
+
+A dispatch already in flight may still reach the handler once after `cancel()`.
+
+### Waiting for one event
+
+`win.wait_for(...)` returns a `Task` that resolves with the next matching event and
+removes its temporary handler:
+
+```python
+event = await win.wait_for(WindowEvent.ClosedEvent, timeout=10)
+```
+
+`app.wait_for(...)` has the same shape. Waiters fail with `TimeoutError` on
+timeout and `WindowClosedError` / `AppClosedError` if the window/app is already
+gone. `win.wait_loaded()` is the common case: it waits for
+`PageLoadFinishedEvent` and is registered before the WebView exists, so it cannot
+miss the event.
+
+`WindowEvent.ClosedEvent` fires once after the native window and WebView are
+destroyed. At that point `win.is_closed` is `True` and window methods raise
+`WindowClosedError`; use the event for final cleanup, not for querying the window.
+
+### Registering handlers *before* the page loads
+
+`PageLoadStarted` / `PageLoadFinished` can fire before `Window.create()` returns.
+Use the `prepare` hook to register nothing-missable handlers on the window shell:
 
 ```python
 def prepare(win):
     win.on(WindowEvent.PageLoadStartedEvent)(
-        lambda event: print("开始加载:", event.url)
+        lambda event: print("loading", event.url)
     )
 
-win = await Window.create(WindowOptions(
-    html="<h1>hi</h1>",
-    prepare=prepare,
-))
+win = await Window.create(WindowOptions(url="https://example.com", prepare=prepare))
 ```
 
-## 多窗口
+## Tasks and threads
 
-多次调用 `Window.create` 即可；每个窗口有独立 id（`win._id`），应用内部以 `app._windows`（`dict[window_id, Window]`）跟踪。默认 `exit_on_last_window=True`，最后一个窗口关闭时应用退出；托盘类应用可设 `App(name=..., exit_on_last_window=False)`。
-
-## 关闭流程
-
-`CloseBehavior` 控制收到关闭请求时的行为：
-
-- `CloseBehavior.Close`（默认）——销毁窗口；
-- `CloseBehavior.Hide`——隐藏而不是销毁；
-- `CloseBehavior.Ignore`——什么都不做。
-
-`CloseRequestedEvent` 可在任何行为之前 `prevent()`：
+Everything that crosses a thread returns `Task` — a `concurrent.futures.Future`
+subclass with three consumption styles:
 
 ```python
-from lumiview import CloseBehavior
+result = await handle                  # asyncio thread
+result = handle.result()               # any non-GUI, non-asyncio thread
+handle.on_done(print)                  # callback, no blocking
+handle.on_exception(lambda exc: ...)
+```
 
-win = await Window.create(WindowOptions(
-    close_behavior=CloseBehavior.Hide,   # 先隐藏
-))
+- `await` from asyncio code is the normal path.
+- `.result()` from the **asyncio thread** raises `TaskDeadlockError` (it would
+  deadlock the loop). From the GUI thread it drains the command queue while
+  waiting — the window freezes meanwhile, so don't do it in a hot path.
+- `task(fn, *args)` runs a function concurrently and wraps the result in a `Task`
+  (`async` → asyncio loop, `def` → thread pool).
+- `app.call_on_main(fn, ...)` runs `fn` on the GUI thread and returns a `Task`.
 
+Full model: [architecture.md](architecture.md).
+
+## Inspecting state
+
+These are plain reads, safe from any thread:
+
+```python
+from lumiview import App
+
+app = App.get()
+
+print(app.state)                  # AppState.RUNNING
+print(app.windows)                # tuple[Window, ...] snapshot
+win = app.get_window(window_id)   # Window | None
+print(win.id, win.is_closed)      # stable id / local flag
+print(app.is_async_thread())      # am I on the asyncio thread?
+print(app.async_loop)             # None before run() and during shutdown
+```
+
+`app.monitors()` and `app.primary_monitor()` touch the native event loop, so they
+run on the GUI thread and return a `Task`:
+
+```python
+monitors = await app.monitors()
+```
+
+## Closing
+
+`close_behavior` decides what a close request does:
+
+- `CloseBehavior.Close` (default) — destroy the window;
+- `CloseBehavior.Hide` — hide it instead (tray apps);
+- `CloseBehavior.Ignore` — do nothing, let the app decide.
+
+`CloseRequestedEvent` runs first and can `prevent()` any of them:
+
+```python
+from lumiview import CloseBehavior, WindowEvent
+
+win = await Window.create(WindowOptions(close_behavior=CloseBehavior.Hide))
 
 @win.on(WindowEvent.CloseRequestedEvent)
 def on_close(event):
-    if not saved:
-        event.prevent()                    # 未保存 → 什么都不发生
+    if not document_saved():
+        event.prevent()      # nothing happens
 ```
+
+`win.request_close()` goes through that flow; `await win.close()` skips it and
+destroys the window immediately.
+
+## Where to go next
+
+- [JS ↔ Python bridge](plugins.md) — expose Python functions to the page.
+- [Menus & tray icons](menus.md) — native menu bars and the system tray.
+- [JS client reference](js-client.md) — `window.__LUMIVIEW__` and the npm package.
+- [Serving a frontend](serve.md) — static files, WSGI, ASGI over `lumiview://`.
+- [Architecture](architecture.md) — threads, tasks, event pipeline.
+- [Third-party integrations](integrations.md) — dialogs, AppKit, GTK.
+- [Changelog](../CHANGELOG.md) — breaking changes and migration from 0.1.2.

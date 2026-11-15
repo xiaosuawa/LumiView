@@ -1,97 +1,181 @@
-# `lumiview://` 自定义协议
+# Serving a Frontend (`lumiview://`)
 
-`WindowOptions(source=...)` 注册自定义协议（默认 scheme 为 `lumiview`），页面通过 `lumiview://`（或自定义 scheme）加载本地内容——免起本地 HTTP 服务器。
-
-## Serve 基类
-
-`Serve` 是协议处理器的基类：构造时指定 `scheme`，`__call__` 收到 `Request` 和 `respond` 回调，**必须恰好调用一次** `respond(status, headers, body)`：
+`WindowOptions(source=...)` registers a custom protocol so the WebView can load local
+files and web apps without a local HTTP server. One window can register several
+protocols (schemes).
 
 ```python
-from lumiview.serve import Serve, Request, RespondFn
+from lumiview import Window, WindowOptions
+from lumiview.serve import Static
+
+win = await Window.create(WindowOptions(source=Static("frontend/dist")))
+```
+
+`Static("frontend/dist")` registers the default scheme `lumiview`, and the window
+loads `lumiview://app/` (the host is always `app`).
+
+## The `Serve` contract
+
+A handler receives a `Request` and a `respond` callback, and **must call
+`respond(status, headers, body)` exactly once**. The return value is ignored.
+
+```python
+from lumiview.serve import Request, RespondFn, Serve
 
 
-class MyHandler(Serve):
-    def __init__(self):
+class Health(Serve):
+    def __init__(self) -> None:
         super().__init__(scheme="lumiview")
 
     def __call__(self, request: Request, respond: RespondFn) -> None:
-        respond(200, [("Content-Type", "text/plain")], b"hello")
+        respond(200, [("Content-Type", "text/plain")], b"ok")
 ```
 
-日常直接用它提供的成品子类，不必手写 `__call__`。
+`__call__` runs on the GUI thread, so it must return quickly. For slow work use
+`Handler` (dispatched to the asyncio loop / thread pool) or a `WSGI` / `ASGI`
+adapter, which own their threading.
 
-## Handler —— 函数适配
+### Request and Response
 
-普通函数（`fn(request) -> Response`）直接转成处理器：
+```python
+@dataclass(frozen=True)
+class Request:
+    method: str                          # "GET", "HEAD", ...
+    url: str                             # full app://app/... URL
+    path: str                            # "/", "/index.html", ...
+    query: str                           # without "?"
+    headers: list[tuple[str, str]]       # duplicates preserved
+    body: bytes
+
+@dataclass
+class Response:
+    status: int = 200
+    headers: list[tuple[str, str]] = []  # duplicates preserved
+    body: bytes = b""
+```
+
+## Adapters
+
+### `Static` — files and SPAs
+
+```python
+from lumiview.serve import Static
+
+Static("frontend/dist")                    # SPA fallback (default)
+Static("frontend/dist", spa=False)         # 404 for unknown paths
+Static("frontend/dist", scheme="app")      # custom scheme
+```
+
+`spa=True` serves `index.html` for paths that do not match a file — the usual
+client-side-routing setup. The root directory must exist when the adapter is created.
+
+### `Handler` — a plain function
 
 ```python
 from lumiview.serve import Handler, Request, Response
 
 
-def api(req: Request) -> Response:
+def api(request: Request) -> Response:
     return Response(
         200,
-        body=b'{"ok": true}',
         headers=[("Content-Type", "application/json")],
+        body=b'{"ok": true}',
     )
 
 
-handler = Handler(api, scheme="api")   # 注册到 api://
+Handler(api)                 # lumiview://app/...
+Handler(api, scheme="api")   # api://app/...
 ```
 
-## Static —— 静态目录 + SPA
+`async def` handlers run on the asyncio loop, plain functions on the thread pool.
+An exception becomes a `500` response.
 
-```python
-from lumiview.serve import Static
-
-# spa=True（默认）：找不到文件时回退到 index.html（单页应用路由）
-static = Static("frontend/dist", scheme="app")
-```
-
-## WSGI / ASGI —— 现有 Web 应用
+### `WSGI` / `ASGI` — existing web apps
 
 ```python
 from lumiview.serve import ASGI, WSGI
 
-wsgi_source = WSGI(flask_app)               # Flask / Django 等
-asgi_source = ASGI(fastapi_app)             # FastAPI / Starlette 等
+WSGI(flask_app)                                   # Flask, Django, ...
+WSGI(flask_app, max_workers=4, scheme="api")
+
+ASGI(fastapi_app)                                 # FastAPI, Starlette, ...
+ASGI(fastapi_app, max_body=10 * 1024 * 1024, timeout=30, scheme="api")
 ```
 
-- `WSGI(app, *, max_workers=4)` —— 同步应用跑在内部线程池；
-- `ASGI(app, *, max_body=10MB, timeout=30)` —— 异步应用跑在 asyncio 线程。
+`WSGI` runs the app in its own thread pool (`max_workers=4`); `ASGI` runs it on the
+app's asyncio loop (`max_body` 10 MB, `timeout` 30 s).
 
-## 注册进窗口
+## Multiple schemes
 
 ```python
-from lumiview import App, Window, WindowOptions
 from lumiview.serve import Handler, Request, Response, Static
 
 
-def api(req: Request) -> Response:
-    return Response(200, body=b'{"ok": true}')
+def api(request: Request) -> Response:
+    return Response(
+        200,
+        headers=[("Content-Type", "text/plain")],
+        body=b"hello",
+    )
 
 
-async def main():
-    win = await Window.create(WindowOptions(
-        source=[
-            Static("frontend/dist", scheme="app"),
-            Handler(api, scheme="api"),
-        ],
-    ))   # 加载 app://app/；页面里可以 fetch("api://...")
+win = await Window.create(WindowOptions(
+    source=[
+        Static("frontend/dist", scheme="app"),
+        Handler(api, scheme="api"),
+    ],
+))
 ```
 
-规则：
+- The first entry in the list is what the window loads (`app://app/`).
+- Registering the same scheme twice raises `ValueError`.
+- `url=` / `html=` override what is loaded, but the protocols stay registered.
 
-- `source` 可以是单个 `Serve` 或列表；每个实例的 `scheme` 命名自己的协议（默认 `"lumiview"`）。
-- 第一个 source 被加载为 `<scheme>://app/`。
-- 优先级：`url=` > `html=` > `source`——但 `url` / `html` 只是**覆盖加载内容**，协议仍然注册（页面内仍可访问）。
-- 重复 scheme 会报错。
+### Cross-scheme requests
 
-## 页面内使用
+Same-scheme requests are just relative URLs and work on every platform:
 
-```html
-<script>
-  const res = await fetch("api://hello");
-  const data = await res.json();
-</script>
+```js
+const res = await fetch("/api/hello");
 ```
+
+Reaching **another** scheme from the page is platform-dependent, because WebView2
+only accepts `http(s)` URLs:
+
+| Platform | Page origin for scheme `app` | URL for scheme `api` |
+|---|---|---|
+| Windows (default `https_scheme=True`) | `https://app.app/` | `https://api.app/hello` |
+| Windows (`https_scheme=False`) | `http://app.app/` | `http://api.app/hello` |
+| macOS / Linux | `app://app/` | `api://app/hello` |
+
+The WebView maps `<scheme>://<host>/` to `<https or http>://<scheme>.<host>/` on
+Windows. Cross-scheme requests are also cross-origin, so the handler must send
+`Access-Control-Allow-Origin`.
+
+Because of that, **prefer one scheme with path-based routing** (a single `ASGI` app
+or `Handler`, or `Static` plus `Handler` under the same scheme) unless you really
+need a separate origin.
+
+## Content precedence
+
+`Window.create` resolves the initial load in this order:
+
+1. `url=` — load it directly;
+2. `html=` — render the string;
+3. `source=` — load `<first scheme>://app/`.
+
+The protocols from `source=` are registered regardless, so a page loaded from `url=`
+can still call them (subject to the cross-origin rules above).
+
+## Gotchas
+
+- Call `respond()` exactly once. Calling it twice, or never, hangs the request.
+- `Serve.__call__` blocks the GUI thread — do file I/O there only if it is trivial;
+  use `Handler` / `ASGI` for anything slow.
+- `Static` resolves its root eagerly; a missing directory fails at construction.
+- During shutdown the asyncio loop is closed: `Handler` and `ASGI` answer `503`
+  (`App is shutting down`) instead of leaving the request pending. A custom
+  `Serve` still has to call `respond()` itself.
+- On Windows the page origin is `https://<scheme>.<host>` even though you wrote
+  `<scheme>://<host>` — don't hardcode `app://` in frontend code; use relative URLs
+  or derive the base from `location`.

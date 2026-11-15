@@ -1,153 +1,251 @@
-# 自定义插件
+# IPC: Commands, Scopes and Plugins
 
-插件 = 命名空间（`Scope`）+ 生命周期钩子（`Plugin`）+ 命令注册（`command`）。通过 `Bridge` 组合进窗口：
+The bridge exposes Python functions to the page. A call from JavaScript goes through
+a permission chain, is bound to the Python signature, runs off the GUI thread, and
+comes back as a `Promise`. There is no HTTP server and no manual serialization.
+
+## Minimal command
 
 ```python
-from lumiview import App, Bridge, ScopePermission, Window, WindowOptions
+from lumiview import App, Bridge, BridgeContext, Window, WindowOptions
 
-bridge = Bridge(
-    includes=[MyPlugin("myplugin")],
-    permissions=ScopePermission(allow=("*",)),
-)
+app = App(name="BridgeDemo")
+bridge = Bridge()
+
+
+@bridge.command
+def greet(ctx: BridgeContext, name: str = "world") -> str:
+    return f"Hello, {name}!"
+
+
+async def main() -> None:
+    win = await Window.create(WindowOptions(
+        html="<button id=go>Greet</button><script>"
+             "document.getElementById('go').onclick = async () => {"
+             "  alert(await window.__LUMIVIEW__.invoke('greet', {name: 'LumiView'}));"
+             "};</script>",
+        bridge=bridge,
+    ))
+
+
+app.run(main)
 ```
 
-- `Bridge` 内部是一个匿名根 `Scope`；`includes=[...]` 把插件挂到根上（纯挂载，见下）。
-- 根权限默认 `allow=("*",)`；传入 `permissions=` 可收紧整棵树的权限链。
-- `WindowOptions(bridge=bridge)` 把桥接入窗口；`bridge=None` 则完全禁用 IPC。
+- Command names are dotted paths through the scope tree. A command registered on the
+  root is just `greet`; on a scope named `greeter` it becomes `greeter.greet`.
+- The return value is JSON-encoded to the page (anything not JSON-serializable raises
+  `internal_error`).
+- `async def` commands are awaited on the asyncio loop; plain `def` commands run on
+  the thread pool. Neither runs on the GUI thread.
 
-## Plugin 子类
+## Binding rules
+
+Payload keys bind to parameter names:
 
 ```python
-from lumiview import BridgeContext
-from lumiview.events import WindowEvent
+@bridge.command
+def search(ctx: BridgeContext, query: str, limit: int = 20) -> list[str]:
+    ...
+```
+
+- No `*args` / `**kwargs` in commands — registration raises `ValueError`.
+- Unknown payload keys are rejected (`invalid_argument`) unless the command is
+  registered with `strict=False`.
+- Missing required parameters raise `invalid_argument`; values are type-checked
+  strictly (no `"3"` → `3` coercion).
+- `BridgeContext` is injected, not passed by the page. Fields: `window`, `payload`
+  (the raw payload), `command` (full name), `scope` (the registration node).
+- Registration options: `@bridge.command(name="custom", replace=True, strict=False)`.
+
+Raise `BridgeError` to return a structured error instead of crashing:
+
+```python
+from lumiview import BridgeError
+
+@bridge.command
+def read(path: str) -> str:
+    try:
+        return open(path).read()
+    except FileNotFoundError:
+        raise BridgeError("not_found", "No such file", {"path": path})
+```
+
+The page sees `Error` with `name === "BridgeError"`, `code === "not_found"` and
+`data === {"path": ...}`.
+
+## Scopes and plugins
+
+A `Scope` is a named node in the command tree; a `Plugin` is a `Scope` with
+window-lifecycle hooks.
+
+```python
+from lumiview import Bridge, BridgeContext, ScopePermission
 from lumiview.scope import InitContext, Plugin
 
 
 class Greeter(Plugin):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("greeter")
-        self.command(self.greet)          # 注册命令（可加 name=/replace=）
+        self.command(self.greet)
 
     def on_init(self, ctx: InitContext) -> InitContext:
-        """窗口创建时（tao/webview 之前）调用。"""
-        ctx.inject_script += "console.log('greeter ready');"
-        # ctx.window — 构建中的 Window 空壳（hooks 已就绪），可注册早期事件：
-        ctx.window.on(WindowEvent.PageLoadStartedEvent)(
-            lambda event: print("early:", event.url)
-        )
+        # Runs before the tao window / WebView exist. Append page JS and/or
+        # register early event handlers here.
+        ctx.inject_script += "window.__greeterReady = true;"
         return ctx
 
-    def on_ready(self, window: Window) -> None:
-        """窗口创建完成后调用一次（拿到完整 Window）。"""
-        self._window = window
+    def on_ready(self, window) -> None:
+        # Runs once, after the WebView and page are created.
+        print("greeter ready on", window)
 
     def greet(self, ctx: BridgeContext, name: str = "world") -> str:
-        """JS 可调用命令：payload 按参数名绑定（cattrs），BridgeContext 自动注入。"""
         return f"Hello, {name}!"
+
+
+bridge = Bridge(includes=[Greeter()])
 ```
 
-- `on_init` 返回的 `InitContext` 会被继续传递（注入脚本累积）；不返回则沿用原值。
-- 命令签名规则：不能使用 `*args` / `**kwargs`；普通参数从 JS payload 按名字绑定；`BridgeContext` 是注入参数（字段：`window` / `payload` / `command` / `scope`）。
-- 命令内抛 `BridgeError(code, message)` 会结构化成错误返回给 JS（而不是崩溃）。
+- `on_init` is called for every plugin in tree order; return the (possibly modified)
+  `InitContext` to keep accumulating `inject_script`.
+- `on_ready` is called once per window that uses this bridge.
+- `InitContext` also carries `window` (the shell) and `options` (the
+  `WindowOptions` being applied) — the only safe place to subscribe to events that
+  fire before `Window.create()` returns.
 
-## JS 侧
+## Permissions
 
-`window.lumiview` 在页面加载时自动注入：
-
-```js
-// 调用 Python 命令 —— 返回 Promise
-const result = await window.lumiview.invoke("greeter.greet", { name: "LumiView" });
-
-// 订阅 Python 主动推送的事件
-const unlisten = window.lumiview.listen("greeter.changed", (payload) => {
-  console.log(payload);
-});
-```
-
-Python 主动推送（自定义命名事件走 `Window.emit`，与事件类体系互不冲突）：
+Each node carries `allow` / `deny` patterns. Patterns are `*` globs matched against
+the command path **relative to that node** — `*` matches anything, including dots.
 
 ```python
-# 在命令里（scope.emit 自动加命名空间前缀）
-ctx.scope.emit("changed", {"v": 1}, window=ctx.window)
+from lumiview import Bridge, ScopePermission
 
-# 或直接用窗口（完整事件名）
-await self._window.emit("greeter.changed", {"v": 1})
+bridge = Bridge(
+    includes=[Greeter()],
+    permissions=ScopePermission(
+        allow=("greeter.*",),
+        deny=("greeter.secret",),
+    ),
+)
 ```
 
-## 权限链
+Semantics of the chain (command node → root):
 
-每个 `Scope` / `ScopePermission` 节点带 `allow` / `deny` 模式列表（`*` 通配，匹配相对路径）：
+- `deny` wins over `allow`.
+- An empty `allow` list means "no whitelist" (blacklist-only).
+- Nodes with no rules are skipped.
+- If **no** node on the chain has any rule, the call is rejected — safe by default.
+- The `Bridge` root is initialized with `allow=("*",)` unless you pass
+  `permissions=`.
+
+Rules can be appended at runtime: `scope.allow("x.*")`, `scope.deny("x.y")`.
+
+## Mounting shared scopes
+
+`Scope.include(other)` mounts a subtree without copying or merging it. Names and
+permissions are relative, so a shared subtree keeps working wherever it is mounted.
 
 ```python
+from lumiview import Bridge
 from lumiview.scope import Scope, ScopePermission
 
-root = Scope(
-    "app",
-    permissions=ScopePermission(allow=("greeter.*",)),   # 只放行 greeter 子树
-)
-
-plugin_scope = Scope(
-    "greeter",
-    permissions=ScopePermission(deny=("greeter.private",)),  # 单个命令拒绝
-)
+fs = Scope("fs", permissions=ScopePermission(allow=("read.*",)))
+bridge = Bridge()
+bridge.include(fs)          # commands become fs.read.*
 ```
 
-规则：
+Constraints: the scope must be named, can be mounted exactly once, and cannot be
+mounted under its own subtree. To mount under a different name, construct it with
+that name.
 
-- `deny` 优先；`allow` 为空 = 纯黑名单（不限制）。
-- 权限链从命令所在节点向上逐层检查（相对路径）；某层无规则则跳过；**整条链都没有任何规则时默认拒绝**（安全默认）。
-- 运行期追加：`scope.allow("x.*")` / `scope.deny("y")`。
+## JS side
 
-## `include()` 纯挂载
+```js
+const { invoke, listen } = window.__LUMIVIEW__;
 
-`include` 只是把子树挂进父节点（重写父指针），不复制、不合并、不改动被挂载树：
+const greeting = await invoke("greeter.greet", { name: "LumiView" });
+const unlisten = listen("greeter.changed", (payload) => console.log(payload));
+```
+
+Plugins expose their JS API under `plugins`, keyed by the mount name:
+
+```js
+const greeter = window.__LUMIVIEW__.plugins.greeter;
+```
+
+See [js-client.md](js-client.md) for the full page-side reference.
+
+Pushing events from Python: `window.emit()` (full event name) or
+`ctx.scope.emit("changed", payload, window=ctx.window)` (auto-prefixed with the
+scope path).
+
+## Runtime behaviour
+
+- `Window.bridge` is a read-only getter and lives for the window's lifetime.
+  Register commands on it in place (`win.bridge.command(...)`); whole-tree
+  replacement is not supported — the injected client and the plugin
+  `on_init` / `on_ready` hooks belong to the tree created with the window.
+- `bridge=None` still injects the client (so `emit()` / `listen()` work), but every
+  `invoke()` resolves with `unknown_command`.
+- `WindowOptions(untrusted=True)` injects nothing **and** leaves IPC messages
+  unparsed; raw messages surface as `WindowEvent.WebMessageReceivedEvent`, and
+  `win.bridge` is `None`.
+
+## WindowControls
+
+The built-in `WindowControls` plugin adds a custom-titlebar API, declarative drag
+regions, plus maximize/fullscreen syncing:
 
 ```python
-shared = Scope("fs", permissions=ScopePermission(allow=("read.*",)))
-root.include(shared)
+from lumiview import Bridge, WindowOptions
+from lumiview.plugins import WindowControls
+
+bridge = Bridge(includes=[WindowControls()])
+
+win = await Window.create(WindowOptions(
+    decorations=False,
+    bridge=bridge,
+    html="""
+      <header data-lumiview-drag-region class="titlebar">
+        <span>My App</span>
+        <button onclick="__LUMIVIEW__.plugins.window.minimize()">—</button>
+        <button onclick="__LUMIVIEW__.plugins.window.toggleMaximize()">□</button>
+        <button onclick="__LUMIVIEW__.plugins.window.close()">×</button>
+      </header>
+    """,
+))
 ```
 
-约束：被挂载的实例**只能挂载一次**；未命名 `Scope` 不能挂载；不能挂到自己子树下。
+- `data-lumiview-drag-region` makes an area drag the window with no JavaScript;
+  `data-lumiview-resize-region="east"` (etc.) makes an in-client resize handle.
+- Buttons call the JS API directly. It lives at `__LUMIVIEW__.plugins.<mount name>`:
+  `plugins.window.minimize()` for the default mount; with
+  `WindowControls(name="titlebar")` the commands become `titlebar.*` and the API
+  `plugins.titlebar`.
 
-## 简化示例：注入脚本 + 自定义标题栏
+  | JS API | Bridge command | Result |
+  |---|---|---|
+  | `minimize()` | `window.minimize` | — |
+  | `toggleMaximize()` | `window.toggle_maximize` | `bool` |
+  | `isMaximized()` | `window.is_maximized` | `bool` |
+  | `close()` | `window.close` | — |
+  | `startDragging()` | `window.start_dragging` | — |
+  | `startResizeDragging(direction)` | `window.start_resize_dragging` | — |
+  | `onMaximizedChange(fn)` | listens to `window.maximized-changed` | unsubscribe fn |
 
-完整参考实现见 `python/lumiview/plugins/window_controls.py`（内置的 `WindowControls`）。最小骨架：
+- Bundled frontends can skip the global and import the typed module instead:
 
-```python
-from lumiview import Bridge, BridgeContext, Window, WindowOptions
-from lumiview.scope import InitContext, Plugin
+  ```ts
+  import { windowControls } from "lumiview/window-controls";
 
-API_SCRIPT = """
-(() => {
-  const lumiview = window.lumiview || (window.lumiview = {});
-  lumiview.myPlugin = {
-    ping() { return lumiview.invoke("myp.ping", {}); },
-  };
-})();
-"""
+  const wc = windowControls();          // or windowControls("titlebar")
+  await wc.minimize();
+  const unlisten = wc.onMaximizedChange((maximized) => console.log(maximized));
+  ```
 
-
-class MyPlugin(Plugin):
-    def __init__(self):
-        super().__init__("myp")
-        self.command(self.ping)
-
-    def on_init(self, ctx: InitContext) -> InitContext:
-        ctx.inject_script += API_SCRIPT
-        return ctx
-
-    def ping(self, ctx: BridgeContext) -> str:
-        return "pong"
-
-
-bridge = Bridge(includes=[MyPlugin()])
-
-
-async def main():
-    win = await Window.create(WindowOptions(
-        html="<script>window.lumiview.myPlugin.ping().then(console.log)</script>",
-        bridge=bridge,
-    ))
-```
-
-> 提示：无边框窗口（`decorations=False`）配合 `win.start_dragging()` / `win.start_resize_dragging(direction)` 实现自定义标题栏拖动；`WindowControls` 插件已封装好这套交互。
+- Window-edge resizing is native (WM_NCHITTEST on Windows / tao elsewhere); don't
+  cover the border with a resize region.
+- `WindowControls(name="x", drag_regions=False, link_fullscreen=False,
+  link_maximized=False)` configures the pieces. The drag/fullscreen hooks are
+  installed once per page (first instance wins); extra instances are controlled
+  through their JS API.

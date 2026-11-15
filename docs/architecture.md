@@ -1,116 +1,180 @@
-# 架构
+# Architecture
 
-## 分层
+LumiView is small on purpose: one Rust extension that wraps tao (windows / event
+loop), wry (WebView), muda (menus) and tray-icon, plus a Python layer that turns
+them into an async-first, thread-safe API.
 
 ```
-Rust 层                       Python 层
-──────────────────────       ──────────────────────────────────
-tao（窗口/事件循环）          lumiview.app    — App 单例、2+N 线程编排
-  │                           lumiview.window — Window / WindowOptions
-  ▼                           lumiview.bridge — Bridge / BridgeError（IPC）
-wryview（WebView 绑定）       lumiview.scope  — Scope / Plugin / 权限链
-  │                           lumiview.task   — Task / run_async
-  ▼                           lumiview.events — 事件类体系
-lumiview._core（PyO3）        lumiview.utils  — match_pattern / navigation_policy
-                              lumiview.serve  — lumiview:// 自定义协议
+Your code
+   │
+   ▼
+lumiview.*            App, Window, Bridge, Menu, Tray, Serve, Task   (Python)
+   │
+   ▼
+lumiview._core        PyO3 bindings: TaoEventLoop, TaoWindow, ...     (Rust)
+   │
+   ▼
+tao  wry  muda  tray-icon  window-vibrancy                            (Rust crates)
+   │
+   ▼
+OS window + system WebView
 ```
 
-- Rust 层只做薄绑定：`TaoEventLoop` / `TaoWindow` 等对象是 `#[pyclass(unsendable)]`，方法即原生调用。
-- 低层绑定入口是 `lumiview._core`；日常开发用顶层 `lumiview` API。
-- 所有跨线程/延迟操作统一返回 `Task[T]`：`await`、`.result()`、`.on_done()` 三用一体。
+The page side is a separate TypeScript client (`js/`, injected as
+`window.__LUMIVIEW__`), see [js-client.md](js-client.md).
 
-## 2+N 线程模型
+## Threads
 
-| 线程 | 职责 |
+| Thread | Runs |
 |---|---|
-| **主线程** | tao 事件循环 + 所有原生窗口/WebView 操作 |
-| **asyncio 线程** | 运行用户协程（`app.run(entry)` 的 entry）与事件 handler |
-| **线程池** | 同步 `task()` 调用、同步事件 handler（大小由 `App(max_workers=N)` 配置） |
+| **Main** | The tao event loop and every native window / WebView call |
+| **asyncio** | Your `async` code: the `entry` function, `async` handlers, `async` commands, ASGI apps |
+| **Thread pool** | Sync `task()` calls, sync handlers, sync commands, WSGI apps |
 
-通常来说，你的代码不会运行在主线程上，它们跑在 asyncio 线程（同步 handler 经由线程池）。
-因此，主线程 GUI 库操作必须通过 `app.call_on_main(...)` 显式调度到主线程执行。
-对于你能够使用到的各种操作，我们已经为你封装好主线程调度的逻辑（通过 Task），你可以直接使用他们。
+`App(max_workers=N)` sizes the pool (default 6). The asyncio loop has a thread of
+its own and is created by `app.run()`.
 
-## 事件流
+Rules that follow from this:
 
-```
-tao 事件
-  → Rust build_event() 构造 TaoEvent 子类（ResizedEvent 等）
-  → App._on_tao_event（主线程）按 window_id 路由
-  → Window._on_tao_event → 构造事件类实例（WindowEvent.ResizedEvent 等）
-  → Window._emit(event)：按 type(event) 找到 handler，投递到 asyncio 线程
-  → handler(event) 收到事件对象（event.window 已填充）
-```
+- Native objects (`TaoWindow`, `WebView`) are **unsendable**: touching them from
+  another thread crashes. `Window` marshals every call through `app.call_on_main`.
+- Handlers never run on the GUI thread, so a handler may `await` freely but must
+  not call native APIs directly.
+- The GUI thread must never block on a `Task` for long — see below.
 
-可阻止事件（`CloseRequestedEvent` / `NavigationRequestedEvent` / `NewWindowRequestedEvent` / `DownloadStartedEvent`）走 `_dispatch_preventable`：先派发并**等待** handler 完成，再检查 `event.prevented` 决定是否执行默认行为（如关闭窗口、放行导航、允许下载）。
+## Tasks
 
-## 事件类体系
-
-```text
-Event                     # 所有事件的公共祖先
-├── WindowBaseEvent       # 窗口事件基类：数据 + prevent()/prevented
-│     window: Window | None
-└── AppBaseEvent          # 应用事件基类（ReadyEvent / AppCloseEvent）
-
-WindowEvent               # 纯命名空间容器（非基类）
-├── WindowEvent.TitleChangedEvent(WindowBaseEvent)
-├── WindowEvent.CloseRequestedEvent(WindowBaseEvent) # 可 prevent()
-├── WindowEvent.NavigationRequestedEvent             # 可 prevent()
-├── WindowEvent.DownloadStartedEvent                 # 可 save_to(path) / prevent()
-└── ...
-```
-
-命名空间访问与 isinstance 检查同时成立：
+Every cross-thread or delayed operation returns `Task[T]`, a
+`concurrent.futures.Future` subclass:
 
 ```python
-from lumiview.events import WindowEvent, WindowBaseEvent
-
-e = WindowEvent.TitleChangedEvent(title="x")
-assert isinstance(e, WindowBaseEvent)
-assert e is not None and e.title == "x"
+result = await handle                # asyncio thread — preferred
+result = handle.result()             # blocking, non-asyncio thread
+handle.on_done(callback)             # no blocking
+handle.on_exception(callback)
 ```
 
-## 主线程调度机制
+`Task.result()` has thread-dependent behaviour:
 
-| API | 说明 |
+| Called from | Behaviour |
 |---|---|
-| `app.call_on_main(fn, *args)` | 把 *fn* 排到主线程执行，返回 `Task[T]`；主线程上直接执行 |
-| `@main_thread` | 装饰器版：同步方法变成返回 `Task[R]` 并在主线程跑方法体 |
-| `Task` | `concurrent.futures.Future` 子类；`await` / `.result()` / `.on_done()` |
-| `run_async(fn)` | 轻量派发（无 Task 开销）：async 直接 await，sync 走线程池 |
+| asyncio thread | raises `TaskDeadlockError` (it would deadlock the loop) |
+| GUI thread | drains the main-thread command queue while waiting — the window freezes |
+| any other thread | blocks normally |
 
-```python
-from lumiview import App
-from lumiview.task import run_async
+`task(fn, *args)` schedules a function and wraps it: `async` functions go to the
+asyncio loop, plain functions to the pool. `app.call_on_main(fn, ...)` is the only
+bridge to the GUI thread — on it, `fn` runs inline; elsewhere it is queued and
+drained by the tao callback loop.
 
-app = App.get()
+A `Task` that fails and whose exception is never retrieved logs an error when it is
+garbage-collected; don't silently drop failures.
 
-# 异步代码：直接 await
-result = await app.call_on_main(lambda: window_op())
+## Events
 
-# 同步代码：.result() 阻塞
-result = app.call_on_main(lambda: window_op()).result()
-
-# 混合回调：async 直接跑、sync 去线程池
-await run_async(mixed_callback)
+```
+tao event
+  → lumiview._core builds a TaoEvent subclass (ResizedEvent, ...)
+  → App._on_tao_event (main thread) routes by window id
+  → Window._emit(event): find handlers by type, run `where` filters
+  → handlers: async on the asyncio loop, sync on the thread pool
 ```
 
-> 经验：任何「从别的线程操作原生窗口」的崩溃基本都是没走 `call_on_main`。
+- Handlers are registered with `win.on(EventClass, where=...)`; `where` is a
+  synchronous `(event) -> bool` filter function typed against the concrete event
+  class. A filter that raises is treated as a non-match and logged — it never
+  breaks dispatch.
+- `win.on(...)` / `app.on(...)` return a `Subscription`; `.cancel()` removes the
+  handler (idempotent). A dispatch already in flight may still call it once.
+- `event.window` is filled in before dispatch.
+- `_emit` returns a `Task` that completes when every handler is done (or `None`
+  when nobody is listening).
+- **Preventable events** (`CloseRequested`, `NavigationRequested`,
+  `NewWindowRequested`, `DownloadStarted`) come from synchronous WebView callbacks.
+  LumiView dispatches them and blocks the callback until the handlers finish, then
+  checks `event.prevented` — that is why handlers for these events must not block on
+  the GUI thread.
+- `wait_for(...)` is one-shot: it registers the target handler plus an internal
+  close handler, resolves with the next match, and removes both. `Window.wait_for`
+  treats `ClosedEvent` as "too late" (`WindowClosedError`); `App.wait_for` uses
+  `AppCloseEvent` (`AppClosedError`). `wait_loaded()` is the same mechanism
+  pre-registered at creation time, so it cannot race the page load.
 
-## 不可跨线程对象（unsendable）
+## Application lifecycle
 
-| 对象 | 跨线程 | 说明 |
-|---|---|---|
-| `TaoEventLoop` | ❌ | tao `!Send`（Rust 侧标记） |
-| `TaoEventLoopProxy` | ✅ | 跨线程唤醒通道（`send_event`） |
-| `TaoWindow` | ❌ | 主线程操作（含 Windows 透明 surface 重绘） |
-| `WebView`（wryview） | ❌ | 主线程 |
-| `Window`（Python 层） | ✅ 方法走 `@main_thread` | 唯一的线程安全通道 |
+```
+CREATED ──run()──▶ STARTING ──▶ RUNNING ──exit()──▶ STOPPING ──▶ STOPPED
+```
 
-`Window` 把不可跨线程的原生对象直接存在实例上（`win._window` / `win._webview`），所有访问经 `call_on_main` 派发到主线程——外部永远不直接触碰原生对象。
+- `run(entry)` must be called once from the main thread and blocks until exit.
+- When the app is ready, `AppEvent.ReadyEvent` is dispatched and `entry` is started.
+  A failure in either exits with code 1 (the first exit request wins).
+- `exit(code)` records the request (first request wins), immediately stops
+  admitting cross-thread work — `call_on_main`, `wait_for`, bridge invokes and
+  serve requests fail fast with `AppClosedError` / an error response — and wakes
+  the loop. Cleanup happens in one place.
+- `app.windows` / `app.get_window(id)` / `win.id` / `win.is_closed` are
+  lock-protected reads; `app.async_loop` is `None` before `run()` and during
+  shutdown, so third-party threads can check it before scheduling work.
+- Shutdown order: stop accepting work → close every window (dispatch `ClosedEvent`)
+  → drop tray icons → drop menus → dispatch `AppCloseEvent` → cancel pending asyncio
+  tasks → stop the loop → fail outstanding main-thread handles → close the pool.
+- Runtime exceptions in handlers, commands, serve callbacks or `call_on_main` are
+  logged, never fatal. Exceptions during startup (`entry`, Ready handler,
+  `prepare`) fail the launch.
 
-## 设计原则
+`Ctrl+C` posts `app.exit()` to the asyncio loop; calling `exit()` directly from the
+signal handler could re-enter a lock the main thread already holds.
 
-1. **跨线程/异步操作返回 `Task`** —— 类型和行为可预测，不做上下文相关的自动解包。
-2. **事件 handler 不跑主线程** —— 主线程只属于 tao 循环与原生操作，事件处理在 asyncio 线程。
-3. **配置即数据** —— `WindowOptions` 是（可变的）dataclass：可 `replace`、可子类做模板（子类需重新应用 `@dataclass`）、可跨线程传递。
+## The JS bridge
+
+```
+page                                       Python
+────                                       ──────
+__LUMIVIEW__.invoke(cmd, payload)
+  → window.ipc.postMessage(JSON)   ──▶  Bridge._on_message(raw)
+                                          permission chain → bind_arguments
+                                          run command off the GUI thread
+  ◀── eval_js "dispatch({...})"          Bridge._respond(...)
+promise resolved / rejected
+```
+
+- `window.ipc.postMessage` is wry's channel; it exists in every LumiView window.
+- Python → page is `eval_js` into the single `dispatch()` entry point.
+- `invoke` goes through the permission chain (`Scope` tree) before binding.
+- Commands run off the GUI thread; `async def` on the asyncio loop, `def` on the pool.
+- `Bridge` owns the command tree for the window's lifetime; `Window.bridge` is a
+  read-only getter (`None` in untrusted mode). Register commands on it in place.
+- `untrusted=True` disables both directions: no client is injected and incoming
+  messages are not parsed.
+
+Details: [plugins.md](plugins.md) and [js-client.md](js-client.md).
+
+## Modules
+
+| Module | Responsibility |
+|---|---|
+| `lumiview.app` | `App` singleton, state machine, `run`/`exit`, `call_on_main`, event bus |
+| `lumiview.window` | `Window`, `WindowOptions`, `WebContext`, native window + WebView |
+| `lumiview.events` | Event classes and the `WindowEvent` / `AppEvent` namespaces |
+| `lumiview.task` | `Task`, `task()`, `run_async()`, deadlock rules |
+| `lumiview.bridge` | `Bridge`, `BridgeError`, IPC dispatch, injected JS client |
+| `lumiview.scope` | `Scope` tree, permissions, `Plugin`, `BridgeContext` / `InitContext` |
+| `lumiview._binding` | Payload → Python signature binding (strict) |
+| `lumiview.menu` / `lumiview.tray` | Native menus and tray icons (data wrappers, materialized on the GUI thread) |
+| `lumiview.serve` | `lumiview://` protocol: `Static`, `Handler`, `WSGI`, `ASGI` |
+| `lumiview.utils` | public helpers: pattern matching, navigation policy |
+| `lumiview._utils` | internal helpers (`Task` glue, `Subscription`, wait helpers, `main_thread`) |
+| `lumiview.plugins` | Built-in `WindowControls` |
+| `lumiview._core` | Rust bindings (tao/wry/muda/tray-icon) |
+
+## Design principles
+
+1. **One `Task` type** — every cross-thread or delayed call returns `Task[T]`;
+   no context-dependent auto-unwrapping.
+2. **No forced project structure** — LumiView supplies a window + WebView runtime,
+   not a scaffold, config file or frontend convention.
+3. **Pythonic, sync and async** — the same API works in both worlds; only the
+   consumption style changes (`.result()` vs `await`).
+4. **Fail loudly at the edges, log during runtime** — startup errors abort; runtime
+   errors are logged and the app keeps running.

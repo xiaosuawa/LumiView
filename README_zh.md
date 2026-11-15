@@ -7,6 +7,7 @@
     <a href="https://pypi.org/project/lumiview/"><img src="https://img.shields.io/pypi/v/lumiview?label=pypi" alt="PyPI"></a>
     <a href="https://pypi.org/project/lumiview/"><img src="https://img.shields.io/pypi/pyversions/lumiview" alt="Python versions"></a>
     <a href="https://github.com/xiaosuawa/LumiView/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/lumiview" alt="License: MPL-2.0"></a>
+    <a href="https://github.com/xiaosuawa/LumiView/actions/workflows/test.yml"><img src="https://github.com/xiaosuawa/LumiView/actions/workflows/test.yml/badge.svg" alt="CI"></a>
   </p>
   <p align="center">
     <a href="README.md">English</a>
@@ -19,7 +20,7 @@
 >
 > LumiView 目前处于**alpha**阶段。API 已可用但**尚未完全稳定**——方法名、参数结构、导入路径仍可能在版本间调整。我们通过 alpha 版本收集早期反馈，同时保留灵活调整 API 的权利。
 >
-> **欢迎早期体验者！** 尝试用它构建应用，然后告诉我们哪里好用、哪里不好用。你的反馈将直接塑造最终的稳定 API。升级时请关注变更日志并做好调整代码的准备。
+> **欢迎早期体验者！** 尝试用它构建应用，然后告诉我们哪里好用、哪里不好用。你的反馈将直接塑造最终的稳定 API。升级时请关注[变更日志](CHANGELOG.md)并做好调整代码的准备。
 
 ---
 
@@ -52,11 +53,16 @@ flowchart TB
 
 ## 文档
 
-- [快速入门](docs/getting-started.md)
-- [架构与线程模型](docs/architecture.md)
-- [自定义插件](docs/plugins.md)
-- [第三方集成](docs/integrations.md)
-- [Serve 协议](docs/serve.md)
+- [快速入门](docs/getting-started.zh.md)
+- [架构与线程模型](docs/architecture.zh.md)
+- [自定义插件](docs/plugins.zh.md)
+- [菜单与托盘](docs/menus.zh.md)
+- [JS 客户端（npm / `window.__LUMIVIEW__`）](docs/js-client.zh.md)
+- [第三方集成](docs/integrations.zh.md)
+- [Serve 协议](docs/serve.zh.md)
+- [变更日志](CHANGELOG.md)
+
+> 英文版见 [README.md](README.md)（文档为 `docs/*.md`）。
 
 ## 安装
 
@@ -78,6 +84,7 @@ async def main():
         width=900, height=640,
         devtools=True,
     ))
+    await win.wait_loaded()          # 等待 PageLoadFinishedEvent，无竞态
     title = await win.eval_js("document.title")
     print(f"Page title: {title}")
 
@@ -87,9 +94,10 @@ app.run(main)
 ## 核心特性
 
 - **🧵 统一 async/sync** — 所有跨线程/异步操作返回 `Task`。`await`、`.result()` 或 `.on_done()`，同一套 API，自由选择。
-- **🌉 JS ↔ Python Bridge** — Python 函数通过 `window.lumiview.invoke()` 暴露给 JS。无需 HTTP 服务器，无需手动序列化。
+- **⏳ 事件过滤与一次性等待** — `where=` 谓词、`wait_for()` / `wait_loaded()`、可取消的 `Subscription`，以及页面 → Python 的 `WindowEvent.JsEvent`。
+- **🌉 JS ↔ Python Bridge** — Python 函数通过 `window.__LUMIVIEW__.invoke()` 暴露给 JS。无需 HTTP 服务器，无需手动序列化；可选的 `lumiview` npm 包给打包前端提供类型。
 - **🪟 原生窗口效果** — Acrylic、Mica、Vibrancy `window-vibrancy`。
-- **🎨 自定义标题栏** — 声明式 `data-lumiview-drag-region` 拖动区域 + 内置 `lumiview.window.*` JS API（最小化/最大化/关闭）。
+- **🎨 自定义标题栏** — 声明式 `data-lumiview-drag-region` 拖动区域 + 内置 `__LUMIVIEW__.plugins.window.*` JS API（最小化/最大化/关闭）。
 - **📋 原生菜单** — 条目 `on_activate` 回调 + 全局 `MenuItemActivatedEvent`；macOS 默认应用菜单自动安装，Windows 支持窗口菜单栏。
 - **🎛️ 系统托盘** — 跨平台托盘图标，支持右键菜单与点击事件；close-to-tray 模式。
 - **📁 静态服务 & WSGI & ASGI** — 可直接加载本地文件、代理到 WSGI 应用（Flask、Django 等），或运行 FastAPI/Starlette 应用，无需外部服务器。
@@ -113,12 +121,12 @@ logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + 调度 / 事件派发
 
 | 示例 | 内容 |
 |---|---|
-| [`hello_world.py`](examples/hello_world.py) | 最简应用 — 创建窗口、加载 URL（异步） |
+| [`hello_world.py`](examples/hello_world.py) | 最简应用 — 创建窗口、`wait_loaded()`、加载 URL（异步） |
 | [`hello_world_sync.py`](examples/hello_world_sync.py) | 同上，使用 `.result()` — 纯同步写法 |
 | [`bridge_demo.py`](examples/bridge_demo.py) | JS ↔ Python IPC — sync/async 命令、错误处理 |
-| [`multi_window.py`](examples/multi_window.py) | 多窗口 + 共享 WebContext |
+| [`multi_window.py`](examples/multi_window.py) | 多窗口 + 共享 WebContext + 应用窗口注册表 |
 | [`custom_titlebar.py`](examples/custom_titlebar.py) | 无系统标题栏 + 原生效果 + 拖动区域 |
-| [`events.py`](examples/events.py) | App/Window 钩子事件 + JS 事件推送 |
+| [`events.py`](examples/events.py) | App/Window 事件、JS→Python `JsEvent`、一次性等待、Python→JS `emit` |
 | [`fastapi_demo.py`](examples/fastapi_demo.py) | FastAPI 通过 ``source=ASGI(...)`` 运行 |
 | [`django_demo.py`](examples/django_demo.py) | Django 通过 ``source=WSGI(...)`` 运行 — 模板渲染、表单 POST、JSON API |
 | [`menu.py`](examples/menu.py) | 原生菜单 — 加速键、`on_activate` 回调、macOS 应用菜单 / Windows 窗口菜单栏 |
@@ -128,8 +136,10 @@ logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + 调度 / 事件派发
 
 - [x] 窗口管理 (TaoWindow + Window)
 - [x] WebView 嵌入 (wryview)
-- [x] JS ↔ Python Bridge (invoke/listen IPC)
+- [x] JS ↔ Python Bridge (invoke/emit/listen IPC)
+- [x] TypeScript 客户端 + 可选 `lumiview` npm 包
 - [x] 事件类体系 (WindowEvent / AppEvent)
+- [x] 事件过滤、一次性等待与可取消订阅
 - [x] 统一 async/sync `Task` 接口
 - [x] 静态文件服务 + WSGI 代理
 - [x] ASGI 适配 (FastAPI, Starlette 等)
@@ -137,6 +147,7 @@ logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + 调度 / 事件派发
 - [x] 自定义标题栏
 - [x] 原生菜单 (muda)
 - [x] 系统托盘 (tray-icon)
+- [x] abi3 + abi3t wheel 构建（CPython 3.10+ / free-threaded 3.15）
 - [ ] API 稳定化
 - [ ] 完整文档站点
 

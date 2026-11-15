@@ -46,6 +46,10 @@ git clone https://github.com/xiaosuawa/LumiView.git
 cd lumiview
 pip install maturin
 
+# The page-side JS client is generated (not committed) — Node 18+ required
+npm --prefix js install
+npm --prefix js run build
+
 # Build and install in debug mode
 maturin develop
 
@@ -53,11 +57,35 @@ maturin develop
 python examples/hello_world.py
 ```
 
+`npm --prefix js run build` writes `python/lumiview/_bridge_client.py` (git-ignored) and the npm package into `js/dist`. Re-run it after changing anything under `js/src`.
+
+## Testing
+
+```bash
+python -m pytest -q                              # full suite (opens real windows)
+python -m pytest tests/test_bridge_unit.py tests/test_events_unit.py \
+    tests/test_public_api_unit.py tests/test_serve_unit.py \
+    tests/test_task_unit.py tests/test_thread_safety_unit.py -q
+npm --prefix js test                             # page-side client (Node)
+```
+
+`tests/test_*_unit.py` never creates a WebView. `tests/test_scenarios.py` runs
+`tests/scenarios/<name>.py` in a child process and opens real windows, so it needs
+WebView2 / WKWebView / WebKitGTK and a display (on Linux, run it under Xvfb).
+
+## Documentation
+
+User docs live in `docs/` — English `*.md` and Chinese `*.zh.md` side by side. Keep
+both versions in sync, and add a [CHANGELOG.md](CHANGELOG.md) entry for every
+user-visible change.
+
 ## Project Structure
 
 ```
 src/              Rust bindings (PyO3 + tao + wryview)
 python/lumiview/ Python layer (App, Window, Bridge, Task, serve)
+js/               Page-side TypeScript client (injected + npm package)
+docs/             User docs (English `*.md`, Chinese `*.zh.md`)
 examples/         Runnable example scripts
 ```
 
