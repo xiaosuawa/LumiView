@@ -1,8 +1,9 @@
-"""webview: untrusted mode injects no bridge script; raw postMessage surfaces.
+"""webview: untrusted mode injects no client and does not parse IPC.
 
-A single ``untrusted=True`` window carries no ``window.lumiview`` (the
-BRIDGE_SCRIPT is not injected), but ``window.ipc.postMessage`` still routes a
-raw message into ``WindowEvent.WebMessageReceivedEvent``.
+A single ``untrusted=True`` window carries no ``window.__LUMIVIEW__``
+(nothing is injected) and bridge messages are left unparsed, but
+``window.ipc.postMessage`` still routes a raw message into
+``WindowEvent.WebMessageReceivedEvent``.
 """
 
 from __future__ import annotations
@@ -36,11 +37,11 @@ async def _entry() -> None:
     # Wait for the page to attach before probing it — no sleep, no race.
     await win.wait_loaded(timeout=20)
 
-    kind = await win.eval_js("typeof window.lumiview")
-    assert "undefined" in str(kind), f"typeof window.lumiview = {kind!r}"
+    kind = await win.eval_js("typeof window.__LUMIVIEW__")
+    assert "undefined" in str(kind), f"typeof window.__LUMIVIEW__ = {kind!r}"
 
-    # Even without the bridge script, wryview's own IPC channel still delivers
-    # raw page messages to the Python side.
+    # Even without the injected client, wryview's own IPC channel still
+    # delivers raw page messages to the Python side.
     await win.eval_js("window.ipc.postMessage('raw-msg-123'); 'go'")
     await asyncio.wait_for(got.wait(), timeout=15)
     assert any("raw-msg-123" in m for m in messages), messages

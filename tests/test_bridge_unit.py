@@ -28,6 +28,16 @@ from lumiview.scope import (
     iter_tree,
 )
 
+_DISPATCH_PREFIX = "window.__LUMIVIEW__.dispatch("
+
+
+def _dispatch_payload(script: str) -> dict:
+    """Decode the message embedded in a ``dispatch()`` eval_js script."""
+
+    assert script.startswith(_DISPATCH_PREFIX), script
+    assert script.endswith(")"), script
+    return json.loads(script[len(_DISPATCH_PREFIX) : -1])
+
 # ---------------------------------------------------------------------------
 # _strict_scalar — exact-match type checks (no silent coercion)
 # ---------------------------------------------------------------------------
@@ -445,9 +455,8 @@ class TestOnMessage:
             send=send,
         )
         assert len(captured) == 1
-        script = captured[0]
-        # script is window.lumiview._dispatchResponse({...}); assert the JSON.
-        payload = json.loads(script[len("window.lumiview._dispatchResponse(") : -1])
+        # script is window.__LUMIVIEW__.dispatch({...}); assert the JSON.
+        payload = _dispatch_payload(captured[0])
         assert payload["type"] == "reject"
         assert payload["error"]["code"] == "unknown_command"
 
@@ -463,9 +472,7 @@ class TestOnMessage:
             send=send,
         )
         assert len(captured) == 1
-        payload = json.loads(
-            captured[0][len("window.lumiview._dispatchResponse(") : -1]
-        )
+        payload = _dispatch_payload(captured[0])
         assert payload["error"]["code"] == "forbidden"
 
     def test_app_not_running_when_get_raises(self, monkeypatch):
@@ -487,15 +494,13 @@ class TestOnMessage:
             send=send,
         )
         assert len(captured) == 1
-        payload = json.loads(
-            captured[0][len("window.lumiview._dispatchResponse(") : -1]
-        )
+        payload = _dispatch_payload(captured[0])
         assert payload["error"]["code"] == "internal_error"
         assert "App not running" in str(payload["error"]["message"])
 
 
 # ---------------------------------------------------------------------------
-# Bridge._on_message — JS → Python events (window.lumiview.emit)
+# Bridge._on_message — JS → Python events (window.__LUMIVIEW__.emit)
 # ---------------------------------------------------------------------------
 
 

@@ -66,9 +66,8 @@ async def _entry() -> None:
             print(f"[scenario] {name}: close", flush=True)
             await win.close()
 
-    assert len(App.get()._windows) == 0, (
-        f"windows leaked: {len(App.get()._windows)}"
-    )
+    leaked = App.get().windows
+    assert not leaked, f"windows leaked: {len(leaked)}"
     App.get().exit(0)
 
 

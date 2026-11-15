@@ -139,6 +139,21 @@ def test_emit_listen():
     assert code == 0
 
 
-def test_bridge_swap():
-    code = run_scenario("bridge_swap")
+def test_js_client_surface():
+    code = run_scenario("js_client_surface")
+    assert code == 0
+
+
+def test_window_controls():
+    code = run_scenario("window_controls")
+    assert code == 0
+
+
+def test_shutdown_stress():
+    code = run_scenario("shutdown_stress")
+    assert code == 0
+
+
+def test_task_paths():
+    code = run_scenario("task_paths")
     assert code == 0

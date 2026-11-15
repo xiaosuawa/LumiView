@@ -11,7 +11,6 @@ from lumiview import (
     Window,
     WindowEvent,
     WindowOptions,
-    when,
 )
 
 bridge = Bridge(permissions=ScopePermission(allow=("ping",)))
@@ -33,20 +32,20 @@ async def _entry() -> None:
     def on_prepare(win: Window) -> None:
         nonlocal done
         done = win.wait_for(
-            WindowEvent.JsEvent, where=when(event="test.done"), timeout=20
+            WindowEvent.JsEvent, where=lambda e: e.event == "test.done", timeout=20
         )
 
     win = await Window.create(WindowOptions(
         html=(
             "<html><body><script>"
             "Promise.all(["
-            "  window.lumiview.invoke('ping', {n: 41})"
+            "  window.__LUMIVIEW__.invoke('ping', {n: 41})"
             "    .then(v => ({ping: v}))"
             "    .catch(e => ({ping: 'ERR:' + e.code})),"
-            "  window.lumiview.invoke('secret')"
+            "  window.__LUMIVIEW__.invoke('secret')"
             "    .then(v => ({secret: v}))"
             "    .catch(e => ({secret: 'ERR:' + e.code})),"
-            "]).then(r => window.lumiview.emit('test.done', Object.assign({}, ...r)));"
+            "]).then(r => window.__LUMIVIEW__.emit('test.done', Object.assign({}, ...r)));"
             "</script></body></html>"
         ),
         visible=False,

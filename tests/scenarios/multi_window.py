@@ -32,7 +32,8 @@ async def _entry() -> None:
     v2 = await win2.eval_js("document.querySelector('h1').textContent")
     assert "one" in str(v1), f"win1 text {v1!r}"
     assert "two" in str(v2), f"win2 text {v2!r}"
-    assert len(App.get()._windows) == 2, f"expected 2 windows, got {len(App.get()._windows)}"
+    windows = App.get().windows
+    assert len(windows) == 2, f"expected 2 windows, got {len(windows)}"
     print("[scenario] exit", flush=True)
     App.get().exit(0)
 

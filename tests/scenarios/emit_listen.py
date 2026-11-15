@@ -2,7 +2,7 @@
 
 The existing ``ipc_roundtrip_permission`` covers JS→Python *invoke*; this
 covers events in both directions: Python dispatches on the dedicated
-``window.lumiview`` EventTarget (isolated from DOM events), both the
+``window.__LUMIVIEW__`` EventTarget (isolated from DOM events), both the
 ``listen`` helper and a raw ``addEventListener`` receive it, and the page
 pushes an acknowledgement back as a ``WindowEvent.JsEvent``.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 
-from lumiview import App, Task, Window, WindowEvent, WindowOptions, when
+from lumiview import App, Task, Window, WindowEvent, WindowOptions
 
 
 async def _entry() -> None:
@@ -22,18 +22,18 @@ async def _entry() -> None:
         # Registered before the page can run, so the acknowledgement
         # cannot be missed.
         ack = win.wait_for(
-            WindowEvent.JsEvent, where=when(event="test.ack"), timeout=20
+            WindowEvent.JsEvent, where=lambda e: e.event == "test.ack", timeout=20
         )
 
     win = await Window.create(WindowOptions(
         html="<html><body>"
              "<script>"
-             "window.lumiview.listen('data.changed', (p) => {"
+             "window.__LUMIVIEW__.listen('data.changed', (p) => {"
              "  window.__viaListen = p;"
              "});"
-             "window.lumiview.addEventListener('data.changed', (e) => {"
+             "window.__LUMIVIEW__.addEventListener('data.changed', (e) => {"
              "  window.__viaNative = e.detail;"
-             "  window.lumiview.emit('test.ack', e.detail);"
+             "  window.__LUMIVIEW__.emit('test.ack', e.detail);"
              "});"
              "</script>"
              "</body></html>",
