@@ -30,16 +30,17 @@ Neither ever runs on the GUI thread.
 
 from __future__ import annotations
 
+import copy
 import logging
 import sys
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Callable, TypeAlias
 
 from lumiview.app import App, WindowClosedError
 from lumiview.events import AppEvent
 from lumiview.task import Task
-from lumiview.utils import main_thread
+from lumiview._utils import main_thread
 from lumiview._core import (
     TaoCheckMenuItem,
     TaoMenu,
@@ -167,9 +168,34 @@ class MenuItem:
         return self._native_call("set_accelerator", accelerator)
 
     def _native_call(self, name: str, *args: Any) -> Task[None]:
-        if self._inner is None:
+        # Read once: shutdown clears _inner on the main thread, and a second
+        # read here could observe None and raise AttributeError.
+        inner = self._inner
+        if inner is None:
             return Task._done(None)
-        return App.get().call_on_main(getattr(self._inner, name), *args)
+        return App.get().call_on_main(getattr(inner, name), *args)
+
+    def _release_native(self) -> None:
+        """Drop the native item handle (main thread only)."""
+        self._inner = None
+
+    def copy(self, **changes: Any) -> "MenuItem":
+        """Return a copy with *changes* applied.
+
+        Prefer this over :func:`dataclasses.replace` for menu items:
+        ``replace`` regenerates ``id`` and drops the registered
+        ``on_activate`` handlers (both are ``init=False`` fields), which
+        silently breaks activation routing. This keeps both.
+        """
+        clone = copy.copy(self)
+        clone._inner = None
+        clone._activate_callbacks = list(self._activate_callbacks)
+        known = {f.name for f in fields(self)}
+        for name, value in changes.items():
+            if name not in known:
+                raise TypeError(f"unknown field {name!r} for {type(self).__name__}")
+            setattr(clone, name, value)
+        return clone
 
 
 @dataclass(kw_only=True, init=False)
@@ -246,6 +272,22 @@ class Submenu:
         self.enabled = enabled
         self._inner = None
         self._is_window_menu = False
+
+    def _release_native(self) -> None:
+        """Drop the native submenu handle (main thread only)."""
+        self._inner = None
+
+    def copy(self, **changes: Any) -> "Submenu":
+        """Return a copy with *changes* applied (see :meth:`MenuItem.copy`)."""
+        clone = copy.copy(self)
+        clone._inner = None
+        clone.items = list(self.items)
+        known = {f.name for f in fields(self)}
+        for name, value in changes.items():
+            if name not in known:
+                raise TypeError(f"unknown field {name!r} for Submenu")
+            setattr(clone, name, value)
+        return clone
 
     # Runtime edits — same dual-write model as MenuItem. Native work is
     # batched into a single main-thread dispatch: materializing *item*
@@ -412,7 +454,16 @@ class Menu:
         raise RuntimeError("Use 'await Menu.create(items=[...])' instead")
 
     _inner: TaoMenu | None = None
-    _items: list[Item] = []
+    _items: list[Item]
+
+    @property
+    def items(self) -> tuple[Item, ...]:
+        """A read-only snapshot of this menu's top-level items."""
+        return tuple(self._items)
+
+    def _release_native(self) -> None:
+        """Drop the native menu handle (main thread only)."""
+        self._inner = None
 
     @classmethod
     @main_thread
@@ -426,7 +477,7 @@ class Menu:
         menu = cls.__new__(cls)
         menu._items = list(items)
         menu._inner = TaoMenu()
-        app._menus.append(menu)
+        app._register_menu(menu)
         for item in items:
             inner = cls._materialize_item(item)
             menu._inner.append(inner)
@@ -551,14 +602,14 @@ class Menu:
                 "duplicate menu item id %r — activation events may be ambiguous",
                 item.id,
             )
-        app._menu_items[item.id] = item
+        app._register_menu_item(item)
 
     def _materialize(self) -> TaoMenu:
         """Materialize the tree on the main thread if needed (idempotent)."""
         if self._inner is None:
             app = App.get()
             self._inner = TaoMenu()
-            app._menus.append(self)
+            app._register_menu(self)
             for item in self._items:
                 inner = Menu._materialize_item(item)
                 self._inner.append(inner)
@@ -600,9 +651,7 @@ class Menu:
         """
         if sys.platform != "win32":
             raise NotImplementedError("attach_to_window() is Windows only")
-        if win._window is None:
-            raise WindowClosedError()
-        hwnd = win._window.native_handle()
+        hwnd = win._require_hwnd()
         inner = self._materialize()
         inner.init_for_hwnd(hwnd)
 
@@ -611,9 +660,7 @@ class Menu:
         """Windows: detach this menu from *win*'s menu bar."""
         if sys.platform != "win32":
             raise NotImplementedError("remove_from_window() is Windows only")
-        if win._window is None:
-            raise WindowClosedError()
-        hwnd = win._window.native_handle()
+        hwnd = win._require_hwnd()
         if self._inner is not None:
             self._inner.remove_for_hwnd(hwnd)
 

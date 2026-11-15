@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import functools
 import logging
 import sys
+import threading
 import time
 import webbrowser
 from enum import Enum, auto
@@ -15,12 +16,12 @@ from dataclasses import dataclass
 from lumiview.app import App, WindowClosedError
 from lumiview.scope import InitContext
 from lumiview.serve.base import Serve
-from lumiview.utils import (
+from lumiview._utils import (
+    Subscription,
     copy_signature_for_classmethod,
     fmt_ms,
     main_thread,
     passes_where,
-    validate_where,
     wait_for_event,
 )
 from wryview import (
@@ -33,7 +34,7 @@ from wryview import (
     WindowHandleKind as WryKind,
 )
 
-from lumiview.bridge import BRIDGE_SCRIPT, Bridge
+from lumiview.bridge import Bridge, client_script, dispatch_script
 from lumiview._core import (
     AttentionType,
     AxisMotionEvent,
@@ -81,9 +82,29 @@ _IconSource = str | tuple[bytes, int, int] | _PILImage
 P = ParamSpec("P")
 R = TypeVar("R")
 _E = TypeVar("_E", bound=WindowBaseEvent)
-_HandlerEntry = tuple[Callable, Callable[[Any], bool] | None]
+_HandlerEntry = tuple[Callable[..., Any], Callable[[Any], bool] | None]
 
 log = logging.getLogger("lumiview.window")
+
+
+def _platform_only(platform: str):
+    """Raise ``NotImplementedError`` when a method is used off *platform*.
+
+    Applied *inside* ``@main_thread`` so unsupported calls surface as a
+    failed Task (the same channel as every other main-thread failure)
+    instead of an ``AttributeError`` from the missing native method.
+    """
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if sys.platform != platform:
+                raise NotImplementedError(f"{fn.__name__}() is platform only")
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 class CloseBehavior(Enum):
@@ -260,17 +281,19 @@ class WindowOptions:
     # Bridge
     bridge: Bridge | None = None
     """The :class:`~lumiview.bridge.Bridge` for IPC. ``None`` creates an
-    empty :class:`~lumiview.bridge.Bridge` — the page still gets
-    ``window.lumiview`` (so ``emit()``/``listen()`` work), but every
+    empty :class:`~lumiview.bridge.Bridge` — the page still gets the
+    injected JS client (so ``emit()``/``listen()`` work), but every
     ``invoke()`` resolves with ``unknown_command``. Raw messages still
     surface as
     :class:`~lumiview.events.WindowEvent.WebMessageReceivedEvent`.
 
-    The resulting instance is exposed as :attr:`Window.bridge` and can be
-    replaced at runtime."""
+    The resulting instance is exposed as the read-only :attr:`Window.bridge`
+    and lives for the window's lifetime; register commands on it in place."""
     untrusted: bool = False
-    """Skip bridge-script injection entirely; ``emit()`` events are
-    never delivered to the page."""
+    """Skip the JS client injection and leave IPC messages unparsed:
+    every ``postMessage`` surfaces as
+    :class:`~lumiview.events.WindowEvent.WebMessageReceivedEvent` and
+    ``emit()`` events are never delivered to the page."""
     # WebView
     web_context: WebContext | None = None
     """Shared WebView context passed to wryview.
@@ -352,13 +375,11 @@ class Window:
         """Unsendable, main-thread bound. Never hold on other threads."""
         self._webview: WebView | None
         """Unsendable, main-thread bound. Never hold on other threads."""
-        self.bridge: Bridge
-        """The IPC :class:`~lumiview.bridge.Bridge`. Never ``None``.
-
-        Public and mutable — ``win.bridge = new_bridge`` swaps the
-        command/permission tree for subsequent ``invoke()`` calls. Page
-        scripts and plugin ``on_init``/``on_ready`` hooks were applied
-        at creation and are not re-run."""
+        self._bridge: Bridge | None
+        """The IPC :class:`~lumiview.bridge.Bridge`, or ``None`` in untrusted
+        mode (no IPC is parsed at all). Read it through the :attr:`bridge`
+        property: the command tree is fixed for the window's lifetime —
+        mutate it in place instead of replacing it."""
         self._handlers: dict[type[WindowBaseEvent], list[_HandlerEntry]]
         self._closed: bool
         self._loaded: Task[WindowBaseEvent]
@@ -367,6 +388,8 @@ class Window:
         self._drag_enabled: bool
         self._untrusted: bool
         self._sync_visibility: bool
+        self._handlers_lock: threading.Lock
+        self._close_lock: threading.Lock
 
         raise RuntimeError("Use 'await Window.create(...)' instead")
 
@@ -430,6 +453,13 @@ class Window:
         self._webview = None
         self._win_id = 0  # real id assigned after the tao window exists
         self._handlers = {}
+        # Handlers are registered from any thread (decorators, wait_for) and
+        # snapshotted during dispatch; the GIL never made those two steps
+        # atomic, so guard them explicitly.
+        self._handlers_lock = threading.Lock()
+        # _close_pending is written on the main thread and cleared from the
+        # asyncio thread when CloseRequested handlers finish.
+        self._close_lock = threading.Lock()
 
         # Close flag / load latch. `_loaded` is pre-registered here —
         # before `prepare` runs and long before the WebView exists — so
@@ -438,16 +468,26 @@ class Window:
         self._loaded = self.wait_for(WindowEvent.PageLoadFinishedEvent)
         self._loaded.on_exception(_consume_task_error)
 
-        ctx = InitContext(inject_script=BRIDGE_SCRIPT, window=self, options=options)
-        if not options.untrusted and options.bridge is not None:
-            ctx = options.bridge._run_on_init(ctx)
-        logging.getLogger("lumiview.window").debug("Window.create: inject_script=%r", ctx.inject_script)
+        # The command tree is fixed for the window's lifetime: on_init and
+        # on_ready below both run against this exact bridge, and the public
+        # getter is read-only.
+        self._bridge = None if options.untrusted else (options.bridge or Bridge())
+        self._untrusted = options.untrusted
+
+        ctx = InitContext(
+            inject_script=client_script(),
+            window=self,
+            options=options,
+        )
+        if self._bridge is not None:
+            ctx = self._bridge._run_on_init(ctx)
+        logging.getLogger("lumiview.window").debug(
+            "Window.create: inject_script=%d chars", len(ctx.inject_script)
+        )
 
         self._close_behavior = options.close_behavior
         self._close_pending = False
         self._drag_enabled = options.drag_drop
-        self.bridge = options.bridge or Bridge()
-        self._untrusted = options.untrusted
         self._sync_visibility = options.sync_visibility
 
         # Resolve source → url / html / custom_protocols
@@ -641,7 +681,7 @@ class Window:
         self._window = tao_win
 
         self._win_id = win_id
-        app._windows[win_id] = self
+        app._register_window(self)
         log.info(
             "Window created (id=%s) in %.1fms",
             win_id,
@@ -655,17 +695,28 @@ class Window:
                 # composited frame cannot reuse Tao's opaque creation bitmap.
                 tao_win._redraw_transparent_surface()
 
-            # Use the window's *current* bridge: options.prepare runs
-            # before this and may have swapped it in (options.bridge is
-            # only the constructor value). An auto-created empty Bridge
-            # has no Plugin nodes, so the call is a no-op there.
-            self.bridge._run_on_ready(self)
+            # Same bridge as on_init: the tree is fixed at creation.
+            if self._bridge is not None:
+                self._bridge._run_on_ready(self)
         except Exception:
-            self.close()
+            self._teardown_failed_create()
             del tao_win
             raise
 
         return self
+
+    # Identity / bridge
+
+    @property
+    def bridge(self) -> Bridge | None:
+        """The IPC bridge for this window, or ``None`` in untrusted mode.
+
+        Read-only: the command tree is fixed for the window's lifetime, so a
+        whole-tree swap (which would leave the injected client and plugin
+        hooks pointing at the old tree) is not possible. Register commands on
+        it in place — ``win.bridge.command(...)`` — instead.
+        """
+        return self._bridge
 
     # Content
 
@@ -774,14 +825,18 @@ class Window:
         self._webview.set_bounds(x, y, w, h)
 
     @main_thread
-    def set_size(self, width: float, height: float) -> None:
-        """Set the window's inner size in logical pixels."""
+    def set_inner_size(self, width: float, height: float) -> None:
+        """Set the window's inner size in logical pixels.
+
+        Named after :meth:`inner_size` / :meth:`set_min_inner_size` — the
+        old ``set_size()`` was the odd one out.
+        """
         if self._window is None:
             raise WindowClosedError(self._win_id)
         self._window.set_inner_size(width, height)
 
     @main_thread
-    def set_visible(self, flag: bool):
+    def set_visible(self, flag: bool) -> None:
         """Show (``True``) or hide (``False``) the window, re-syncing the
         WebView to match (a no-op when ``sync_visibility`` is ``False``)."""
         if self._window is None:
@@ -790,7 +845,7 @@ class Window:
         self._sync_webview_visibility()
 
     @main_thread
-    def set_webview_visible(self, flag: bool):
+    def set_webview_visible(self, flag: bool) -> None:
         """Show (``True``) or hide (``False``) the WebView independently of
         the window. The next window visibility change re-syncs it as long
         as ``sync_visibility`` is ``True``."""
@@ -805,6 +860,10 @@ class Window:
             raise WindowClosedError(self._win_id)
         self.set_visible(True)
         self._window.set_minimized(False)
+        # set_visible() re-synced the WebView while the window was still
+        # minimized (so the WebView is hidden at this point) — re-derive it
+        # from the final state instead of waiting for the next focus change.
+        self._sync_webview_visibility()
 
     @main_thread
     def hide(self) -> None:
@@ -817,8 +876,9 @@ class Window:
     def _sync_webview_visibility(self) -> None:
         """Sync the WebView to the window's real on-screen state.
 
-        Called by :meth:`show`, :meth:`hide`, :meth:`minimize` and
-        :meth:`toggle_visibility` after they change the window. Derives
+        Called by :meth:`show`, :meth:`hide`, :meth:`minimize`,
+        :meth:`set_minimized` and :meth:`toggle_visibility` after they
+        change the window. Derives
         the visibility from the window's actual state, so callers don't
         have to remember whether to hide the WebView themselves. When
         ``WindowOptions.sync_visibility`` is ``False`` this is a no-op,
@@ -830,22 +890,30 @@ class Window:
         self.set_webview_visible(visible)
 
     @main_thread
-    def focus(self, flag: bool = True) -> None:
-        """Give or remove keyboard focus (``flag`` = focus)."""
+    def focus(self) -> None:
+        """Give the window keyboard focus.
+
+        There is no "unfocus" counterpart — the platform can only move focus
+        to another window, so a boolean parameter would be a silent no-op
+        for ``False``.
+        """
         if self._window is None:
             raise WindowClosedError(self._win_id)
-        self._window.set_focused(flag)
+        self._window.set_focused(True)
 
-    @main_thread
-    def minimize(self, flag: bool = True) -> None:
-        """Minimize or restore the window (``flag`` = minimize)."""
+    def _apply_minimized(self, flag: bool) -> None:
+        """Apply the minimize state and re-sync the WebView.
+
+        Shared by :meth:`show` and :meth:`set_minimized` so the two cannot
+        drift apart. Main-thread only — callers are ``@main_thread`` methods.
+        """
         if self._window is None:
             raise WindowClosedError(self._win_id)
         self._window.set_minimized(flag)
         self._sync_webview_visibility()
 
     @main_thread
-    def set_maximize(self, flag: bool = True) -> None:
+    def set_maximized(self, flag: bool = True) -> None:
         """Maximize (``True``) or restore the window (``flag`` = maximize)."""
         if self._window is None:
             raise WindowClosedError(self._win_id)
@@ -861,7 +929,7 @@ class Window:
         if self._window is None:
             raise WindowClosedError(self._win_id)
         maximized = not self._window.is_maximized()
-        self.set_maximize(maximized)
+        self.set_maximized(maximized)
         return maximized
 
     @main_thread
@@ -1201,18 +1269,9 @@ class Window:
         self._window.set_progress_bar(state, progress)
 
     @main_thread
-    def set_focused(self, flag: bool) -> None:
-        """Give or remove keyboard focus."""
-        if self._window is None:
-            raise WindowClosedError(self._win_id)
-        self._window.set_focused(flag)
-
-    @main_thread
     def set_minimized(self, flag: bool) -> None:
         """Minimize or restore the window."""
-        if self._window is None:
-            raise WindowClosedError(self._win_id)
-        self._window.set_minimized(flag)
+        self._apply_minimized(flag)
 
     @main_thread
     def is_minimized(self) -> bool:
@@ -1243,6 +1302,8 @@ class Window:
             self.set_visible(False)
         else:
             self.set_visible(True)
+            # set_minimized() re-syncs the WebView after un-minimizing, so
+            # the earlier set_visible() sync (still minimized) is corrected.
             self.set_minimized(False)
 
     @main_thread
@@ -1272,10 +1333,11 @@ class Window:
         return self._window.native_handle_kind()
 
     @main_thread
+    @_platform_only("linux")
     def gtk_container(self) -> int:
         """Return the raw GTK container widget pointer (Linux only).
 
-        Raises :class:`AttributeError` on other platforms.
+        Raises :class:`NotImplementedError` on other platforms.
         """
         if self._window is None:
             raise WindowClosedError(self._win_id)
@@ -1335,6 +1397,7 @@ class Window:
     # Windows
 
     @main_thread
+    @_platform_only("win32")
     def set_skip_taskbar(self, skip: bool) -> None:
         """Hide or show the window in the taskbar. **Windows only.**"""
         if self._window is None:
@@ -1342,6 +1405,7 @@ class Window:
         self._window.set_skip_taskbar(skip)
 
     @main_thread
+    @_platform_only("win32")
     def set_taskbar_icon(self, icon: _IconSource | None = None) -> None:
         """Replace the taskbar icon (``None`` restores the window icon).
         **Windows only.**"""
@@ -1351,6 +1415,7 @@ class Window:
         self._window.set_taskbar_icon(data)
 
     @main_thread
+    @_platform_only("win32")
     def set_overlay_icon(self, icon: _IconSource | None = None) -> None:
         """Set an overlay badge on the taskbar icon (``None`` removes
         it). **Windows only.**"""
@@ -1360,7 +1425,8 @@ class Window:
         self._window.set_overlay_icon(data)
 
     @main_thread
-    def set_enable(self, enabled: bool) -> None:
+    @_platform_only("win32")
+    def set_enabled(self, enabled: bool) -> None:
         """Enable or disable the window (disabled windows ignore mouse
         input). **Windows only.**"""
         if self._window is None:
@@ -1368,6 +1434,7 @@ class Window:
         self._window.set_enable(enabled)
 
     @main_thread
+    @_platform_only("win32")
     def set_rtl(self, rtl: bool) -> None:
         """Right-to-left layout for the window. **Windows only.**"""
         if self._window is None:
@@ -1375,6 +1442,7 @@ class Window:
         self._window.set_rtl(rtl)
 
     @main_thread
+    @_platform_only("win32")
     def reset_dead_keys(self) -> None:
         """Reset the OS dead-key state. **Windows only.**"""
         if self._window is None:
@@ -1382,6 +1450,7 @@ class Window:
         self._window.reset_dead_keys()
 
     @main_thread
+    @_platform_only("win32")
     def set_undecorated_shadow(self, shadow: bool) -> None:
         """Toggle the shadow of an undecorated window at runtime.
         **Windows only.**"""
@@ -1390,6 +1459,7 @@ class Window:
         self._window.set_undecorated_shadow(shadow)
 
     @main_thread
+    @_platform_only("win32")
     def has_undecorated_shadow(self) -> bool:
         """Whether the undecorated window shadow is enabled.
         **Windows only.**"""
@@ -1400,6 +1470,7 @@ class Window:
     # macOS
 
     @main_thread
+    @_platform_only("darwin")
     def set_badge_label(self, label: str | None) -> None:
         """Set the text in the macOS Dock badge (``None`` clears it).
         **macOS only.**"""
@@ -1408,6 +1479,7 @@ class Window:
         self._window.set_badge_label(label)
 
     @main_thread
+    @_platform_only("darwin")
     def set_simple_fullscreen(self, fullscreen: bool) -> bool:
         """Toggle "simple fullscreen" (content covers the whole screen,
         including the menu bar). Returns the resulting state.
@@ -1417,6 +1489,7 @@ class Window:
         return self._window.set_simple_fullscreen(fullscreen)
 
     @main_thread
+    @_platform_only("darwin")
     def set_titlebar_transparent(self, transparent: bool) -> None:
         """Make the native titlebar transparent (custom chrome overlays
         the titlebar area). **macOS only.**"""
@@ -1425,6 +1498,7 @@ class Window:
         self._window.set_titlebar_transparent(transparent)
 
     @main_thread
+    @_platform_only("darwin")
     def set_traffic_light_inset(self, x: float, y: float) -> None:
         """Set the traffic-light (window controls) inset in logical
         points. **macOS only.**"""
@@ -1433,6 +1507,7 @@ class Window:
         self._window.set_traffic_light_inset(x, y)
 
     @main_thread
+    @_platform_only("darwin")
     def set_fullsize_content_view(self, fullsize: bool) -> None:
         """Let the content view extend behind the titlebar
         (``NSFullSizeContentViewWindowMask``). **macOS only.**"""
@@ -1441,6 +1516,7 @@ class Window:
         self._window.set_fullsize_content_view(fullsize)
 
     @main_thread
+    @_platform_only("darwin")
     def set_has_shadow(self, has_shadow: bool) -> None:
         """Toggle the window shadow. **macOS only.**"""
         if self._window is None:
@@ -1448,6 +1524,7 @@ class Window:
         self._window.set_has_shadow(has_shadow)
 
     @main_thread
+    @_platform_only("darwin")
     def has_shadow(self) -> bool:
         """Whether the window currently has a shadow. **macOS only.**"""
         if self._window is None:
@@ -1457,6 +1534,7 @@ class Window:
     # Linux (GTK)
 
     @main_thread
+    @_platform_only("linux")
     def set_badge_count(self, count: int | None) -> None:
         """Set the number shown in the GTK badge (``None`` clears it).
         **Linux only.**"""
@@ -1470,15 +1548,15 @@ class Window:
         """
         Send an event to the page.
 
-        The event is dispatched on ``window.lumiview`` — a dedicated
+        The event is dispatched on ``window.__LUMIVIEW__`` — a dedicated
         ``EventTarget`` isolated from the DOM event namespace (so
         ``emit("click")`` cannot trigger real click handlers)::
 
             // Either form works:
-            const unlisten = window.lumiview.listen("my-event", (payload) => {
+            const unlisten = window.__LUMIVIEW__.listen("my-event", (payload) => {
                 console.log(payload);
             });
-            window.lumiview.addEventListener("my-event", (e) => console.log(e.detail));
+            window.__LUMIVIEW__.addEventListener("my-event", (e) => console.log(e.detail));
 
         Python side::
 
@@ -1486,7 +1564,7 @@ class Window:
 
         The returned :class:`Task` resolves when the script has been
         delivered to the WebView (not when listeners have processed it).
-        In untrusted mode no bridge script is injected, so the task fails
+        In untrusted mode no client is injected, so the task fails
         with :class:`RuntimeError` instead.
         """
         if self._untrusted:
@@ -1500,11 +1578,10 @@ class Window:
         app = App.get()
         handle: Task[None] = Task()
 
-        payload_json = json.dumps(
-            {"event": event, "payload": payload},
+        script = dispatch_script(
+            {"type": "event", "event": event, "payload": payload},
             default=str,
         )
-        script = f"window.lumiview._dispatchEvent({payload_json})"
 
         def _do():
             if self._webview is not None:
@@ -1528,7 +1605,7 @@ class Window:
         event: type[_E],
         *,
         where: Callable[[_E], bool] | None = None,
-    ):
+    ) -> Subscription:
         """
         Register a handler for an event class::
 
@@ -1536,19 +1613,30 @@ class Window:
 
         The handler receives the event object.
 
-        *where* filters dispatch with a predicate — build one with
-        :func:`~lumiview.utils.when` or pass a plain callable::
+        Returns a :class:`~lumiview.Subscription` — call its ``cancel()`` to
+        unregister::
 
-            from lumiview import when
+            sub = win.on(WindowEvent.TitleChangedEvent)
 
-            win.on(WindowEvent.TitleChangedEvent, where=when(title="Done"))(fn)
+            @sub
+            def on_title(event):
+                ...
+
+            sub.cancel()
+
+        *where* is a filter function — the event class binds its parameter
+        type, so a mistyped field is a static error::
+
+            win.on(
+                WindowEvent.TitleChangedEvent, where=lambda e: e.title == "Done"
+            )(fn)
             win.on(WindowEvent.JsEvent, where=lambda e: e.event.startswith("doc."))(fn)
 
         Parameters:
             event: The event class to handle.
-            where: Optional predicate ``(event) -> bool``; only matching
-                events reach the handler. Field names in
-                :func:`~lumiview.utils.when` are validated here.
+            where: Optional filter function ``(event) -> bool``; only
+                matching events reach the handler. Runs inline during
+                dispatch, so it must be synchronous.
         """
         if event is WindowEvent.DragEvent and not self._drag_enabled:
             raise RuntimeError(
@@ -1558,13 +1646,7 @@ class Window:
                 "enabled lazily after the WebView exists."
             )
 
-        validate_where(event, where)
-
-        def decorator(fn):
-            self._handlers.setdefault(event, []).append((fn, where))
-            return fn
-
-        return decorator
+        return Subscription(self._handlers, event, where, self._handlers_lock)
 
     def _emit(self, event: WindowBaseEvent) -> Task[None] | None:
         """
@@ -1572,7 +1654,7 @@ class Window:
 
         Returns a completion :class:`Task` or ``None`` when there is
         no loop or no handlers. ``event.window`` is set to this window.
-        ``where`` predicates run on the asyncio loop, alongside the
+        ``where`` filters run on the asyncio loop, alongside the
         handlers themselves.
         """
         event.window = self
@@ -1580,8 +1662,10 @@ class Window:
             return
 
         # Snapshot: handlers and one-shot waiters mutate the list while
-        # dispatch is running.
-        entries = list(self._handlers.get(type(event), ()))
+        # dispatch is running. Take the snapshot under the registry lock so
+        # a concurrent setdefault(...).append(...) cannot be torn.
+        with self._handlers_lock:
+            entries = list(self._handlers.get(type(event), ()))
 
         if not entries:
             return
@@ -1603,11 +1687,12 @@ class Window:
             finally:
                 done.set_result(None)
 
-        loop = self._app._async_loop
-        assert loop is not None
-
-        loop.call_soon_threadsafe(lambda: asyncio.create_task(_dispatch()))
-
+        if not self._app._call_soon_threadsafe(
+            lambda: asyncio.create_task(_dispatch())
+        ):
+            # Loop closed during shutdown: settle the completion signal so
+            # preventable-event callers do not block on a dead loop.
+            done.set_result(None)
         return done
 
     # Waiting
@@ -1645,12 +1730,10 @@ class Window:
             event,
             where=where,
             timeout=timeout,
-            loop=self._app._async_loop,
+            lock=self._handlers_lock,
             close_event=WindowEvent.ClosedEvent,
             is_closed=lambda: self._closed,
             closed_error=lambda: WindowClosedError(self._win_id),
-            logger=log,
-            label=f"win {self._win_id}",
         )
 
     def wait_loaded(self, *, timeout: float | None = None) -> Task[WindowBaseEvent]:
@@ -1712,10 +1795,7 @@ class Window:
                 return
             timer.append(loop.call_later(timeout, _expire))
 
-        try:
-            loop.call_soon_threadsafe(_arm)
-        except RuntimeError:
-            pass
+        self._app._call_soon_threadsafe(_arm)
         return outer
 
     def _dispatch_page_load(self, ev: PageLoadEvent, url: str) -> None:
@@ -1941,9 +2021,10 @@ class Window:
         """
         Apply ``close_behavior`` without blocking the GUI thread.
         """
-        if self._close_pending or self._window is None:
-            return
-        self._close_pending = True
+        with self._close_lock:
+            if self._close_pending or self._window is None:
+                return
+            self._close_pending = True
         event = WindowEvent.CloseRequestedEvent()
         done = self._emit(event)
         if done is None:
@@ -1962,7 +2043,8 @@ class Window:
         leaving ``self._window is None`` as the guard for any later
         request.
         """
-        self._close_pending = False
+        with self._close_lock:
+            self._close_pending = False
 
         if event.prevented:
             log.debug("window close prevented (id=%s)", self._win_id)
@@ -1993,15 +2075,52 @@ class Window:
         self._closed = True
         return self._emit(WindowEvent.ClosedEvent())
 
+    def _release_native(self) -> None:
+        """Close the WebView and drop the native window (main thread only).
+
+        The owner of the native handles performs its own teardown, so callers
+        (``close``, failed-create rollback, app shutdown) do not need to know
+        the private layout. ``ClosedEvent`` is *not* emitted here — see
+        :meth:`_fail_closed`.
+        """
+        if self._webview is not None:
+            try:
+                self._webview.close()
+            except Exception:
+                log.exception("Error closing WebView")
+        self._window = None
+        self._webview = None
+
+    def _require_hwnd(self) -> int:
+        """Native handle for internal main-thread callers.
+
+        The public :meth:`native_handle` is ``@main_thread`` and returns a
+        :class:`~lumiview.task.Task`, which internal synchronous code (menu
+        attachment, tray construction) cannot use.
+        """
+        if self._window is None:
+            raise WindowClosedError(self._win_id)
+        return self._window.native_handle()
+
+    def _teardown_failed_create(self) -> None:
+        """Roll back a window whose creation failed after registration.
+
+        Same teardown as :meth:`close`, but without the last-window exit
+        policy: a window the caller never received must not be treated as
+        "the app ran out of windows". The caller's exception path — or the
+        entry-failure path in ``App.run`` — decides whether the app exits.
+        Main-thread only (called from :meth:`create`).
+        """
+        self._release_native()
+        self._fail_closed()
+        self._app._unregister_window(self._win_id)
+
     @main_thread
     def close(self) -> None:
         """
         Close the window and destroy its resources.
         """
-        if self._webview is not None:
-            self._webview.close()
-        self._window = None
-        self._webview = None
+        self._release_native()
         self._fail_closed()
         self._app._remove_window(self._win_id)
 
@@ -2047,21 +2166,22 @@ class Window:
         self._webview.print()
 
     @main_thread
-    def set_background_color(self, r: int, g: int, b: int, a: int = 255) -> None:
-        """
-        Set the window and WebView background colour.
+    def set_background_color(self, color: tuple[int, int, int, int]) -> None:
+        """Set the window and WebView background colour.
 
-        The native window gets the colour too (its alpha channel is
-        ignored on Windows).
+        *color* is ``(r, g, b, a)`` — the same tuple shape as
+        :attr:`WindowOptions.background_color` and the *color* argument of
+        :meth:`apply_effect`, so one colour value can be reused everywhere.
+        The native window ignores the alpha channel on Windows).
         """
         if self._window is None:
             raise WindowClosedError(self._win_id)
-        self._window.set_background_color((r, g, b, a))
+        self._window.set_background_color(color)
         if self._webview is not None:
-            self._webview.set_background_color(r, g, b, a)
+            self._webview.set_background_color(*color)
 
     @main_thread
-    def cookies(self) -> list[dict]:
+    def cookies(self) -> list[dict[str, Any]]:
         """
         Return all cookies as dicts with name, value, domain, path, etc.
         """
@@ -2081,7 +2201,7 @@ class Window:
         ]
 
     @main_thread
-    def cookies_for_url(self, url: str) -> list[dict]:
+    def cookies_for_url(self, url: str) -> list[dict[str, Any]]:
         """
         Return cookies applicable to *url*.
         """
@@ -2137,8 +2257,17 @@ class Window:
     # Internal
 
     @property
-    def _id(self) -> int:
+    def id(self) -> int:
+        """The native window id (stable for the window's lifetime)."""
         return self._win_id
+
+    @property
+    def is_closed(self) -> bool:
+        """True once the window is closed (ClosedEvent has been dispatched).
+
+        A plain attribute read — no main-thread round trip.
+        """
+        return self._closed
 
     # IPC handler
 
@@ -2152,8 +2281,8 @@ class Window:
                 self._emit(WindowEvent.WebMessageReceivedEvent(message=raw))
             else:
                 try:
-                    if self._webview is not None:
-                        self.bridge._on_message(self, raw)
+                    if self._webview is not None and self._bridge is not None:
+                        self._bridge._on_message(self, raw)
                 except Exception:
                     log.exception("IPC handler raised an unexpected exception")
                 finally:

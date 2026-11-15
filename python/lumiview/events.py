@@ -17,12 +17,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+# Re-exported so ``WindowEvent.DragEvent.kind`` can be compared without
+# importing wryview directly (see ``lumiview.DragDropEvent``).
+from wryview import DragDropEvent
+
 if TYPE_CHECKING:
     from lumiview.window import Window
-    from lumiview._core import ElementState, MouseButton, ScrollDeltaKind, StartCause, Theme, TouchPhase
+    from lumiview._core import (
+        ElementState,
+        MouseButton,
+        ScrollDeltaKind,
+        StartCause,
+        Theme,
+        TouchPhase,
+    )
     from lumiview.menu import MenuItem, Submenu
     from lumiview.tray import TrayIcon
-    from wryview import DragDropEvent
 
 
 class Event:
@@ -353,14 +363,14 @@ class WindowEvent:
 
     @dataclass(slots=True, kw_only=True)
     class JsEvent(WindowBaseEvent):
-        """An event emitted by the page via ``window.lumiview.emit``.
+        """An event emitted by the page via ``window.__LUMIVIEW__.emit``.
 
         The JS→Python counterpart of :meth:`Window.emit` — a
         fire-and-forget notification, not a request/response call (use
         a :class:`~lumiview.bridge.Bridge` command for the latter).
 
         Attributes:
-            event: The event name passed to ``window.lumiview.emit()``.
+            event: The event name passed to ``window.__LUMIVIEW__.emit()``.
             payload: The JSON payload, or ``None``.
         """
 
@@ -373,8 +383,8 @@ class WindowEvent:
 
         Emitted for every IPC message, even when a :class:`Bridge
         <lumiview.bridge.Bridge>` handles it. With ``untrusted=True``
-        this is the only way to receive page messages (no bridge script
-        is injected).
+        this is the only way to receive page messages (no client is
+        injected and messages are not parsed).
 
         Attributes:
             message: The raw message string as posted by the page.
@@ -665,6 +675,9 @@ class AppEvent:
 
 
 __all__ = [
-    "Event", "WindowBaseEvent", "AppBaseEvent",
-    "WindowEvent", "AppEvent",
+    "Event",
+    "WindowBaseEvent",
+    "AppBaseEvent",
+    "WindowEvent",
+    "AppEvent",
 ]

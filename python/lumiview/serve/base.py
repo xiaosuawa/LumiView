@@ -10,11 +10,10 @@ response. The handler may do so synchronously or from any thread / event loop
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Callable, Awaitable
 
 from lumiview.task import run_async
 
@@ -136,7 +135,7 @@ class Handler(Serve):
 
     def __init__(
         self,
-        fn: Callable[[Request], Response],
+        fn: Callable[[Request], Response | Awaitable[Response]],
         *,
         scheme: str = "lumiview",
     ) -> None:
@@ -151,7 +150,8 @@ class Handler(Serve):
         """
         from lumiview.app import App
 
-        loop = App.get()._async_loop
+        app = App.get()
+        loop = app._async_loop
         if loop is None:
             respond(500, [("Content-Type", "text/plain")], b"App not running")
             return
@@ -164,4 +164,9 @@ class Handler(Serve):
                 log.exception("Serve handler raised an exception")
                 respond(500, [("Content-Type", "text/plain")], b"Internal Server Error")
 
-        asyncio.run_coroutine_threadsafe(_run(), loop)
+        if not app._spawn(_run()):
+            # Same shutdown race as ASGI.__call__: the loop closed between the
+            # None-check and scheduling. _spawn() closed the coroutine, so it
+            # is not reported as "never awaited"; still answer the request.
+            log.warning("asyncio loop closed while dispatching a serve request")
+            respond(503, [("Content-Type", "text/plain")], b"App is shutting down")

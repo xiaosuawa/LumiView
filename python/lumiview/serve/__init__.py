@@ -38,6 +38,7 @@ from lumiview.serve.asgi import ASGI
 __all__ = [
     "Request",
     "Response",
+    "RespondFn",
     "Serve",
     "Static",
     "WSGI",

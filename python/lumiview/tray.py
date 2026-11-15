@@ -21,12 +21,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from lumiview.app import App
-from lumiview.utils import main_thread
+from lumiview._utils import main_thread
 from lumiview._core import TaoTrayIcon
 
 log = logging.getLogger("lumiview.tray")
 
 if TYPE_CHECKING:
+    from lumiview.menu import Menu
     from lumiview.window import _IconSource
 
 
@@ -60,7 +61,7 @@ class TrayIconOptions:
     icon inputs)."""
     id: str | None = None
     tooltip: str | None = None
-    menu: Any = None
+    menu: "Menu | None" = None
     menu_on_left_click: bool = True
     menu_on_right_click: bool = True
     icon_as_template: bool = False
@@ -110,16 +111,20 @@ class TrayIcon:
         )
         if options.icon_as_template and sys.platform == "darwin":
             tray._tray.set_icon_as_template(True)
-        app._trays[tray._id] = tray
+        app._register_tray(tray)
         log.info("Tray icon created (id=%s)", tray._id)
         return tray
+
+    def _release_native(self) -> None:
+        """Drop the native tray handle (main thread only)."""
+        self._tray = None
 
     @main_thread
     def close(self) -> None:
         """Remove the icon from the system tray (native handle is
         dropped on the main thread)."""
         app = App.get()
-        app._trays.pop(self._id, None)
+        app._unregister_tray(self)
         self._tray = None
         log.debug("Tray icon removed (id=%s)", self._id)
 

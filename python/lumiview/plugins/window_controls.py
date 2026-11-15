@@ -1,11 +1,15 @@
 """WindowControls plugin — custom titlebar controls.
 
-Injected scripts are generated in ``on_init`` with the commands' actual
-full names (they follow the mount path, e.g. ``x.window.minimize`` when
-constructed as ``WindowControls(name="x")``).
+Injected scripts are generated in ``on_init`` with the commands' actual full
+names (they follow the mount path, e.g. ``x.titlebar.minimize`` when constructed
+as ``WindowControls(name="x.titlebar")``). The JS API lands under
+``window.__LUMIVIEW__.plugins.<last mount segment>``, so several instances can
+coexist on one page.
 """
 
 from __future__ import annotations
+
+import weakref
 
 from lumiview.bridge import BridgeError
 from lumiview._core import ResizeDirection
@@ -15,30 +19,44 @@ from lumiview.window import Window
 
 API_SCRIPT_TEMPLATE = """\
 (() => {
-  const lumiview = window.lumiview || (window.lumiview = {});
-  if (lumiview.window) return;
-  lumiview.window = {
-    minimize() { return lumiview.invoke("{{scope}}.minimize", {}); },
-    toggleMaximize() { return lumiview.invoke("{{scope}}.toggle_maximize", {}); },
-    isMaximized() { return lumiview.invoke("{{scope}}.is_maximized", {}); },
-    close() { return lumiview.invoke("{{scope}}.close", {}); },
+  const client = window.__LUMIVIEW__;
+  if (!client) return;
+  const plugins = client.plugins;
+  if (plugins["{{ns}}"]) {
+    console.warn("[lumiview] WindowControls namespace '{{ns}}' is already in use");
+    return;
+  }
+  plugins["{{ns}}"] = {
+    minimize() { return client.invoke("{{scope}}.minimize", {}); },
+    toggleMaximize() { return client.invoke("{{scope}}.toggle_maximize", {}); },
+    isMaximized() { return client.invoke("{{scope}}.is_maximized", {}); },
+    close() { return client.invoke("{{scope}}.close", {}); },
     onMaximizedChange(handler) {
-      return lumiview.listen("{{scope}}.maximized-changed",
+      return client.listen("{{scope}}.maximized-changed",
         (p) => handler(p.maximized));
     },
-    startDragging() { return lumiview.invoke("{{scope}}.start_dragging", {}); },
+    startDragging() { return client.invoke("{{scope}}.start_dragging", {}); },
     startResizeDragging(direction) {
-      return lumiview.invoke("{{scope}}.start_resize_dragging", {direction});
+      return client.invoke("{{scope}}.start_resize_dragging", {direction});
     },
   };
 })();
 """
 
+# Per-page install markers live on the client as symbols: `Symbol.for` is
+# process-wide, so a second evaluation of the same script is a no-op, while
+# `Object.keys(window.__LUMIVIEW__)` stays free of implementation details.
 FULLSCREEN_LINK_TEMPLATE = """\
 (() => {
+  const client = window.__LUMIVIEW__;
+  const INSTALLED = Symbol.for("lumiview.fullscreenLink");
+  if (!client || client[INSTALLED]) return;
+  client[INSTALLED] = true;
   document.addEventListener("fullscreenchange", () => {
     const fullscreen = !!document.fullscreenElement;
-    lumiview.invoke("{{scope}}.sync_fullscreen", {fullscreen}).catch(() => {});
+    client
+      .invoke("{{scope}}.sync_fullscreen", {fullscreen})
+      .catch(() => {});
   });
 })();
 """
@@ -48,8 +66,15 @@ DRAG_REGION_SCRIPT = """\
 (() => {
   const CLICKABLE = "button, a, input, select, textarea, [role='button'], "
     + "[data-lumiview-no-drag]";
+  const client = window.__LUMIVIEW__;
+  const INSTALLED = Symbol.for("lumiview.dragRegions");
+  if (!client || client[INSTALLED]) return;
+  client[INSTALLED] = true;
+  const controls = () => client.plugins["{{ns}}"];
   document.addEventListener("mousedown", (event) => {
     if (event.button !== 0 || !(event.target instanceof Element)) return;
+    const windowControls = controls();
+    if (!windowControls) return;
 
     const resizeRegion = event.target.closest(
       "[data-lumiview-resize-region]",
@@ -60,7 +85,7 @@ DRAG_REGION_SCRIPT = """\
       );
       if (direction) {
         event.preventDefault();
-        void lumiview.window.startResizeDragging(direction).catch(() => {});
+        void windowControls.startResizeDragging(direction).catch(() => {});
       }
       return;
     }
@@ -77,9 +102,9 @@ DRAG_REGION_SCRIPT = """\
     // position, so a drag that actually moved the window still counts
     // as a plain drag.
     if (event.detail === 2) {
-      void lumiview.window.toggleMaximize().catch(() => {});
+      void windowControls.toggleMaximize().catch(() => {});
     } else {
-      void lumiview.window.startDragging().catch(() => {});
+      void windowControls.startDragging().catch(() => {});
     }
   }, true);
 })();
@@ -98,8 +123,19 @@ _RESIZE_DIRECTIONS = {
 
 
 class WindowControls(Plugin):
-    """Custom titlebar controls (window.* JS API + drag regions + fullscreen
-    and maximize-state sync).
+    """Custom titlebar controls for undecorated windows.
+
+    Provides two things:
+
+    * ``window.__LUMIVIEW__.plugins.<name>`` — the JS API (``minimize``,
+      ``toggleMaximize``, ``isMaximized``, ``close``, ``startDragging``,
+      ``startResizeDragging``, ``onMaximizedChange``);
+    * ``data-lumiview-drag-region`` / ``data-lumiview-resize-region`` markup
+      plus fullscreen and maximize-state syncing.
+
+    ``name`` is the mount path for the commands; the JS namespace is its last
+    segment (``WindowControls(name="titlebar")`` →
+    ``__LUMIVIEW__.plugins.titlebar`` and ``titlebar.minimize``).
 
     NOTE: window-edge resizing needs no markup — for undecorated windows tao
     already handles the 8 edge/corner hit-tests natively (WM_NCHITTEST) and
@@ -120,8 +156,12 @@ class WindowControls(Plugin):
         self._drag_regions = drag_regions
         self._link_fullscreen = link_fullscreen
         self._link_maximized = link_maximized
-        self._window: Window | None = None
-        self._maximized = False
+        # Per-window state: one plugin instance may serve several windows
+        # (a Bridge can be shared), so window state must never live on self —
+        # the last window's values would silently overwrite the others'.
+        self._maximized: weakref.WeakKeyDictionary[Window, bool] = (
+            weakref.WeakKeyDictionary()
+        )
         self.command(self.minimize)
         self.command(self.toggle_maximize)
         self.command(self.is_maximized)
@@ -129,6 +169,12 @@ class WindowControls(Plugin):
         self.command(self.start_dragging)
         self.command(self.start_resize_dragging)
         self.command(self.sync_fullscreen)
+
+    @property
+    def namespace(self) -> str:
+        """Key under ``__LUMIVIEW__.plugins`` (last segment of the mount path)."""
+
+        return self._full_name("").split(".")[-1]
 
     # Lifecycle
 
@@ -139,41 +185,43 @@ class WindowControls(Plugin):
             parts.append(DRAG_REGION_SCRIPT)
         if self._link_fullscreen:
             parts.append(FULLSCREEN_LINK_TEMPLATE)
-        ctx.inject_script += "\n" + "\n".join(parts).replace("{{scope}}", scope_path)
+        script = "\n".join(parts)
+        script = script.replace("{{scope}}", scope_path).replace(
+            "{{ns}}", self.namespace
+        )
+        ctx.inject_script += "\n" + script
         return ctx
 
     def on_ready(self, window: Window) -> None:
         if not self._link_maximized:
             return
-        self._window = window
-        self._maximized = window.is_maximized().result()
-        self._emit_maximized()
+        self._maximized[window] = window.is_maximized().result()
+        self._emit_maximized(window)
         window.on(WindowEvent.ResizedEvent)(self._sync_maximized)
 
-    async def _sync_maximized(self, _evt: WindowBaseEvent) -> None:
+    async def _sync_maximized(self, evt: WindowBaseEvent) -> None:
         """Hook handler: broadcast maximize-state changes to JS."""
-        if self._window is None:
+        window = evt.window
+        if window is None:
             return
-        maximized = await self._window.is_maximized()
-        if maximized == self._maximized:
+        maximized = await window.is_maximized()
+        if maximized == self._maximized.get(window):
             return
-        self._maximized = maximized
-        self._emit_maximized()
+        self._maximized[window] = maximized
+        self._emit_maximized(window)
 
-    def _emit_maximized(self) -> None:
+    def _emit_maximized(self, window: Window) -> None:
         """Fire the maximize-state event to JS listeners."""
-        if self._window is None:
-            return
-        self._window.emit(
+        window.emit(
             f"{self._full_name('')}.maximized-changed",
-            {"maximized": self._maximized},
+            {"maximized": self._maximized.get(window, False)},
         )
 
     # Commands (called from JS via the bridge)
     async def minimize(self, ctx: BridgeContext) -> None:
         """Minimize the window."""
 
-        await ctx.window.minimize()
+        await ctx.window.set_minimized(True)
 
     async def toggle_maximize(self, ctx: BridgeContext) -> bool:
         """Toggle maximize state; returns True if now maximized."""

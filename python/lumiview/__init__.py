@@ -28,20 +28,23 @@ Low-level bindings live in :mod:`lumiview._core`.
 """
 
 from lumiview.app import App, AppState, AppClosedError, WindowClosedError
-from lumiview.window import (
+from lumiview._core import (
     AttentionType,
-    CloseBehavior,
     CursorIcon,
     Monitor,
     ProgressState,
     ResizeDirection,
     Theme,
-    TitleBarOptions,
     VibrancyMaterial,
     VideoMode,
+    WindowEffect,
+    WindowHandleKind,
+)
+from lumiview.window import (
+    CloseBehavior,
+    TitleBarOptions,
     WebContext,
     Window,
-    WindowEffect,
     WindowOptions,
 )
 from lumiview.menu import (
@@ -56,12 +59,14 @@ from lumiview.bridge import Bridge, BridgeError
 from lumiview.scope import Plugin, Scope, ScopePermission, BridgeContext, InitContext
 from lumiview.task import task, Task, TaskDeadlockError
 from lumiview.events import (
+    DragDropEvent,
     Event,
     WindowEvent,
     WindowBaseEvent,
     AppEvent,
     AppBaseEvent,
 )
+from lumiview._utils import Subscription
 from lumiview._core import (
     ActivationPolicy,
     ElementState,
@@ -71,11 +76,10 @@ from lumiview._core import (
     TouchPhase,
 )
 from lumiview import utils
-from lumiview.utils import Where, contains, when
 from lumiview import plugins
 from lumiview import serve
 
-__version__ = "0.2.0"
+__version__ = "0.2.0rc1"
 
 __all__ = [
     # Application layer
@@ -98,6 +102,7 @@ __all__ = [
     "ProgressState",
     "Monitor",
     "VideoMode",
+    "WindowHandleKind",
     # Menus & tray
     "Menu",
     "MenuItem",
@@ -113,6 +118,8 @@ __all__ = [
     "WindowBaseEvent",
     "AppEvent",
     "AppBaseEvent",
+    "DragDropEvent",
+    "Subscription",
     # Event field types
     "MouseButton",
     "ElementState",
@@ -133,9 +140,6 @@ __all__ = [
     "TaskDeadlockError",
     # Subpackages
     "utils",
-    "Where",
-    "when",
-    "contains",
     "plugins",
     "serve",
 ]

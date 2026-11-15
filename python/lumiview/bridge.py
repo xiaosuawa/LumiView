@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Sequence, TypeVar, overload
 
 from lumiview.events import WindowEvent
 from lumiview.scope import (
@@ -16,12 +16,14 @@ from lumiview.scope import (
     iter_tree,
 )
 from lumiview.task import run_async
-from lumiview.utils import fmt_ms
+from lumiview._utils import fmt_ms
 
 if TYPE_CHECKING:
     from lumiview.window import Window
 
 log = logging.getLogger("lumiview.bridge")
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 # BridgeError
 
@@ -40,14 +42,15 @@ class BridgeError(Exception):
         self.code = code
         self.data = data
 
-    def to_dict(self) -> dict:
-        result: dict = {"code": self.code, "message": str(self)}
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"code": self.code, "message": str(self)}
         if self.data is not None:
             result["data"] = self.data
         return result
 
 
 # Bridge
+
 
 class Bridge:
     """Registry of Python functions callable from JavaScript.
@@ -72,8 +75,7 @@ class Bridge:
         permissions: ScopePermission | None = None,
     ) -> None:
         self._root = Scope(
-            permissions=permissions or ScopePermission(allow=("*",)),
-            includes=includes
+            permissions=permissions or ScopePermission(allow=("*",)), includes=includes
         )
 
     # Tree facade
@@ -84,18 +86,42 @@ class Bridge:
 
         return self._root.scope(name)
 
+    @overload
     def command(
         self,
-        fn: Callable | None = None,
+        fn: _F,
         /,
         *,
         name: str | None = None,
         replace: bool = False,
         strict: bool = True,
-    ) -> Callable:
+    ) -> _F: ...
+
+    @overload
+    def command(
+        self,
+        fn: None = None,
+        /,
+        *,
+        name: str | None = None,
+        replace: bool = False,
+        strict: bool = True,
+    ) -> Callable[[_F], _F]: ...
+
+    def command(
+        self,
+        fn: Callable[..., Any] | None = None,
+        /,
+        *,
+        name: str | None = None,
+        replace: bool = False,
+        strict: bool = True,
+    ) -> Callable[..., Any]:
         """Register a command on the root scope (decorator or direct
         call) — see :meth:`Scope.command`."""
 
+        if fn is None:
+            return self._root.command(name=name, replace=replace, strict=strict)
         return self._root.command(fn, name=name, replace=replace, strict=strict)
 
     def include(self, other: Scope) -> None:
@@ -137,7 +163,9 @@ class Bridge:
 
     # IPC dispatch
 
-    def _on_message(self, window: "Window", raw: str, *, send: Callable[[str], None] | None = None) -> None:
+    def _on_message(
+        self, window: "Window", raw: str, *, send: Callable[[str], None] | None = None
+    ) -> None:
         """Called from the main thread by wryview's IPC handler.
 
         *window* is passed by the Window's own IPC handler (which closes
@@ -237,13 +265,18 @@ class Bridge:
                 result = await run_async(cmd.fn, **kwargs)
                 log.debug(
                     "IPC invoke %s (id=%s) ok in %.1fms",
-                    cmd.full_name, call_id, fmt_ms(t0),
+                    cmd.full_name,
+                    call_id,
+                    fmt_ms(t0),
                 )
                 self._respond(window, call_id, result=result)
             except BridgeError as e:
                 log.debug(
                     "IPC invoke %s (id=%s) rejected in %.1fms: %s",
-                    cmd.full_name, call_id, fmt_ms(t0), e,
+                    cmd.full_name,
+                    call_id,
+                    fmt_ms(t0),
+                    e,
                 )
                 self._respond(window, call_id, error=e)
             except Exception as e:
@@ -256,7 +289,15 @@ class Bridge:
                     error=BridgeError("internal_error", str(e)),
                 )
 
-        loop.call_soon_threadsafe(lambda: asyncio.create_task(_run_async_cmd()))
+        if not app._call_soon_threadsafe(lambda: asyncio.create_task(_run_async_cmd())):
+            # Loop closed during shutdown — answer the page instead of
+            # leaving its invoke() pending forever.
+            self._respond(
+                window,
+                call_id,
+                error=BridgeError("internal_error", "App is shutting down"),
+                send=send,
+            )
 
     # Response
 
@@ -276,7 +317,7 @@ class Bridge:
         thread.
 
         *send* is a test-only injection: when provided, it receives the
-        ready ``window.lumiview._dispatchResponse(...)`` script instead of
+        ready ``window.__LUMIVIEW__.dispatch(...)`` script instead of
         dispatching it through the app on the main thread (which needs a
         live :class:`~lumiview.app.App` and a real WebView). Defaults to
         ``None``, preserving the production path unchanged.
@@ -284,13 +325,11 @@ class Bridge:
         from lumiview.app import App
 
         if error is not None:
-            payload = json.dumps(
-                {"type": "reject", "id": call_id, "error": error.to_dict()}
-            )
+            message = {"type": "reject", "id": call_id, "error": error.to_dict()}
         else:
-            payload = json.dumps({"type": "resolve", "id": call_id, "value": result})
+            message = {"type": "resolve", "id": call_id, "value": result}
 
-        script = f"window.lumiview._dispatchResponse({payload})"
+        script = dispatch_script(message)
 
         if send is not None:
             send(script)
@@ -310,100 +349,34 @@ class Bridge:
         app.call_on_main(_send)
 
 
-# Injected JavaScript
+# JS client (injected)
 
-BRIDGE_SCRIPT = """\
-(() => {
-  if (window.lumiview && window.lumiview.invoke) return;
+_CLIENT_SCRIPT_HINT = (
+    "LumiView's JS client is not built — run:\n"
+    "    npm --prefix js install\n"
+    "    npm --prefix js run build"
+)
 
-  const _pending = {};
 
-  // Dedicated EventTarget — its listener registry lives outside the DOM
-  // event namespace, so `emit("click")` cannot trigger real click
-  // handlers and no type prefix is needed.
-  const lv = new EventTarget();
-  lv._nextId = 0;
+def client_script() -> str:
+    """Return the injected JS client source.
 
-  /** Call a Python command. Returns a Promise. */
-  lv.invoke = function (command, payload = {}) {
-    return new Promise((resolve, reject) => {
-      const id = String(++lv._nextId);
-      _pending[id] = { resolve, reject };
-      window.ipc.postMessage(JSON.stringify({
-        type: "invoke",
-        id: id,
-        command: command,
-        payload: payload,
-      }));
-    });
-  };
+    The client lives in ``js/src`` (TypeScript). ``js/scripts/build.mjs``
+    compiles it into :mod:`lumiview._bridge_client`; the import is lazy so a
+    source checkout that was never built fails at window creation with a
+    build hint instead of breaking ``import lumiview``.
+    """
+    try:
+        from lumiview._bridge_client import CLIENT_SCRIPT
+    except ImportError as exc:  # pragma: no cover - build-time guard
+        raise RuntimeError(_CLIENT_SCRIPT_HINT) from exc
+    return CLIENT_SCRIPT
 
-  /**
-   * Send a fire-and-forget event to Python.
-   *
-   * Received as `WindowEvent.JsEvent`; filter it with `where=`:
-   *
-   *     win.on(WindowEvent.JsEvent, where=when(event="data.changed"))(fn)
-   *
-   * Use `invoke()` instead when you need a return value.
-   */
-  lv.emit = function (event, payload = null) {
-    window.ipc.postMessage(JSON.stringify({
-      type: "emit",
-      event: event,
-      payload: payload,
-    }));
-  };
 
-  /**
-   * Listen for an event sent from Python via `win.emit()`.
-   *
-   * Sugar over `window.lumiview.addEventListener(event, (e) => e.detail)`.
-   * Returns an unsubscribe function::
-   *
-   *     const unlisten = window.lumiview.listen("scheduler.updated", (p) => {
-   *         console.log(p);
-   *     });
-   *     unlisten();
-   */
-  lv.listen = function (event, handler, options) {
-    const wrapped = (e) => {
-      try { handler(e.detail); } catch (err) { console.error(err); }
-    };
-    // removeEventListener only matches on `capture`.
-    const capture = !!(options && typeof options === "object"
-      ? options.capture
-      : options);
-    lv.addEventListener(event, wrapped, options);
-    return () => lv.removeEventListener(event, wrapped, capture);
-  };
+def dispatch_script(message: dict[str, Any], *, default: Any = None) -> str:
+    """Return the ``eval_js`` call that delivers *message* to the page client.
 
-  // ── Direct dispatch (called by Python via eval_js) ──────────────────
-
-  /** Resolve or reject a pending invoke() Promise. */
-  lv._dispatchResponse = function (detail) {
-    const p = _pending[detail.id];
-    if (!p) return;
-    delete _pending[detail.id];
-
-    if (detail.type === "reject") {
-      const err = detail.error || {};
-      const e = new Error(err.message || "Bridge error");
-      e.code = err.code || "internal_error";
-      e.data = err.data;
-      p.reject(e);
-    } else {
-      p.resolve(detail.value);
-    }
-  };
-
-  /** Dispatch a Python-emitted event on this EventTarget. */
-  lv._dispatchEvent = function (detail) {
-    lv.dispatchEvent(new CustomEvent(detail.event, {
-      detail: detail.payload,
-    }));
-  };
-
-  window.lumiview = lv;
-})();
-"""
+    *default* is forwarded to :func:`json.dumps` (``emit`` stringifies
+    non-serializable payloads, bridge responses do not).
+    """
+    return f"window.__LUMIVIEW__.dispatch({json.dumps(message, default=default)})"

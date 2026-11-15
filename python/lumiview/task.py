@@ -9,6 +9,7 @@ import threading
 import time
 from typing import (
     Any,
+    Awaitable,
     Callable,
     Generator,
     Generic,
@@ -18,6 +19,8 @@ from typing import (
 
 P = ParamSpec("P")
 T = TypeVar("T")
+
+_log = logging.getLogger("lumiview.task")
 
 
 # Asyncio deadlock detection
@@ -44,7 +47,7 @@ def _log_unhandled_task_error(task: "Task[Any]") -> None:
         exc = task.exception()
         if not isinstance(exc, BaseException):
             return
-        logging.getLogger("lumiview.task").error(
+        _log.error(
             "Task failed and its exception was never retrieved — use "
             "await / .result() / .on_done() to handle failures: %s",
             type(exc).__name__,
@@ -117,9 +120,11 @@ class Task(concurrent.futures.Future, Generic[T]):
           form there (``Task`` awaits from any loop).
         - **other threads**: block normally (like ``Future.result``).
         """
-        from lumiview.app import _GUI_THREAD_ID
+        from lumiview.app import App
 
-        if _GUI_THREAD_ID is not None and threading.get_ident() == _GUI_THREAD_ID:
+        app = App._instance
+
+        if app is not None and app.is_main_thread():
             self._block_on_gui(timeout)
             return
 
@@ -138,9 +143,7 @@ class Task(concurrent.futures.Future, Generic[T]):
         wait always makes progress instead of deadlocking.
         """
 
-        logging.getLogger("lumiview.task").debug(
-            "Blocking the GUI thread on Task.result() — the window may freeze."
-        )
+        _log.debug("Blocking the GUI thread on Task.result() — the window may freeze.")
 
         from lumiview.app import App
 
@@ -222,12 +225,21 @@ class Task(concurrent.futures.Future, Generic[T]):
         task = cls()
 
         def _propagate(f: concurrent.futures.Future) -> None:
+            if task.done():
+                # The wrapper was already cancelled (e.g. the awaiting
+                # coroutine was cancelled during shutdown) or otherwise
+                # settled. set_result/set_exception would raise
+                # InvalidStateError inside concurrent.futures' callback
+                # machinery, which only logs a traceback.
+                return
             if f.cancelled():
                 task.cancel()
-            elif (exc := f.exception()) is not None:
-                task.set_exception(exc)
+                return
+            exc = f.exception()
+            if exc is not None:
+                _settle(task, exc=exc)
             else:
-                task.set_result(f.result())
+                _settle(task, result=f.result())
 
         fut.add_done_callback(_propagate)
         return task
@@ -247,52 +259,149 @@ class Task(concurrent.futures.Future, Generic[T]):
         return task
 
 
+def _settle(
+    handle: "Task[Any]",
+    *,
+    result: Any = None,
+    exc: BaseException | None = None,
+) -> None:
+    """Resolve *handle* unless it is already settled.
+
+    ``concurrent.futures.Future`` has no atomic "set if not done" call, so a
+    concurrent ``cancel()`` can still make ``set_result``/``set_exception``
+    raise ``InvalidStateError`` after the ``done()`` check. Swallow that
+    race: the caller already cancelled the handle, and logging a traceback
+    from a worker/coroutine callback would be noise.
+    """
+    if handle.done():
+        return
+    try:
+        if exc is not None:
+            handle.set_exception(exc)
+        else:
+            handle.set_result(result)
+    except concurrent.futures.InvalidStateError:
+        pass
+
+
 async def run_async(
-    fn: Callable[P, T],
+    fn: Callable[P, Awaitable[T] | T],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> T:
     """Execute *fn* on the asyncio loop — no Task created.
 
     - async functions: awaited directly (zero overhead).
-    - sync functions: dispatched to *pool* via ``loop.run_in_executor``.
+    - sync functions: dispatched to the App's thread pool via
+      ``loop.run_in_executor``; a sync function that returns an awaitable is
+      awaited on the loop.
+
+    This helper is also used for shutdown handlers, so it deliberately does
+    **not** reject work just because the app is exiting — ``task()`` owns
+    that admission check.
 
     Use inside async contexts when you need to run a mixed sync/async
     callback without the full :func:`task` machinery::
 
         from lumiview.task import run_async
         await run_async(my_callback, key="x")
+
+    Raises:
+        RuntimeError: If the App's thread pool is not available (the app
+            has not started).
     """
     if inspect.iscoroutinefunction(fn):
         return await fn(*args, **kwargs)
-    loop = asyncio.get_running_loop()
+
     from lumiview.app import App
+
+    app = App.get()
+    pool = app._threadpool
+    if pool is None:
+        raise RuntimeError("App is not running — call App.run() first")
 
     # Threads do not inherit the caller's contextvars; carry them so a sync
     # callback sees the caller's context (e.g. a window handler's id).
     ctx = contextvars.copy_context()
-    return await loop.run_in_executor(
-        App.get()._threadpool,
-        lambda: ctx.run(lambda: fn(*args, **kwargs)),
+    result = await asyncio.get_running_loop().run_in_executor(
+        pool, lambda: ctx.run(fn, *args, **kwargs)
     )
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 def task(
-    fn: Callable[P, T],
+    fn: Callable[P, Awaitable[T] | T],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> Task[T]:
     """Run ``fn(*args, **kwargs)`` concurrently and return a :class:`Task`.
 
     - **async** functions → scheduled on the asyncio loop.
-    - **sync** functions → dispatched to the App's thread pool.
+    - **sync** functions → submitted directly to the App's thread pool.
 
     Returns a :class:`Task` that can be ``await``-ed, ``.result()``-blocked,
     or given a callback via ``.on_done()``.
 
     Raises:
-        RuntimeError: If no :class:`App` instance has been created yet.
-    """
-    from lumiview.app import App
+        RuntimeError: If no :class:`~lumiview.app.App` instance has been
+            created yet.
 
-    return App.get()._schedule_task(fn, args, kwargs)
+    If the App exists but has not started, the returned Task fails with
+    ``RuntimeError``; once shutdown begins it fails with
+    :class:`~lumiview.app.AppClosedError`.
+    """
+    from lumiview.app import App, AppClosedError
+
+    app = App.get()
+
+    if app.is_exit:
+        return Task._failed(AppClosedError())
+
+    if _log.isEnabledFor(logging.DEBUG):
+        from lumiview._utils import fn_name
+
+        _log.debug("scheduling task: %s", fn_name(fn))
+
+    if not inspect.iscoroutinefunction(fn):
+        ctx = contextvars.copy_context()
+
+        pool = app._threadpool
+        if pool is None:
+            return Task._failed(
+                RuntimeError("App is not running — call App.run() first")
+            )
+
+        try:
+            future = pool.submit(ctx.run, fn, *args, **kwargs)
+        except RuntimeError as exc:
+            # The pool can close between the admission check and submit().
+            return Task._failed(AppClosedError() if app.is_exit else exc)
+        return Task._from_future(future)
+
+    if app.async_loop is None:
+        return Task._failed(
+            RuntimeError("App is not running — call App.run() first")
+        )
+
+    handle: Task[T] = Task()
+    ctx = contextvars.copy_context()
+
+    async def _run() -> None:
+        if app.is_exit:
+            _settle(handle, exc=AppClosedError())
+            return
+        try:
+            result = await fn(*args, **kwargs)
+        except asyncio.CancelledError as exc:
+            _settle(handle, exc=exc)
+            raise
+        except BaseException as exc:
+            _settle(handle, exc=exc)
+            return
+        _settle(handle, result=result)
+
+    if not app._spawn(_run(), context=ctx):
+        _settle(handle, exc=AppClosedError())
+    return handle

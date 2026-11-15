@@ -2,13 +2,24 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence, get_type_hints
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Iterator,
+    Sequence,
+    TypeVar,
+    get_type_hints,
+    overload,
+)
 
 if TYPE_CHECKING:
     from lumiview.window import Window
     from lumiview.window import WindowOptions
 
-from lumiview.utils import match_pattern
+from lumiview._utils import match_pattern
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 # Permissions
 
@@ -162,15 +173,37 @@ class Scope:
         self._children[name] = child
         return child
 
+    @overload
     def command(
         self,
-        fn: Callable | None = None,
+        fn: _F,
         /,
         *,
         name: str | None = None,
         replace: bool = False,
         strict: bool = True,
-    ) -> Callable:
+    ) -> _F: ...
+
+    @overload
+    def command(
+        self,
+        fn: None = None,
+        /,
+        *,
+        name: str | None = None,
+        replace: bool = False,
+        strict: bool = True,
+    ) -> Callable[[_F], _F]: ...
+
+    def command(
+        self,
+        fn: Callable[..., Any] | None = None,
+        /,
+        *,
+        name: str | None = None,
+        replace: bool = False,
+        strict: bool = True,
+    ) -> Callable[..., Any]:
         """Register a command — decorator or direct call.
 
         ``@scope.command`` / ``@scope.command(name=...)`` /
@@ -187,7 +220,7 @@ class Scope:
         """
         if fn is None:
 
-            def decorator(f: Callable) -> Callable:
+            def decorator(f: _F) -> _F:
                 self._register(f, name=name, replace=replace, strict=strict)
                 return f
 
@@ -257,14 +290,10 @@ class Scope:
         node: Scope | None = self
         while node is not None:
             if node is other:
-                raise ValueError(
-                    f"Cannot mount {other._name!r} under its own subtree"
-                )
+                raise ValueError(f"Cannot mount {other._name!r} under its own subtree")
             node = node._parent
         if other._name in self._children:
-            raise ValueError(
-                f"A scope named {other._name!r} is already mounted here"
-            )
+            raise ValueError(f"A scope named {other._name!r} is already mounted here")
         other._parent = self
         self._children[other._name] = other
 
@@ -420,7 +449,7 @@ def iter_tree(root: Scope) -> Iterator[Scope]:
     def walk(node: Scope) -> Iterator[Scope]:
         seen.add(id(node))
         yield node
-        for child in node._children.values():
+        for child in list(node._children.values()):
             if id(child) not in seen:
                 yield from walk(child)
 

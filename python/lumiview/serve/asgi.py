@@ -86,7 +86,8 @@ class ASGI(Serve):
         """
         from lumiview.app import App
 
-        loop = App.get()._async_loop
+        app = App.get()
+        loop = app._async_loop
         if loop is None:
             respond(500, [("Content-Type", "text/plain")], b"App not running")
             return
@@ -117,7 +118,12 @@ class ASGI(Serve):
                 log.exception("ASGI app raised an exception")
                 _once(500, [("Content-Type", "text/plain")], b"Internal Server Error")
 
-        asyncio.run_coroutine_threadsafe(_run(), loop)
+        if not app._spawn(_run()):
+            # The loop closed between the None-check and scheduling (the app
+            # is shutting down). _spawn() closed the coroutine, so it is not
+            # reported as "never awaited"; still answer the request.
+            log.warning("asyncio loop closed while dispatching an ASGI request")
+            _once(503, [("Content-Type", "text/plain")], b"App is shutting down")
 
     # ASGI protocol (runs on the asyncio loop)
 
@@ -185,9 +191,7 @@ class ASGI(Serve):
             respond(500, [("Content-Type", "text/plain")], b"Response too large")
             return
 
-        has_content_length = any(
-            k.lower() == "content-length" for k, _ in headers
-        )
+        has_content_length = any(k.lower() == "content-length" for k, _ in headers)
         if not has_content_length:
             headers.append(("Content-Length", str(len(body))))
 
@@ -204,10 +208,12 @@ class ASGI(Serve):
 
         asgi_headers: list[tuple[bytes, bytes]] = []
         for key, value in request.headers:
-            asgi_headers.append((
-                key.lower().encode("latin-1"),
-                value.encode("latin-1"),
-            ))
+            asgi_headers.append(
+                (
+                    key.lower().encode("latin-1"),
+                    value.encode("latin-1"),
+                )
+            )
 
         return {
             "type": "http",
