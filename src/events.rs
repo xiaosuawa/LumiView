@@ -4,10 +4,7 @@ use pyo3::prelude::*;
 use tao::event::{Event, WindowEvent};
 use tao::window::WindowId;
 
-use crate::types::{
-    ElementState, EventKind, KeyLocation, ModifiersState, MouseButton, ScrollDeltaKind, StartCause,
-    Theme, TouchPhase,
-};
+use crate::types::{ElementState, EventKind, ScrollDeltaKind, Theme, TouchPhase};
 
 // WindowId → u64
 
@@ -184,126 +181,6 @@ impl ThemeChangedEvent {
     }
 }
 
-// Input events
-
-/// Mouse button pressed or released.
-#[pyclass(extends = TaoEvent)]
-pub struct MouseInputEvent {
-    #[pyo3(get)]
-    pub button: MouseButton,
-    #[pyo3(get)]
-    pub button_code: Option<u16>,
-    #[pyo3(get)]
-    pub state: ElementState,
-    #[pyo3(get)]
-    pub modifiers: ModifiersState,
-}
-
-#[pymethods]
-impl MouseInputEvent {
-    fn __repr__(&self) -> String {
-        format!("MouseInputEvent({:?} {:?})", self.button, self.state)
-    }
-}
-
-/// Cursor moved inside the window.
-#[pyclass(extends = TaoEvent)]
-pub struct CursorMovedEvent {
-    #[pyo3(get)]
-    pub x: f64,
-    #[pyo3(get)]
-    pub y: f64,
-    #[pyo3(get)]
-    pub modifiers: ModifiersState,
-}
-
-#[pymethods]
-impl CursorMovedEvent {
-    fn __repr__(&self) -> String {
-        format!("CursorMovedEvent(x={:.1}, y={:.1})", self.x, self.y)
-    }
-}
-
-/// Mouse wheel or touchpad scroll.
-#[pyclass(extends = TaoEvent)]
-pub struct MouseWheelEvent {
-    #[pyo3(get)]
-    pub delta_kind: ScrollDeltaKind,
-    #[pyo3(get)]
-    pub dx: f64,
-    #[pyo3(get)]
-    pub dy: f64,
-    #[pyo3(get)]
-    pub phase: TouchPhase,
-    #[pyo3(get)]
-    pub modifiers: ModifiersState,
-}
-
-#[pymethods]
-impl MouseWheelEvent {
-    fn __repr__(&self) -> String {
-        format!(
-            "MouseWheelEvent({:?} dx={:.1}, dy={:.1})",
-            self.delta_kind, self.dx, self.dy
-        )
-    }
-}
-
-/// Keyboard key pressed or released.
-#[pyclass(extends = TaoEvent)]
-pub struct KeyboardInputEvent {
-    #[pyo3(get)]
-    pub physical_key: String,
-    #[pyo3(get)]
-    pub logical_key: String,
-    #[pyo3(get)]
-    pub text: Option<String>,
-    #[pyo3(get)]
-    pub state: ElementState,
-    #[pyo3(get)]
-    pub location: KeyLocation,
-    #[pyo3(get)]
-    pub repeat: bool,
-    #[pyo3(get)]
-    pub is_synthetic: bool,
-}
-
-#[pymethods]
-impl KeyboardInputEvent {
-    fn __repr__(&self) -> String {
-        if let Some(ref _text) = self.text {
-            format!(
-                "KeyboardInputEvent({:?} {:?})",
-                self.logical_key, self.state
-            )
-        } else {
-            format!(
-                "KeyboardInputEvent({:?} {:?} {:?})",
-                self.physical_key, self.state, self.logical_key,
-            )
-        }
-    }
-}
-
-/// Keyboard modifiers changed (Shift, Ctrl, Alt, Super).
-#[pyclass(extends = TaoEvent)]
-pub struct ModifiersChangedEvent {
-    #[pyo3(get)]
-    pub modifiers: ModifiersState,
-}
-
-#[pymethods]
-impl ModifiersChangedEvent {
-    fn __repr__(&self) -> String {
-        format!("ModifiersChangedEvent({:?})", self.modifiers)
-    }
-}
-
-// Cursor boundary events
-
-empty_event!(CursorEnteredEvent, "Cursor entered the window.");
-empty_event!(CursorLeftEvent, "Cursor left the window.");
-
 // Redraw event
 
 empty_event!(
@@ -427,29 +304,6 @@ impl TouchEvent {
 }
 
 // Loop-level events
-
-/// The event loop started a new batch of events.
-#[pyclass(extends = TaoEvent)]
-pub struct NewEventsEvent {
-    #[pyo3(get)]
-    pub cause: StartCause,
-}
-
-#[pymethods]
-impl NewEventsEvent {
-    fn __repr__(&self) -> String {
-        format!("NewEventsEvent({:?})", self.cause)
-    }
-}
-
-empty_event!(
-    MainEventsClearedEvent,
-    "All events of the current batch were processed."
-);
-empty_event!(
-    RedrawEventsClearedEvent,
-    "All redraw events of the current frame were processed."
-);
 
 /// The application was opened with a URL (e.g. custom scheme /
 /// file association).
@@ -578,6 +432,57 @@ impl DeviceTextEvent {
 
 // build_event — type-driven factory
 
+/// Whether :func:`build_event` produces a Python object for *event*.
+///
+/// The tao loop calls this **before** re-acquiring the GIL: events that no
+/// Python handler consumes (mouse movement, key presses, modifier changes,
+/// cursor boundary crossings) must not cost a GIL round-trip or an object
+/// allocation. Page interaction goes through the WebView + JS bridge, so
+/// the native side has no use for them.
+///
+/// Must stay in sync with the match in :func:`build_event` — a variant
+/// added there needs its arm here too, or it is silently dropped.
+pub fn is_python_event(event: &Event<'_, String>) -> bool {
+    match event {
+        Event::WindowEvent { event, .. } => matches!(
+            event,
+            WindowEvent::Resized(_)
+                | WindowEvent::Moved(_)
+                | WindowEvent::CloseRequested
+                | WindowEvent::Destroyed
+                | WindowEvent::Focused(_)
+                | WindowEvent::ScaleFactorChanged { .. }
+                | WindowEvent::ThemeChanged(_)
+                | WindowEvent::Started
+                | WindowEvent::Suspended
+                | WindowEvent::Resumed
+                | WindowEvent::Stopped
+                | WindowEvent::ReceivedImeText(_)
+                | WindowEvent::TouchpadPressure { .. }
+                | WindowEvent::AxisMotion { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::DecorationsClick
+        ),
+        Event::Opened { .. }
+        | Event::RedrawRequested(_)
+        | Event::UserEvent(_)
+        | Event::LoopDestroyed
+        | Event::Reopen { .. } => true,
+        Event::DeviceEvent { event, .. } => matches!(
+            event,
+            tao::event::DeviceEvent::Added
+                | tao::event::DeviceEvent::Removed
+                | tao::event::DeviceEvent::MouseMotion { .. }
+                | tao::event::DeviceEvent::MouseWheel { .. }
+                | tao::event::DeviceEvent::Motion { .. }
+                | tao::event::DeviceEvent::Button { .. }
+                | tao::event::DeviceEvent::Key(_)
+                | tao::event::DeviceEvent::Text { .. }
+        ),
+        _ => false,
+    }
+}
+
 pub fn build_event(py: Python<'_>, event: &Event<'_, String>) -> Option<Py<PyAny>> {
     match event {
         Event::WindowEvent {
@@ -661,125 +566,6 @@ pub fn build_event(py: Python<'_>, event: &Event<'_, String>) -> Option<Py<PyAny
                     };
                     let init =
                         PyClassInitializer::from(base).add_subclass(ThemeChangedEvent { theme });
-                    Py::new(py, init).ok().map(|p| p.into_any())
-                }
-                #[allow(deprecated)]
-                WindowEvent::MouseInput {
-                    button,
-                    state,
-                    modifiers,
-                    ..
-                } => {
-                    let base = TaoEvent {
-                        kind: EventKind::MouseInput,
-                        window_id: Some(wid),
-                    };
-                    let (btn, code) = match button {
-                        tao::event::MouseButton::Left => (MouseButton::Left, None),
-                        tao::event::MouseButton::Right => (MouseButton::Right, None),
-                        tao::event::MouseButton::Middle => (MouseButton::Middle, None),
-                        tao::event::MouseButton::Other(n) => (MouseButton::Other, Some(*n)),
-                        _ => (MouseButton::Other, None),
-                    };
-                    let init = PyClassInitializer::from(base).add_subclass(MouseInputEvent {
-                        button: btn,
-                        button_code: code,
-                        state: ElementState::from(*state),
-                        modifiers: ModifiersState::from(*modifiers),
-                    });
-                    Py::new(py, init).ok().map(|p| p.into_any())
-                }
-                #[allow(deprecated)]
-                WindowEvent::CursorMoved {
-                    position,
-                    modifiers,
-                    ..
-                } => {
-                    let base = TaoEvent {
-                        kind: EventKind::CursorMoved,
-                        window_id: Some(wid),
-                    };
-                    let mods = ModifiersState::from(*modifiers);
-                    let init = PyClassInitializer::from(base).add_subclass(CursorMovedEvent {
-                        x: position.x,
-                        y: position.y,
-                        modifiers: mods,
-                    });
-                    Py::new(py, init).ok().map(|p| p.into_any())
-                }
-                #[allow(deprecated)]
-                WindowEvent::MouseWheel {
-                    delta,
-                    phase,
-                    modifiers,
-                    ..
-                } => {
-                    let base = TaoEvent {
-                        kind: EventKind::MouseWheel,
-                        window_id: Some(wid),
-                    };
-                    let (kind, dx, dy) = match delta {
-                        tao::event::MouseScrollDelta::LineDelta(x, y) => {
-                            (ScrollDeltaKind::Line, *x as f64, *y as f64)
-                        }
-                        tao::event::MouseScrollDelta::PixelDelta(pos) => {
-                            (ScrollDeltaKind::Pixel, pos.x, pos.y)
-                        }
-                        _ => (ScrollDeltaKind::Line, 0.0, 0.0),
-                    };
-                    let init = PyClassInitializer::from(base).add_subclass(MouseWheelEvent {
-                        delta_kind: kind,
-                        dx,
-                        dy,
-                        phase: TouchPhase::from(*phase),
-                        modifiers: ModifiersState::from(*modifiers),
-                    });
-                    Py::new(py, init).ok().map(|p| p.into_any())
-                }
-                WindowEvent::KeyboardInput {
-                    event: key_event,
-                    is_synthetic,
-                    ..
-                } => {
-                    let base = TaoEvent {
-                        kind: EventKind::KeyboardInput,
-                        window_id: Some(wid),
-                    };
-                    let init = PyClassInitializer::from(base).add_subclass(KeyboardInputEvent {
-                        physical_key: key_event.physical_key.to_string(),
-                        logical_key: format!("{:?}", key_event.logical_key),
-                        text: key_event.text.map(|s| s.to_string()),
-                        state: ElementState::from(key_event.state),
-                        location: KeyLocation::from(key_event.location),
-                        repeat: key_event.repeat,
-                        is_synthetic: *is_synthetic,
-                    });
-                    Py::new(py, init).ok().map(|p| p.into_any())
-                }
-                WindowEvent::ModifiersChanged(modifiers) => {
-                    let base = TaoEvent {
-                        kind: EventKind::ModifiersChanged,
-                        window_id: Some(wid),
-                    };
-                    let init = PyClassInitializer::from(base).add_subclass(ModifiersChangedEvent {
-                        modifiers: ModifiersState::from(*modifiers),
-                    });
-                    Py::new(py, init).ok().map(|p| p.into_any())
-                }
-                WindowEvent::CursorEntered { .. } => {
-                    let base = TaoEvent {
-                        kind: EventKind::CursorEntered,
-                        window_id: Some(wid),
-                    };
-                    let init = PyClassInitializer::from(base).add_subclass(CursorEnteredEvent {});
-                    Py::new(py, init).ok().map(|p| p.into_any())
-                }
-                WindowEvent::CursorLeft { .. } => {
-                    let base = TaoEvent {
-                        kind: EventKind::CursorLeft,
-                        window_id: Some(wid),
-                    };
-                    let init = PyClassInitializer::from(base).add_subclass(CursorLeftEvent {});
                     Py::new(py, init).ok().map(|p| p.into_any())
                 }
                 WindowEvent::Started => {
@@ -877,32 +663,6 @@ pub fn build_event(py: Python<'_>, event: &Event<'_, String>) -> Option<Py<PyAny
                 }
                 _ => None,
             }
-        }
-        Event::NewEvents(cause) => {
-            let base = TaoEvent {
-                kind: EventKind::NewEvents,
-                window_id: None,
-            };
-            let init = PyClassInitializer::from(base).add_subclass(NewEventsEvent {
-                cause: StartCause::from(*cause),
-            });
-            Py::new(py, init).ok().map(|p| p.into_any())
-        }
-        Event::MainEventsCleared => {
-            let base = TaoEvent {
-                kind: EventKind::MainEventsCleared,
-                window_id: None,
-            };
-            let init = PyClassInitializer::from(base).add_subclass(MainEventsClearedEvent {});
-            Py::new(py, init).ok().map(|p| p.into_any())
-        }
-        Event::RedrawEventsCleared => {
-            let base = TaoEvent {
-                kind: EventKind::RedrawEventsCleared,
-                window_id: None,
-            };
-            let init = PyClassInitializer::from(base).add_subclass(RedrawEventsClearedEvent {});
-            Py::new(py, init).ok().map(|p| p.into_any())
         }
         Event::Opened { urls } => {
             let base = TaoEvent {
@@ -1060,7 +820,7 @@ pub fn build_event(py: Python<'_>, event: &Event<'_, String>) -> Option<Py<PyAny
 /// its canonical form (``"KeyW"``), or ``None`` if unknown.
 ///
 /// Accepts both the canonical event spelling (``"KeyW"``, what
-/// :attr:`KeyboardInputEvent.physical_key` carries) and tao's bare
+/// :attr:`DeviceKeyEvent.physical_key` carries) and tao's bare
 /// accelerator names (``"W"``, ``"SPACE"``). Case-insensitive.
 /// Useful for matching against a normalized constant::
 ///

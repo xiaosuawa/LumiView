@@ -381,13 +381,6 @@ class EventKind(Enum):
     Reopen: EventKind
     ScaleFactorChanged: EventKind
     ThemeChanged: EventKind
-    MouseInput: EventKind
-    CursorMoved: EventKind
-    MouseWheel: EventKind
-    KeyboardInput: EventKind
-    ModifiersChanged: EventKind
-    CursorEntered: EventKind
-    CursorLeft: EventKind
     RedrawRequested: EventKind
     Started: EventKind
     Suspended: EventKind
@@ -398,9 +391,6 @@ class EventKind(Enum):
     AxisMotion: EventKind
     Touch: EventKind
     DecorationsClick: EventKind
-    NewEvents: EventKind
-    MainEventsCleared: EventKind
-    RedrawEventsCleared: EventKind
     Opened: EventKind
     DeviceAdded: EventKind
     DeviceRemoved: EventKind
@@ -440,14 +430,6 @@ class TouchPhase(Enum):
     Moved: TouchPhase
     Ended: TouchPhase
     Cancelled: TouchPhase
-
-class KeyLocation(Enum):
-    """Physical key location."""
-
-    Standard: KeyLocation
-    Left: KeyLocation
-    Right: KeyLocation
-    Numpad: KeyLocation
 
 class Theme(Enum):
     """System color theme.
@@ -503,14 +485,6 @@ class AttentionType(Enum):
 
     Critical: AttentionType
     Informational: AttentionType
-
-class StartCause(Enum):
-    """Why the event loop started a new batch of events."""
-
-    Init: StartCause
-    Poll: StartCause
-    WaitCancelled: StartCause
-    ResumeTimeReached: StartCause
 
 class ProgressState(Enum):
     """Taskbar progress bar state (Windows)."""
@@ -576,32 +550,6 @@ class VideoMode:
         ...
     def monitor(self) -> Monitor:
         """The monitor this mode belongs to."""
-        ...
-
-class ModifiersState:
-    """Keyboard modifier key state snapshot.
-
-    Immutable — each event carries the modifier state at the moment it fired.
-    """
-
-    @property
-    def shift(self) -> bool:
-        """Shift key is held down."""
-        ...
-
-    @property
-    def ctrl(self) -> bool:
-        """Control key is held down."""
-        ...
-
-    @property
-    def alt(self) -> bool:
-        """Alt key is held down."""
-        ...
-
-    @property
-    def super_key(self) -> bool:
-        """Super key (Windows / Command) is held down."""
         ...
 
 # ── Events ──────────────────────────────────────────────────────────────────
@@ -688,103 +636,6 @@ class ThemeChangedEvent(TaoEvent):
 
     @property
     def theme(self) -> Theme: ...
-
-class MouseInputEvent(TaoEvent):
-    """Mouse button pressed or released."""
-
-    @property
-    def button(self) -> MouseButton: ...
-    @property
-    def button_code(self) -> int | None:
-        """Extra code when ``button == MouseButton.Other``."""
-        ...
-
-    @property
-    def state(self) -> ElementState: ...
-    @property
-    def modifiers(self) -> ModifiersState: ...
-
-class CursorMovedEvent(TaoEvent):
-    """Cursor moved inside the window."""
-
-    @property
-    def x(self) -> float:
-        """X coordinate in logical pixels relative to window's top-left."""
-        ...
-
-    @property
-    def y(self) -> float:
-        """Y coordinate in logical pixels relative to window's top-left."""
-        ...
-
-    @property
-    def modifiers(self) -> ModifiersState:
-        """Modifier keys held at the time of the event."""
-        ...
-
-class MouseWheelEvent(TaoEvent):
-    """Mouse wheel or touchpad scroll."""
-
-    @property
-    def delta_kind(self) -> ScrollDeltaKind: ...
-    @property
-    def dx(self) -> float: ...
-    @property
-    def dy(self) -> float: ...
-    @property
-    def phase(self) -> TouchPhase: ...
-    @property
-    def modifiers(self) -> ModifiersState: ...
-
-class KeyboardInputEvent(TaoEvent):
-    """Keyboard key pressed or released."""
-
-    @property
-    def physical_key(self) -> str:
-        """Scancode / hardware key (e.g. ``"KeyW"``), independent of layout."""
-        ...
-
-    @property
-    def logical_key(self) -> str:
-        """Key with layout applied (e.g. ``"Z"`` on AZERTY for the W key)."""
-        ...
-
-    @property
-    def text(self) -> str | None:
-        """Unicode text produced, if any."""
-        ...
-
-    @property
-    def state(self) -> ElementState: ...
-    @property
-    def location(self) -> KeyLocation: ...
-    @property
-    def repeat(self) -> bool:
-        """Whether this is a key-repeat event."""
-        ...
-
-    @property
-    def is_synthetic(self) -> bool:
-        """Whether the OS generated this event (e.g. for focus transitions)."""
-        ...
-
-class ModifiersChangedEvent(TaoEvent):
-    """Keyboard modifiers changed."""
-
-    @property
-    def modifiers(self) -> ModifiersState:
-        """The new modifier state."""
-        ...
-
-class CursorEnteredEvent(TaoEvent):
-    """Cursor entered the window."""
-
-    pass
-
-class CursorLeftEvent(TaoEvent):
-    """Cursor left the window."""
-
-    pass
 
 class RedrawRequestedEvent(TaoEvent):
     """The system has requested a window redraw."""
@@ -884,24 +735,6 @@ class TouchEvent(TaoEvent):
     def id(self) -> int:
         """Unique finger identifier."""
         ...
-
-class NewEventsEvent(TaoEvent):
-    """The event loop started a new batch of events."""
-
-    @property
-    def cause(self) -> StartCause:
-        """Why the batch started."""
-        ...
-
-class MainEventsClearedEvent(TaoEvent):
-    """All events of the current batch were processed."""
-
-    pass
-
-class RedrawEventsClearedEvent(TaoEvent):
-    """All redraw requests of the current frame were processed."""
-
-    pass
 
 class OpenedEvent(TaoEvent):
     """The app was opened with a URL (custom scheme / file association)."""

@@ -21,20 +21,12 @@ from lumiview._utils import match_pattern
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
-# Permissions
-
-
 @dataclass
 class ScopePermission:
     """Allow/deny pattern lists for one scope node.
 
-    Empty by default (no rules configured). ``check`` semantics:
-    deny wins; an empty allow list means "no whitelist restriction"
-    (deny-only blacklist). On the permission chain, unconfigured
-    nodes are skipped; if NO node on the chain has any rule, the
-    command is rejected by default (see :func:`check_chain`). The
-    :class:`Bridge` root is initialized with ``allow=("*",)`` unless
-    overridden.
+    Deny wins; an empty allow list means deny-only. A chain with no rules at all
+    rejects by default (the Bridge root starts with ``allow=("*",)``).
     """
 
     allow: tuple[str, ...] = ()
@@ -50,9 +42,6 @@ class ScopePermission:
         return any(match_pattern(p, rel_path) for p in self.allow)
 
 
-# Command
-
-
 @dataclass
 class Command:
     """A registered command bound to its registration node."""
@@ -62,10 +51,7 @@ class Command:
     scope: "Scope"
     strict: bool = True
 
-    # Cached introspection — computed once at registration, reused on every
-    # bridge call so bind_arguments doesn't re-resolve the type hints + signature
-    # per IPC message. Excluded from repr/eq (the signature object is not a
-    # meaningful equality key).
+    # Cached at registration so bind_arguments does no per-call introspection.
     signature: inspect.Signature | None = field(
         default=None, init=False, repr=False, compare=False
     )
@@ -78,20 +64,9 @@ class Command:
         return self.scope._full_name(self.name)
 
 
-# Context types
-
-
 @dataclass
 class BridgeContext:
-    """System-injected parameter — see
-    :data:`~lumiview._binding.INJECTED_TYPES`.
-
-    Attributes:
-        window: The :class:`~lumiview.window.Window` that made this call.
-        payload: The raw payload (when no regular parameters exist).
-        command: The full command name.
-        scope: The :class:`Scope` node the command is registered on.
-    """
+    """System-injected call context (``window``, ``payload``, ``command``, ``scope``)."""
 
     window: "Window"
     payload: Any
@@ -101,17 +76,9 @@ class BridgeContext:
 
 @dataclass
 class InitContext:
-    """Context passed to :meth:`Plugin.on_init` (and
-    ``Bridge._run_on_init``).
+    """Context passed to :meth:`Plugin.on_init`.
 
-    Attributes:
-        inject_script: JavaScript to inject into the page.
-        window: The :class:`~lumiview.window.Window` shell under
-            construction (before tao/webview creation).
-        options: The :class:`~lumiview.window.WindowOptions` being
-            applied. Injected by ``Window.create`` — plugins may
-            register event hooks here so early events
-            (``PageLoadStarted`` etc.) are not lost.
+    ``options`` is still being applied, so hooks registered here see early events.
     """
 
     inject_script: str = ""
@@ -119,17 +86,8 @@ class InitContext:
     options: WindowOptions | None = None
 
 
-# Scope
-
-
 class Scope:
-    """A node in the command tree (intermediate or leaf).
-
-    Convenience constructor arguments (equivalent to calling the methods
-    after creation)::
-
-        fs = Scope("fs", includes=[read_scope], permissions=ScopePermission(allow=("read.*",)))
-    """
+    """A node in the command tree (intermediate or leaf)."""
 
     def __init__(
         self,
@@ -148,8 +106,6 @@ class Scope:
         for scope in includes:
             self.include(scope)
 
-    # Naming
-
     def _full_name(self, local: str) -> str:
         parts: list[str] = []
         node: Scope | None = self
@@ -161,8 +117,6 @@ class Scope:
         if local:
             parts.append(local)
         return ".".join(parts)
-
-    # Tree building
 
     def scope(self, name: str) -> Scope:
         """Get or create a child scope (returns the existing node)."""
@@ -204,19 +158,9 @@ class Scope:
         replace: bool = False,
         strict: bool = True,
     ) -> Callable[..., Any]:
-        """Register a command — decorator or direct call.
+        """Register a command (decorator or direct call).
 
-        ``@scope.command`` / ``@scope.command(name=...)`` /
-        ``scope.command(fn)`` all work; inside a subclass constructor
-        use ``self.command(self.minimize)``.
-
-        Parameters:
-            fn: The callable to register.
-            name: Override the command name (defaults to the function
-                name).
-            replace: Allow overwriting an existing command with the
-                same name.
-            strict: Reject unexpected payload keys on bridge calls.
+        ``replace`` allows overwriting a name; ``strict`` rejects unexpected payload keys.
         """
         if fn is None:
 
@@ -248,12 +192,7 @@ class Scope:
                 f"Command {local!r} already registered in scope "
                 f"{self._full_name('')!r}. Use replace=True to overwrite."
             )
-        # Resolve the signature and type hints once here — the fn is immutable
-        # by registration, so bindings reuse these across every IPC call. The
-        # hints may fail on forward refs that are not yet defined
-        # (NameError/TypeError); cache None so bind_arguments retries at IPC
-        # time instead of freezing an empty dict (raw string annotations
-        # would then fail every call).
+        # Cache once; None means "retry at IPC time" (forward refs).
         try:
             type_hints = get_type_hints(fn)
         except (NameError, TypeError):
@@ -265,16 +204,9 @@ class Scope:
         self._commands[local] = cmd
 
     def include(self, other: Scope) -> None:
-        """Mount another scope onto this tree — pure mounting, no copying,
-        no merging, never mutates *other* (names and permissions are
-        relative paths, so the subtree is untouched).
+        """Mount another scope (pure mounting — names and permissions stay relative).
 
-        An instance can be mounted exactly once — re-mounting it would
-        rewrite its parent pointer and silently change the permission
-        chain of the tree it already belongs to. Custom mount names are
-        set at construction (``Scope(name=...)``); :meth:`include` has
-        no prefix argument. Unnamed scopes cannot be mounted
-        (:class:`ValueError`).
+        An instance can be mounted once; unnamed scopes raise ``ValueError``.
         """
         if not isinstance(other, Scope):
             raise TypeError(
@@ -297,8 +229,6 @@ class Scope:
         other._parent = self
         self._children[other._name] = other
 
-    # Permissions
-
     def allow(self, *patterns: str) -> None:
         """Append allow rules (paths relative to this scope)."""
         self._permissions.allow = self._permissions.allow + tuple(patterns)
@@ -319,8 +249,6 @@ class Scope:
         """Check a path relative to THIS scope node."""
         return self._permissions.check(rel_path)
 
-    # Events
-
     def emit(
         self,
         event: str,
@@ -328,31 +256,19 @@ class Scope:
         *,
         window: "Window | None" = None,
     ) -> None:
-        """Emit an event with this scope's namespace prefix.
-
-        Requires ``window=`` (the target window). Inside commands:
-        ``ctx.scope.emit("changed", {...}, window=ctx.window)``.
-        """
+        """Emit an event with this scope's namespace prefix (``window=`` required)."""
         if window is None:
             raise RuntimeError("scope.emit() requires window=...")
         prefix = self._full_name("")
         full = f"{prefix}.{event}" if prefix else event
         window.emit(full, payload)
 
-    # Lookup
-
     def lookup(self, full_name: str) -> Command | None:
-        """Resolve a full command name by walking the tree.
-
-        Scope and command names may contain dots: at each step the
-        longest matching scope name wins, then the longest matching
-        command name — names without dots resolve exactly as before.
-        """
+        """Resolve a full command name by walking the tree (longest match wins)."""
         parts = full_name.split(".")
         node = self
         i = 0
-        # Descend: at each level try the longest scope-name prefix
-        # (so dotted scope names like "a.b" resolve from "a.b.cmd").
+        # Longest scope-name prefix wins at each level.
         while i < len(parts) - 1:
             child = None
             for j in range(len(parts), i, -1):
@@ -364,8 +280,7 @@ class Scope:
             if child is None:
                 break
             node = child
-        # Command lookup: longest remaining name first (dotted command
-        # names like "read.log" resolve before single segments).
+        # Longest command name wins.
         for j in range(len(parts), i, -1):
             name = ".".join(parts[i:j])
             if name:
@@ -375,26 +290,10 @@ class Scope:
         return None
 
 
-# Plugin (lifecycle hooks)
-
-
 class Plugin(Scope):
-    """A Scope with window-lifecycle hooks.
+    """A Scope with window-lifecycle hooks (``on_init`` / ``on_ready``).
 
-    Subclass and override :meth:`on_init` / :meth:`on_ready` to hook
-    into window creation::
-
-        class MyPlugin(Plugin):
-            def on_init(self, ctx: InitContext) -> InitContext:
-                ctx.inject_script += "// ..."
-                return ctx
-
-            def on_ready(self, window: Window) -> None:
-                ...
-
-    The :class:`Bridge` dispatches hooks to every ``Plugin`` node found
-    by the tree walk (``isinstance`` check) — defining a method with
-    the same name on a plain :class:`Scope` is ignored.
+    The Bridge calls them on every Plugin node found by the tree walk.
     """
 
     def on_init(self, ctx: InitContext) -> InitContext:
@@ -405,30 +304,19 @@ class Plugin(Scope):
         """Post-navigation hook, called once per window using this bridge."""
 
 
-# Module helpers
-
-
 def check_chain(scope: Scope, full_name: str) -> bool:
-    """Walk from the command's registration node up to the tree root.
+    """Walk from the command's node up to the root, checking each layer.
 
-    Each layer checks the path relative to itself, so rule semantics
-    don't drift when a subtree is re-mounted (:meth:`Scope.include`).
-    Layers without any rules are skipped; if NO layer has any rule, the
-    command is rejected by default (safe default — an unconfigured
-    chain must not accidentally allow everything).
+    Layers without rules are skipped; a chain with no rules rejects by default.
     """
     parts = full_name.split(".")
-    # Node chain (root → registration node).
     chain: list[Scope] = []
     node: Scope | None = scope
     while node is not None:
         chain.append(node)
         node = node._parent
     chain.reverse()
-    # A node name may span multiple path segments when it contains
-    # dots — track the segment offset per layer, so each layer's
-    # relative path covers everything below it (the command's own
-    # name is the tail).
+    # Dotted names span segments; track the offset per layer.
     offset = 0
     configured = False
     for nd in chain:

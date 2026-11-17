@@ -1,10 +1,7 @@
 """WindowControls plugin — custom titlebar controls.
 
-Injected scripts are generated in ``on_init`` with the commands' actual full
-names (they follow the mount path, e.g. ``x.titlebar.minimize`` when constructed
-as ``WindowControls(name="x.titlebar")``). The JS API lands under
-``window.__LUMIVIEW__.plugins.<last mount segment>``, so several instances can
-coexist on one page.
+Scripts are generated in ``on_init`` with the commands' full names; the JS API
+lands under ``window.__LUMIVIEW__.plugins.<last mount segment>``.
 """
 
 from __future__ import annotations
@@ -43,9 +40,7 @@ API_SCRIPT_TEMPLATE = """\
 })();
 """
 
-# Per-page install markers live on the client as symbols: `Symbol.for` is
-# process-wide, so a second evaluation of the same script is a no-op, while
-# `Object.keys(window.__LUMIVIEW__)` stays free of implementation details.
+# `Symbol.for` markers make a second script evaluation a no-op.
 FULLSCREEN_LINK_TEMPLATE = """\
 (() => {
   const client = window.__LUMIVIEW__;
@@ -125,23 +120,11 @@ _RESIZE_DIRECTIONS = {
 class WindowControls(Plugin):
     """Custom titlebar controls for undecorated windows.
 
-    Provides two things:
+    Adds ``__LUMIVIEW__.plugins.<name>`` (minimize / toggleMaximize / close /
+    startDragging / ...) and the ``data-lumiview-drag-region`` markup.
 
-    * ``window.__LUMIVIEW__.plugins.<name>`` — the JS API (``minimize``,
-      ``toggleMaximize``, ``isMaximized``, ``close``, ``startDragging``,
-      ``startResizeDragging``, ``onMaximizedChange``);
-    * ``data-lumiview-drag-region`` / ``data-lumiview-resize-region`` markup
-      plus fullscreen and maximize-state syncing.
-
-    ``name`` is the mount path for the commands; the JS namespace is its last
-    segment (``WindowControls(name="titlebar")`` →
-    ``__LUMIVIEW__.plugins.titlebar`` and ``titlebar.minimize``).
-
-    NOTE: window-edge resizing needs no markup — for undecorated windows tao
-    already handles the 8 edge/corner hit-tests natively (WM_NCHITTEST) and
-    disables them when maximized/fullscreen. Use data-lumiview-resize-region
-    only for resize handles *inside* the client area (e.g. a splitter bar);
-    do not cover the window border with it.
+    Window-edge resizing needs no markup — tao already handles the 8 hit-tests; use
+    ``data-lumiview-resize-region`` only for handles inside the client area.
     """
 
     def __init__(
@@ -156,9 +139,7 @@ class WindowControls(Plugin):
         self._drag_regions = drag_regions
         self._link_fullscreen = link_fullscreen
         self._link_maximized = link_maximized
-        # Per-window state: one plugin instance may serve several windows
-        # (a Bridge can be shared), so window state must never live on self —
-        # the last window's values would silently overwrite the others'.
+        # One instance may serve several windows: never keep state on self.
         self._maximized: weakref.WeakKeyDictionary[Window, bool] = (
             weakref.WeakKeyDictionary()
         )
@@ -175,8 +156,6 @@ class WindowControls(Plugin):
         """Key under ``__LUMIVIEW__.plugins`` (last segment of the mount path)."""
 
         return self._full_name("").split(".")[-1]
-
-    # Lifecycle
 
     def on_init(self, ctx: InitContext) -> InitContext:
         scope_path = self._full_name("")
@@ -197,7 +176,7 @@ class WindowControls(Plugin):
             return
         self._maximized[window] = window.is_maximized().result()
         self._emit_maximized(window)
-        window.on(WindowEvent.ResizedEvent)(self._sync_maximized)
+        window.on(WindowEvent.ResizedEvent, self._sync_maximized)
 
     async def _sync_maximized(self, evt: WindowBaseEvent) -> None:
         """Hook handler: broadcast maximize-state changes to JS."""
@@ -217,7 +196,6 @@ class WindowControls(Plugin):
             {"maximized": self._maximized.get(window, False)},
         )
 
-    # Commands (called from JS via the bridge)
     async def minimize(self, ctx: BridgeContext) -> None:
         """Minimize the window."""
 
@@ -244,12 +222,7 @@ class WindowControls(Plugin):
         await ctx.window.start_dragging()
 
     async def start_resize_dragging(self, ctx: BridgeContext, direction: str) -> None:
-        """Start an OS-level resize drag.
-
-        Parameters:
-            direction: One of ``"north"``, ``"south"``, ``"east"``,
-                ``"west"`` and their diagonal combinations.
-        """
+        """Start an OS-level resize drag (``"north"``, ``"east"``, diagonals, ...)."""
 
         target = _RESIZE_DIRECTIONS.get(direction)
         if target is None:

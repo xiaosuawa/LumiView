@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import inspect
 import json
 import logging
 import queue
@@ -28,11 +27,8 @@ from lumiview._core import (
     DeviceRemovedEvent,
     EventLoopControl,
     LoopDestroyedEvent,
-    MainEventsClearedEvent,
     Monitor,
-    NewEventsEvent,
     OpenedEvent,
-    RedrawEventsClearedEvent,
     ReopenEvent,
     TaoEvent,
     TaoEventLoop,
@@ -52,10 +48,9 @@ from lumiview.events import AppBaseEvent, AppEvent
 from lumiview.task import Task, run_async
 from lumiview._utils import (
     Subscription,
-    fn_name,
+    _dispatch_event,
     fmt_ms,
     main_thread,
-    passes_where,
     wait_for_event,
 )
 
@@ -69,45 +64,32 @@ _Command = tuple[str, Callable, tuple, dict[str, Any]]
 
 _log = logging.getLogger("lumiview.app")
 
-# Overall budget for the exit cleanup sequence in run()'s finally block.
-_SHUTDOWN_TIMEOUT = 5
+# The close phase is unbounded; only this post-decision teardown is.
+_TEARDOWN_TIMEOUT = 15.0
 
 if TYPE_CHECKING:
     from lumiview import Window
 
 
 class AppState(Enum):
-    CREATED = auto()  # Configuring, handlers registered
-    STARTING = auto()  # Creating Tao event loop, starting scheduler
-    RUNNING = auto()  # Window/WebView operations allowed
-    STOPPING = auto()  # Rejecting new tasks, closing windows
-    STOPPED = auto()  # Resources released
+    """Lifecycle phase of an :class:`App` (monotonic).
+
+    ``RUNNING`` keeps every native resource alive; ``STOPPED`` (the native loop
+    returned) is where main-thread work and new tasks start failing. A pending exit
+    is not a phase — see :class:`AppEvent.CloseRequestedEvent`.
+    """
+
+    CREATED = auto()  # Configured; run() not called yet
+    RUNNING = auto()  # Native loop + asyncio thread running
+    STOPPED = auto()  # Native loop returned; run() is finishing teardown
 
 
 class App:
     """Desktop application.
 
-    Create one instance, configure it, then call :meth:`run`.
-
-    Parameters:
-        name: Application name (used for platform-specific identity).
-        exit_on_last_window: If True (default), exit when the last window closes.
-           Set to False for tray-based apps.
-        max_workers: Thread pool size for sync :func:`~lumiview.task.task`
-           calls.
-        activation_policy: macOS only — the app activation policy
-           (e.g. ``Accessory`` for menu-bar/agent apps without a Dock
-           icon). Must be set before :meth:`run`; passing it on another
-           platform raises ``ValueError``.
-        app_id: Linux only — the GTK application id (application
-           uniqueness and desktop integration on Wayland). Ignored on
-           other platforms.
-
-    Lifecycle: register an entry via :meth:`run` (main flow) and/or
-    observe via :meth:`on` with :class:`AppEvent.ReadyEvent`. Request
-    exit with :meth:`exit`; cleanup code goes in
-    ``app.on(AppEvent.AppCloseEvent)`` handlers (awaited during
-    shutdown).
+    Create one instance, configure it, then call :meth:`run` (main thread, blocking).
+    Cleanup hooks are :class:`AppEvent.CloseRequestedEvent` (cancellable, the whole
+    API is still alive) and :class:`AppEvent.ClosedEvent` (irreversible).
     """
 
     _instance: App | None = None
@@ -132,83 +114,48 @@ class App:
 
         App._instance = self
 
-        # Configuration
         self._name = name
         self._exit_on_last_window = exit_on_last_window
         self._max_workers = max_workers
         self._activation_policy: ActivationPolicy | None = activation_policy
         self._app_id: str | None = app_id
 
-        # State
+        # Monotonic; written on the main thread only.
         self._state = AppState.CREATED
-        # None = exit not requested yet; the first request wins. Kept
-        # separate from _state so "exit requested" (a promise) is not
-        # conflated with "cleanup executed" (STOPPING).
-        self._exit_code: int | None = None
+        # The committed exit code; written once, on the asyncio thread.
+        self._exit_code = 0
+        # An exit request was accepted and has not been prevented.
+        self._exit_requested = threading.Event()
 
-        # Rust bindings (created in run())
         self._event_loop: TaoEventLoop | None = None
         self._proxy: TaoEventLoopProxy | None = None
 
-        # Thread identity
         self._main_tid: int | None = None
 
-        # Command queue (any thread → main thread)
         self._cmd_queue: queue.Queue[_Command] = queue.Queue()
         self._pending: dict[str, Task[Any]] = {}
-        # Wake signal for main-thread waits: notified when a command is
-        # enqueued and when a dispatched task completes. Waits use
-        # Condition.wait_for with a predicate, so lost-wakeup races are
-        # re-checked instead of hanging.
+        # Wakes main-thread waits; predicate re-checks avoid lost wakeups.
         self._wake_cond = threading.Condition()
 
-        # Async infrastructure
         self._async_loop: asyncio.AbstractEventLoop | None = None
         self._async_thread: threading.Thread | None = None
         self._async_ready: threading.Event = threading.Event()
         self._threadpool: ThreadPoolExecutor | None = None
 
-        # Synchronization for state shared with worker/asyncio threads.
-        # The GIL only made single bytecodes atomic; the free-threaded build
-        # removes even that serialization, so compound operations need locks.
         self._pending_lock = threading.Lock()
         self._handlers_lock = threading.Lock()
-        self._exit_lock = threading.Lock()
-        # Set as soon as shutdown is requested; rejects new cross-thread work
-        # before the tao loop reaches _handle_exit_event.
-        self._closing = False
 
-        # Event handlers
         self._handlers: dict[type[AppBaseEvent], list[_HandlerEntry]] = {}
 
-        # Windows
-        self._windows: dict[int, Window] = {}
-        # _windows is mutated on the main thread only; the reader lock lets
-        # other threads take a consistent snapshot (free-threaded builds do
-        # not guarantee that dict iteration survives concurrent mutation).
+        self._windows: dict[int, "Window"] = {}
+        # Mutated on the main thread; the lock gives other threads a snapshot.
         self._windows_lock = threading.Lock()
 
-        # Menus: roots registered on the main thread (kept alive here so
-        # unsendable native objects only drop on the main thread) and the
-        # id → item table used to resolve activation events.
+        # Kept alive on the main thread (unsendable natives) + id → item table.
         self._menus: list[Any] = []
         self._menu_items: dict[str, Any] = {}
 
-        # Tray icons: id → TrayIcon (main-thread owned; multiple allowed).
         self._trays: dict[str, Any] = {}
-
-        # Shutdown dispatches (window ClosedEvent + AppCloseEvent),
-        # awaited in run()'s finally so waiters and Close handlers
-        # actually run before the asyncio loop stops.
-        self._close_tasks: list[Task[None]] = []
-
-    @staticmethod
-    def _check_activation_policy(policy: ActivationPolicy | None) -> None:
-        """Reject ``activation_policy`` outside macOS before any state exists."""
-        if policy is not None and sys.platform != "darwin":
-            raise ValueError("activation_policy is macOS only")
-
-    # Singleton access
 
     @classmethod
     def get(cls) -> App:
@@ -231,24 +178,25 @@ class App:
 
         return self._state
 
-    # Public introspection
+    @property
+    def is_running(self) -> bool:
+        """True while the app is ``RUNNING`` (the whole close phase included).
+
+        It answers "is the native loop alive?", not "will new work be accepted?".
+        """
+        return self.state is AppState.RUNNING
 
     @property
-    def is_exit(self) -> bool:
-        """True if the app is exiting (after :meth:`exit` or window close)."""
-        return self._closing or self._state in (AppState.STOPPING, AppState.STOPPED)
+    def is_stopped(self) -> bool:
+        """True once the native loop has returned (``STOPPED``)."""
+        return self.state is AppState.STOPPED
 
     @property
     def async_loop(self) -> asyncio.AbstractEventLoop | None:
-        """The asyncio loop that runs user coroutines, or ``None``.
-
-        ``None`` before :meth:`run` starts and once shutdown begins, so
-        third-party threads can hand it to
-        ``asyncio.run_coroutine_threadsafe`` without racing a dead loop.
-        The loop is owned by the app — never call ``stop()`` / ``close()``
-        on it.
+        """The asyncio loop that runs user coroutines, or ``None`` before :meth:`run` and
+        once the native loop returned. Owned by the app — never stop or close it.
         """
-        if self.is_exit:
+        if self.is_stopped:
             return None
         return self._async_loop
 
@@ -272,9 +220,8 @@ class App:
     def monitors(self) -> list[Monitor]:
         """All connected monitors.
 
-        Call it from ``entry`` (or any handler) before creating the first
-        window to size/center that window — the tao event loop does not
-        exist before ``App.run()``.
+        Call it from ``entry`` or a handler — the tao loop does not exist before
+        :meth:`run`.
         """
         if self._event_loop is None:
             raise RuntimeError("App is not running — call App.run() first")
@@ -287,35 +234,23 @@ class App:
             raise RuntimeError("App is not running — call App.run() first")
         return self._event_loop.primary_monitor()
 
-    # Event handlers
-
     def on(
         self,
         event: type[_E],
+        handler: Callable[[_E], Any] | None = None,
         *,
         where: Callable[[_E], bool] | None = None,
-    ) -> Subscription:
-        """Register a handler for an app event class.
+    ) -> Subscription[_E]:
+        """Register a handler for an app event class (sync or async).
 
-        ``app.on(AppEvent.ReadyEvent)(handler)`` — the handler receives
-        the event object. Can be sync or async — auto-detected. Runs on
-        the asyncio loop (NOT the GUI thread).
-
-        *where* is a filter function — the event class binds its parameter
-        type, so a mistyped field is a static error::
-
-            app.on(
-                AppEvent.MenuItemActivatedEvent,
-                where=lambda e: e.id == "quit",
-            )(on_quit)
-
-        Parameters:
-            event: The :class:`AppBaseEvent` subclass to handle.
-            where: Optional filter function ``(event) -> bool``; only
-                matching events reach the handler. Runs inline during
-                dispatch, so it must be synchronous.
+        Pass *handler* to register it right away, or call the returned
+        cancellable :class:`~lumiview.Subscription` (the decorator form).
+        ``where`` runs inline during dispatch, so it must be synchronous.
         """
-        return Subscription(self._handlers, event, where, self._handlers_lock)
+        sub = Subscription(self._handlers, event, where, self._handlers_lock)
+        if handler is not None:
+            sub(handler)
+        return sub
 
     def wait_for(
         self,
@@ -324,24 +259,12 @@ class App:
         where: Callable[[_E], bool] | None = None,
         timeout: float | None = None,
     ) -> Task[_E]:
-        """Wait for the next app event of *event* that matches *where*.
+        """Wait for the next app event of *event* that matches *where* (one-shot).
 
-        One-shot: the returned :class:`~lumiview.task.Task` resolves with
-        the event and the temporary handler is removed. Must be registered
-        before the event fires — call it from ``entry`` or a
-        :class:`~lumiview.events.AppEvent.ReadyEvent` handler::
-
-            async def entry():
-                closed = app.wait_for(AppEvent.AppCloseEvent)
-                app.exit(0)
-                await closed
-
-        The task fails with :class:`AppClosedError` if the app shuts down
-        first, and with :class:`TimeoutError` when *timeout* seconds
-        elapse. Like :meth:`on`, the temporary handler runs on the asyncio
-        loop (NOT the GUI thread).
+        Fails with ``AppClosedError`` when :class:`AppEvent.ClosedEvent` fires first, and
+        with ``TimeoutError`` after *timeout*. Register it before the event can fire.
         """
-        if self.is_exit:
+        if self.is_stopped:
             return Task._failed(AppClosedError())
         return wait_for_event(
             self._handlers,
@@ -349,12 +272,10 @@ class App:
             where=where,
             timeout=timeout,
             lock=self._handlers_lock,
-            close_event=AppEvent.AppCloseEvent,
-            is_closed=lambda: self.is_exit,
-            closed_error=lambda: AppClosedError()
+            close_event=AppEvent.ClosedEvent,
+            is_closed=lambda: self.is_stopped,
+            closed_error=AppClosedError,
         )
-
-    # Bridge: any thread → main thread
 
     def is_main_thread(self) -> bool:
         """True if the caller is on the tao / native GUI thread."""
@@ -363,20 +284,14 @@ class App:
     def call_on_main(
         self, fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> Task[T]:
-        """Run *fn* on the main thread, return a :class:`Task`.
+        """Run *fn* on the main thread (inline when already there); returns a ``Task``.
 
-        On the main thread, executes directly. Otherwise queues the call.
-
-        Use ``await handle`` from asyncio, or ``handle.result()`` from
-        any other thread.
+        Fails with ``AppClosedError`` once the native loop has returned.
         """
-        if self.is_exit:
+        if self.is_stopped:
             return Task._failed(AppClosedError())
-        if self._state == AppState.CREATED:
-            # Not running yet — a queued command would never be consumed
-            # (no tao loop, no proxy wake) and the handle would hang
-            # silently. Mirrors the not-running behavior of
-            # _submit_async/_submit_sync.
+        if self.state is AppState.CREATED:
+            # No loop to drain a queued command; fail instead of hanging.
             return Task._failed(
                 RuntimeError("App is not running — call App.run() first")
             )
@@ -399,42 +314,34 @@ class App:
         kwargs: dict[str, object],
     ) -> None:
         req_id = uuid.uuid4().hex
-        # Register and check the closing flag under one lock: the shutdown
-        # sweep swaps the whole dict out, so a handle can never be inserted
-        # between its snapshot and clear() and then silently dropped.
+        # Register under the lock _finish swaps the dict with (no lost handle).
         with self._pending_lock:
-            closing = self._closing
-            if not closing:
+            closed = self.is_stopped
+            if not closed:
                 self._pending[req_id] = handle
-        if closing:
-            # Settle outside the lock: Future callbacks run synchronously
-            # and may call back into App.
-            if not handle.done():
-                handle.set_exception(AppClosedError())
+        if closed:
+            # Settle outside the lock: callbacks may re-enter App.
+            handle._settle(exc=AppClosedError())
             return
         try:
             self._cmd_queue.put((req_id, fn, args, kwargs))
             with self._wake_cond:
                 self._wake_cond.notify_all()
-            proxy = self._proxy
-            if proxy is not None:
-                proxy.send_event(json.dumps({"cmd": "wake", "id": req_id}))
+            self._wake_main("wake")
         except Exception:
-            # The event loop can close between the admission check and the
-            # wake-up. Settle the handle here instead of leaving it pending
-            # forever (and never leak the exception to the caller thread).
+            # The loop can close between the check and the wake — settle here.
             with self._pending_lock:
                 self._pending.pop(req_id, None)
-            if not handle.done():
-                handle.set_exception(AppClosedError())
-
-    # Main-thread command processing
+            handle._settle(exc=AppClosedError())
 
     def _drain_commands(self) -> None:
         n = 0
         t0 = time.monotonic()
-        while not self._cmd_queue.empty():
-            req_id, fn, args, kwargs = self._cmd_queue.get_nowait()
+        while True:
+            try:
+                req_id, fn, args, kwargs = self._cmd_queue.get_nowait()
+            except queue.Empty:
+                break
             n += 1
             try:
                 result = fn(*args, **kwargs)
@@ -447,22 +354,19 @@ class App:
     def _respond(self, req_id: str, value: object, exc: BaseException | None) -> None:
         with self._pending_lock:
             handle = self._pending.pop(req_id, None)
-        if handle is None or handle.cancelled():
+        if handle is None:
             return
         if exc is not None:
-            handle.set_exception(exc)
+            handle._settle(exc=exc)
         else:
-            handle.set_result(value)
+            handle._settle(result=value)
 
     # Async scheduling (single choke point for "wake the loop")
 
     def _call_soon_threadsafe(self, fn: Callable[[], Any]) -> bool:
-        """Schedule *fn* on the asyncio loop.
+        """Schedule *fn* on the asyncio loop; ``False`` when the loop is missing or closed.
 
-        Returns ``False`` when the loop is missing or already closed, so
-        callers can settle their own Task / response instead of racing a
-        dead loop. Deliberately ignores ``_closing``: shutdown still needs
-        the loop to dispatch cleanup handlers.
+        Ignores the app state — the close phase still needs the loop.
         """
         loop = self._async_loop
         if loop is None:
@@ -479,11 +383,7 @@ class App:
         *,
         context: contextvars.Context | None = None,
     ) -> bool:
-        """Schedule *coro* on the asyncio loop; close it when that fails.
-
-        *context* (from :func:`contextvars.copy_context`) makes the new task
-        inherit the caller's contextvars; used by :func:`lumiview.task.task`.
-        """
+        """Schedule *coro* on the loop; close it and return ``False`` when that fails."""
 
         def _start() -> None:
             if context is None:
@@ -496,79 +396,11 @@ class App:
         coro.close()
         return False
 
-    # Event dispatch (internal)
-
-    def _dispatch_handlers(
-        self,
-        handlers: list[_HandlerEntry],
-        event: AppBaseEvent,
-        *,
-        stop_on_error: bool = False,
-    ) -> "Task[None] | None":
-        """Run *handlers* for *event* on the asyncio loop.
-
-        Each handler is a ``(callback, where)`` pair; pairs whose
-        filter does not match are skipped.
-
-        Returns a completion signal (a :class:`Task` resolved when all
-        handlers finish) or None when there is no loop or no handlers.
-        Shared by :meth:`_emit` and the per-item menu activation
-        callbacks.
-        """
-        loop = self._async_loop
-        if loop is None or not handlers:
-            return None
-
-        matched: list[_Handler] = [
-            fn for fn, where in handlers if passes_where(where, event)
-        ]
-
-        if not matched:
-            return None
-
-        _log.debug(
-            "dispatching %s to %d handler(s): %s",
-            type(event).__name__,
-            len(matched),
-            ", ".join(fn_name(h) for h in matched),
-        )
-        done: Task[None] = Task()
-
-        async def _dispatch() -> None:
-            first_exc: BaseException | None = None
-            for fn in matched:
-                try:
-                    await run_async(fn, event)
-                except BaseException as exc:
-                    _log.exception(f"Error in {type(event).__name__} handler: {fn}")
-                    if stop_on_error:
-                        first_exc = exc
-                        break
-            if first_exc is not None:
-                done.set_exception(first_exc)
-            else:
-                done.set_result(None)
-
-        if not self._call_soon_threadsafe(lambda: asyncio.create_task(_dispatch())):
-            # Loop closed during shutdown: no handler will run, but the
-            # caller still needs a settled completion signal.
-            done.set_result(None)
-        return done
-
-    def _emit(
-        self, event: AppBaseEvent, *, stop_on_error: bool = False
-    ) -> "Task[None] | None":
-        """Dispatch an app event to registered handlers on the asyncio loop.
-
-        Returns a completion signal (a :class:`Task` resolved when all
-        handlers finish) or None when there is no loop or no handlers.
-        Callers
-        that don't need to wait may ignore the return value — only
-        ``_handle_exit_event`` consumes it.
-        """
+    def _emit(self, event: AppBaseEvent) -> "Task[None] | None":
+        """Dispatch an app event; returns a completion ``Task`` or ``None``."""
         with self._handlers_lock:
             entries = list(self._handlers.get(type(event), ()))
-        return self._dispatch_handlers(entries, event, stop_on_error=stop_on_error)
+        return _dispatch_event(self, entries, event)
 
     # Menu / tray events (GUI thread → asyncio loop)
 
@@ -579,339 +411,414 @@ class App:
         item = self._menu_items.get(event.id)
         ev = AppEvent.MenuItemActivatedEvent(id=event.id, menu_item=item)
         if item is not None:
-            # Resolve the item's own on_activate callbacks on the asyncio
-            # loop, in registration order. They carry no `where`
-            # predicate, so pair them with None for the shared dispatcher.
-            self._dispatch_handlers(
-                [(fn, None) for fn in list(item._activate_callbacks)], ev
+            # Per-item callbacks first, in registration order (no `where`).
+            _dispatch_event(
+                self, [(fn, None) for fn in list(item._activate_callbacks)], ev
             )
         self._emit(ev)
 
     def _on_tray_event(self, event: Any) -> None:
         """Called on the GUI thread for tray icon events."""
         tray = self._trays.get(event.id)
-        if isinstance(event, TrayIconClickEvent):
-            self._emit(
-                AppEvent.TrayIconClickEvent(
-                    id=event.id,
-                    position=event.position,
-                    rect=event.rect,
-                    button=event.button,
-                    button_state=event.button_state,
-                    tray=tray,
+        match event:
+            case TrayIconClickEvent(
+                id=tray_id,
+                position=position,
+                rect=rect,
+                button=button,
+                button_state=state,
+            ):
+                self._emit(
+                    AppEvent.TrayIconClickEvent(
+                        id=tray_id,
+                        position=position,
+                        rect=rect,
+                        button=button,
+                        button_state=state,
+                        tray=tray,
+                    )
                 )
-            )
-        elif isinstance(event, TrayIconDoubleClickEvent):
-            self._emit(
-                AppEvent.TrayIconDoubleClickEvent(
-                    id=event.id,
-                    position=event.position,
-                    rect=event.rect,
-                    button=event.button,
-                    tray=tray,
-                )
-            )
-        elif isinstance(event, TrayIconEnterEvent):
-            self._emit(
-                AppEvent.TrayIconEnterEvent(
-                    id=event.id, position=event.position, rect=event.rect, tray=tray
-                )
-            )
-        elif isinstance(event, TrayIconMoveEvent):
-            self._emit(
-                AppEvent.TrayIconMoveEvent(
-                    id=event.id, position=event.position, rect=event.rect, tray=tray
-                )
-            )
-        elif isinstance(event, TrayIconLeaveEvent):
-            self._emit(
-                AppEvent.TrayIconLeaveEvent(
-                    id=event.id, position=event.position, rect=event.rect, tray=tray
-                )
-            )
 
-    # Run loop
+            case TrayIconDoubleClickEvent(
+                id=tray_id, position=position, rect=rect, button=button
+            ):
+                self._emit(
+                    AppEvent.TrayIconDoubleClickEvent(
+                        id=tray_id,
+                        position=position,
+                        rect=rect,
+                        button=button,
+                        tray=tray,
+                    )
+                )
+
+            case TrayIconEnterEvent(id=tray_id, position=position, rect=rect):
+                self._emit(
+                    AppEvent.TrayIconEnterEvent(
+                        id=tray_id, position=position, rect=rect, tray=tray
+                    )
+                )
+
+            case TrayIconMoveEvent(id=tray_id, position=position, rect=rect):
+                self._emit(
+                    AppEvent.TrayIconMoveEvent(
+                        id=tray_id, position=position, rect=rect, tray=tray
+                    )
+                )
+
+            case TrayIconLeaveEvent(id=tray_id, position=position, rect=rect):
+                self._emit(
+                    AppEvent.TrayIconLeaveEvent(
+                        id=tray_id, position=position, rect=rect, tray=tray
+                    )
+                )
+
+            case _:
+                pass
 
     def run(
         self,
         entry: Callable[[], Any] | None = None,
     ) -> int:
-        """Start the application. Blocks until exit.
+        """Start the application; blocks the main thread until exit.
 
-        Must be called from the main thread; create windows inside
-        *entry* (or in :class:`AppEvent.ReadyEvent` handlers).
-
-        Parameters:
-            entry: An async or sync function to call once the app is ready.
-
-        Returns:
-            Exit code (0 for normal exit).
+        Returns the exit code. ``entry`` may be sync or async and runs after every
+        :class:`~lumiview.events.AppEvent.ReadyEvent` handler finished.
         """
-        if self._state != AppState.CREATED:
+        if self.state is not AppState.CREATED:
             raise RuntimeError(
-                f"App already {'running' if self._state == AppState.RUNNING else 'finished'}. "
+                f"App already {'running' if self.state is AppState.RUNNING else 'finished'}. "
                 "Cannot run() twice."
             )
 
         if threading.current_thread() is not threading.main_thread():
             raise RuntimeError("App.run() must be called from the main thread")
 
-        self._state = AppState.STARTING
         _log.info("App %r starting", self._name)
 
+        self._main_tid = threading.get_ident()
         self._event_loop = TaoEventLoop(app_id=self._app_id)
         self._proxy = self._event_loop.create_proxy()
-        self._main_tid = threading.get_ident()
-
         self._threadpool = ThreadPoolExecutor(
             max_workers=self._max_workers,
             thread_name_prefix="lumiview-pool",
         )
 
-        # Menus and trays: mark the loop as running (the construction
-        # guard checked by TaoMenu/TaoTrayIcon), register the single
-        # per-process event callbacks (muda and tray-icon accept exactly
-        # one handler each), apply the macOS activation policy before the
-        # loop consumes the EventLoop, and install the default macOS menu
-        # bar (Application/Edit/Window — replaceable via
-        # ``await menu.install_nsapp()``).
-        set_loop_running(True)
-
-        if self._activation_policy is not None:
-            # Validated in __init__ — this branch is macOS-only by construction.
-            self._event_loop.set_activation_policy(self._activation_policy)
-
-        init_menu_events(_menu_event_bridge)
-        init_tray_events(_tray_event_bridge)
-
-        if sys.platform == "darwin":
-            try:
-                from lumiview.menu import Menu
-
-                Menu.default_app_menu().install_nsapp()
-            except Exception:
-                _log.exception("Failed to install default macOS menu")
-
-        # Install Ctrl+C handler. signal.signal() only works on the
-        # main thread — background-thread runs (e.g. future test
-        # harness) skip it.
-        def _sigint_handler(signum, frame):
-            self._on_sigint()
-
         original_sigint = signal.getsignal(signal.SIGINT)
 
-        signal.signal(signal.SIGINT, _sigint_handler)
-
-        self._async_thread = threading.Thread(
-            target=self._run_asyncio,
-            args=(entry,),
-            daemon=True,
-            name="lumiview-async",
-        )
-        self._async_thread.start()
-
+        # Pre-loop failures propagate; a crash inside the loop is logged.
+        started = False
         try:
-            # Wait for the asyncio loop to be ready. _run_asyncio always
-            # signals the event (also on startup failure), so this cannot
-            # hang; a failed startup is reported below.
+            # muda/tray-icon accept one callback each; the macOS policy and menu
+            # bar must be installed before the loop consumes the EventLoop.
+            set_loop_running(True)
+
+            if self._activation_policy is not None:
+                self._event_loop.set_activation_policy(self._activation_policy)
+
+            init_menu_events(_menu_event_bridge)
+            init_tray_events(_tray_event_bridge)
+
+            if sys.platform == "darwin":
+                try:
+                    from lumiview.menu import Menu
+
+                    Menu.default_app_menu().install_nsapp()
+                except Exception:
+                    _log.exception("Failed to install default macOS menu")
+
+            signal.signal(signal.SIGINT, lambda *_: self._on_sigint())
+
+            # RUNNING before the asyncio thread starts: entry must see it running.
+            self._state = AppState.RUNNING
+            _log.info("App %r running", self._name)
+
+            self._async_thread = threading.Thread(
+                target=self._run_asyncio,
+                args=(entry,),
+                daemon=True,
+                name="lumiview-async",
+            )
+            self._async_thread.start()
+
+            # _run_asyncio always signals, so this cannot hang.
             self._async_ready.wait()
             if self._async_loop is None:
                 raise RuntimeError("Failed to start the asyncio thread")
 
-            self._state = AppState.RUNNING
-            _log.info("App %r running", self._name)
-
-            # Run the Tao event loop (blocks main thread).
+            started = True
             self._event_loop.run(self._on_tao_event)
         except Exception:
+            if not started:
+                raise
             _log.exception("Event loop crashed")
         finally:
-            self._state = AppState.STOPPED
-            _log.info("App %r stopped", self._name)
+            self._finish(original_sigint)
 
-            signal.signal(signal.SIGINT, original_sigint)
-
-            # Wait for the shutdown dispatches (window ClosedEvent, then
-            # AppCloseEvent) before stopping the asyncio loop, so waiters
-            # and Close handlers actually run.
-            for done in self._close_tasks:
-                try:
-                    done.result()
-                except KeyboardInterrupt:
-                    _log.warning("interrupted while waiting for Close handlers")
-                except BaseException:
-                    _log.exception("Close handler wait failed")
-
-            # Each cleanup step below is individually guarded: a second
-            # Ctrl+C (KeyboardInterrupt — the original handler is already
-            # restored) must not skip the remaining steps, so run() still
-            # returns cleanly and no handle is left hanging.
-            # 1. Cancel pending asyncio tasks so hung awaits fail fast
-            #    with CancelledError, then stop the loop. asyncio objects
-            #    are not thread-safe, so the whole pass runs on the loop
-            #    thread via call_soon_threadsafe — doing it here would
-            #    race task creation and, on error, could skip loop.stop().
-            try:
-                loop = self._async_loop
-                if loop is not None:
-
-                    def _cancel_and_stop() -> None:
-                        for task in asyncio.all_tasks(loop):
-                            task.cancel()
-                        loop.stop()
-
-                    try:
-                        loop.call_soon_threadsafe(_cancel_and_stop)
-                    except RuntimeError:
-                        _log.debug("asyncio loop already closed")
-                if self._async_thread is not None:
-                    self._async_thread.join(timeout=_SHUTDOWN_TIMEOUT)
-                    if self._async_thread.is_alive():
-                        _log.warning(
-                            f"async thread did not exit within remaining budget ({_SHUTDOWN_TIMEOUT}s)"
-                        )
-            except BaseException:
-                _log.exception("Interrupted during asyncio shutdown")
-
-            # 2. Fail pending main-thread command handles. After the
-            #    event loop returns, the main thread no longer drains
-            #    the command queue — these would otherwise hang forever.
-            #    Swap the dict out under the lock: a concurrent _enqueue
-            #    either lands before the swap (and is failed here) or
-            #    sees _closing and fails its own handle.
-            try:
-                with self._pending_lock:
-                    self._closing = True
-                    pending, self._pending = self._pending, {}
-                for handle in pending.values():
-                    if not handle.done():
-                        handle.set_exception(AppClosedError())
-            except BaseException:
-                _log.exception("Interrupted while failing pending handles")
-
-            # 3. Thread pool: cancel queued (not yet started) work.
-            #    Tasks already running on pool threads cannot be
-            #    interrupted — documented limitation.
-            if self._threadpool is not None:
-                try:
-                    self._threadpool.shutdown(wait=False, cancel_futures=True)
-                except BaseException:
-                    _log.exception("Interrupted while shutting down thread pool")
-
-            set_loop_running(False)
-
-        return self._exit_code if self._exit_code is not None else 0
+        return self._exit_code
 
     def _on_sigint(self) -> None:
-        """Handle SIGINT without taking any app lock.
+        """Request a graceful exit; a second Ctrl+C once the request is latched forces it.
 
-        Signal handlers run on the main thread, which may be inside a
-        ``_pending_lock`` / ``_exit_lock`` critical section when the signal
-        arrives — :meth:`exit` acquires both, so calling it here would
-        self-deadlock the GUI thread (``threading.Lock`` is not reentrant).
-        Hand the request to the asyncio loop instead, and fall back to the
-        tao proxy when the loop is already gone.
+        The latch is cleared again by ``prevent()``, so the next Ctrl+C negotiates
+        instead of forcing.
         """
+        if self._exit_requested.is_set():
+            _log.warning("Ctrl+C during shutdown — forcing exit")
+            self._wake_main("exit-now")
+            return
         _log.info("Ctrl+C received, shutting down...")
-        loop = self._async_loop
-        if loop is not None:
-            try:
-                loop.call_soon_threadsafe(self.exit)
-                return
-            except RuntimeError:
-                _log.debug("asyncio loop already closed during SIGINT")
-        proxy = self._proxy
-        if proxy is not None:
-            try:
-                proxy.send_event(json.dumps({"cmd": "exit"}))
-            except Exception:
-                pass
+        self.exit()
 
     def exit(self, code: int = 0) -> None:
         """Request a graceful shutdown; ``run()`` returns *code*.
 
-        Only records the request (first request wins) and wakes the
-        main thread — it does **not** transition the state. The actual
-        cleanup (closing windows, emitting :class:`AppCloseEvent`) runs
-        when the exit event is handled on the main thread, so
-        ``_handle_exit_event`` remains the single transition into
-        STOPPING.
+        The first request wins. Close handlers run first and may cancel with
+        ``event.prevent()``.
         """
-        with self._exit_lock:
-            if self._exit_code is not None:
-                # Already requested — ignore so the first requested exit
-                # code wins. A window closing mid-shutdown (_remove_window,
-                # code 0) can no longer overwrite an explicit exit(code).
-                return
-            if self._state == AppState.CREATED:
-                # Not running yet — nothing to shut down. Ignore the request,
-                # or run() would later misreport "App already finished".
+        if not self.is_running or self._exit_requested.is_set():
+            return
+        if self._spawn(self._negotiate_exit(code)):
+            return
+
+        # No loop: record the request and leave now; _finish() still tears down.
+        _log.warning("asyncio loop unavailable; the close handlers will not run")
+        self._exit_requested.set()
+        self._exit_code = code
+        self._wake_main("exit-now")
+
+    def _wake_main(self, cmd: str) -> None:
+        """Post *cmd* to the native loop (any thread)."""
+        try:
+            if self._proxy is not None:
+                self._proxy.send_event(json.dumps({"cmd": cmd}))
+        except Exception:
+            _log.exception("could not post %r to the native loop", cmd)
+
+    # Close phase (asyncio thread) and teardown (main thread)
+
+    async def _negotiate_exit(self, code: int) -> None:
+        """Let the close handlers decide, then commit or cancel.
+
+        Runs on the asyncio thread while everything is still alive. The request stays
+        latched unless a handler prevents it; the commit point (where the exit code is
+        recorded) only decides whether the native loop is asked to return.
+        """
+        if self._exit_requested.is_set() or not self.is_running:
+            return
+
+        self._exit_requested.set()
+        t0 = time.monotonic()
+        try:
+            event = AppEvent.CloseRequestedEvent(exit_code=code)
+            done = self._emit(event)
+            if done is not None:
+                await done
+            if event.prevented:
+                self._exit_requested.clear()
+                _log.info("App %r shutdown prevented", self._name)
                 return
             self._exit_code = code
+            _log.info("App %r closing (code=%d)", self._name, code)
+            self._wake_main("exit-now")
+        except asyncio.CancelledError:
+            _log.debug("close phase cancelled")
+            raise
+        except BaseException:
+            _log.exception("Error during the close phase")
+            # A crashing handler must not turn exit() into a no-op.
+            self._exit_code = code
+            self._wake_main("exit-now")
+        finally:
+            _log.debug("close phase finished in %.1fms", fmt_ms(t0))
 
-        # Stop admitting cross-thread work immediately: the tao thread may
-        # take several more turns to reach _handle_exit_event, and anything
-        # queued in that window would never be drained.
-        with self._pending_lock:
-            self._closing = True
+    def _teardown_native(self) -> list[Task[None]]:
+        """Release windows (dispatching ``ClosedEvent``), trays and menus, in that order.
 
-        proxy = self._proxy
-        if proxy is not None:
+        Idempotent; returns the dispatches so the caller can await them.
+        """
+        dispatches: list[Task[None]] = []
+        for win in self.windows:
             try:
-                proxy.send_event(json.dumps({"cmd": "exit"}))
+                win._release_native()
             except Exception:
-                pass
+                _log.exception("Error closing window")
+            finally:
+                try:
+                    done = win._fail_closed()
+                except Exception:
+                    _log.exception("Error dispatching ClosedEvent")
+                else:
+                    if done is not None:
+                        dispatches.append(done)
 
-    # App-level visibility (main thread; returns Task)
+        with self._windows_lock:
+            self._windows.clear()
+
+        for objects, what in (
+            (list(self._trays.values()), "tray icon"),
+            (self._menus, "menu"),
+            (list(self._menu_items.values()), "menu item"),
+        ):
+            for obj in objects:
+                try:
+                    obj._release_native()
+                except Exception:
+                    _log.exception("Error releasing %s", what)
+        self._trays.clear()
+        self._menus.clear()
+        self._menu_items.clear()
+        return dispatches
+
+    def _finish(self, original_sigint: Any) -> None:
+        """Tear down everything once the native loop returned (main thread).
+
+        Each step is guarded so a second Ctrl+C cannot skip the rest.
+        """
+        try:
+            signal.signal(signal.SIGINT, original_sigint)
+        except Exception:
+            _log.debug("could not restore the SIGINT handler", exc_info=True)
+
+        # 1. Flip the state and take the pending handles atomically.
+        with self._pending_lock:
+            self._state = AppState.STOPPED
+            pending, self._pending = self._pending, {}
+        _log.info("App %r stopping", self._name)
+
+        try:
+            for handle in pending.values():
+                handle._settle(exc=AppClosedError())
+        except BaseException:
+            _log.exception("Interrupted while failing pending handles")
+
+        # 2. Tear down natively, then emit ClosedEvent while the loop is alive.
+        try:
+            dispatches = self._teardown_native()
+            done = self._emit(AppEvent.ClosedEvent(exit_code=self._exit_code))
+            if done is not None:
+                dispatches.append(done)
+            self._wait_dispatches(dispatches)
+        except BaseException:
+            _log.exception("Interrupted during teardown")
+
+        # 3. Cancel the remaining tasks, let them unwind, close the loop.
+        try:
+            self._stop_async_loop()
+        except BaseException:
+            _log.exception("Interrupted during asyncio shutdown")
+
+        # 4. Pool last: cancelled coroutines may still run finally blocks on it.
+        if self._threadpool is not None:
+            try:
+                self._threadpool.shutdown(wait=False, cancel_futures=True)
+            except BaseException:
+                _log.exception("Interrupted while shutting down thread pool")
+
+        set_loop_running(False)
+        _log.info("App %r stopped", self._name)
+
+    def _wait_dispatches(self, dispatches: list[Task[None]]) -> None:
+        """Await the ``ClosedEvent`` dispatches (main thread, bounded)."""
+        deadline = time.monotonic() + _TEARDOWN_TIMEOUT
+        for done in dispatches:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _log.warning(
+                    "close handlers did not finish within %.1fs",
+                    _TEARDOWN_TIMEOUT,
+                )
+                return
+            try:
+                done.result(timeout=remaining)
+            except KeyboardInterrupt:
+                _log.warning("interrupted while waiting for close handlers")
+            except BaseException:
+                _log.exception("Close handler wait failed")
+
+    def _stop_async_loop(self) -> None:
+        """Cancel the remaining tasks, let them unwind, then stop and join the loop.
+
+        ``cancel()`` needs the loop running — stopping it in the same step would drop
+        every ``finally`` block.
+        """
+        loop, thread = self._async_loop, self._async_thread
+        if loop is not None and loop.is_running():
+            coro = self._finalize_loop()
+            try:
+                finalize = asyncio.run_coroutine_threadsafe(coro, loop)
+            except RuntimeError:
+                coro.close()
+            else:
+                try:
+                    finalize.result(timeout=_TEARDOWN_TIMEOUT)
+                except BaseException:
+                    _log.warning(
+                        "asyncio shutdown did not finish within %.1fs",
+                        _TEARDOWN_TIMEOUT,
+                        exc_info=True,
+                    )
+                try:
+                    loop.call_soon_threadsafe(loop.stop)
+                except RuntimeError:
+                    pass
+
+        if thread is not None:
+            thread.join(timeout=_TEARDOWN_TIMEOUT)
+            if thread.is_alive():
+                _log.warning(
+                    "asyncio thread did not exit within %.1fs",
+                    _TEARDOWN_TIMEOUT,
+                )
+
+        self._async_loop = None
+
+    async def _finalize_loop(self) -> None:
+        """Cancel the remaining tasks and await their unwinding (runs on the loop)."""
+        loop = asyncio.get_running_loop()
+        current = asyncio.current_task()
+        tasks = [task for task in asyncio.all_tasks(loop) if task is not current]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await loop.shutdown_asyncgens()
+        except Exception:
+            _log.exception("shutdown_asyncgens() failed")
 
     @main_thread
     def hide(self) -> None:
-        """Hide the entire application.
+        """Hide the whole application.
 
-        - macOS: hides the whole application (all windows, app removed
-          from the switcher) — the native ``hide_application``, Cmd+H.
-        - Other platforms: hides every open window (there is no
-          platform "hide app" concept there).
-
-        Use :meth:`show` to bring it back. Returns a :class:`Task`.
+        macOS: native ``hide_application`` (Cmd+H). Elsewhere: hide every window.
         """
         if self._event_loop is None:
             return
         if sys.platform == "darwin":
             self._event_loop.hide_application()
             for win in self.windows:
-                win._sync_webview_visibility()
+                win._sync_webview_visibility_impl()
         else:
             for win in self.windows:
-                win.hide()
+                win._hide_impl()
 
     @main_thread
     def show(self) -> None:
-        """Show the entire application again (counterpart of :meth:`hide`).
-
-        - macOS: shows the whole application (native ``show_application``).
-        - Other platforms: shows every open window.
-
-        Returns a :class:`Task`.
-        """
+        """Show the application again (counterpart of :meth:`hide`)."""
         if self._event_loop is None:
             return
         if sys.platform == "darwin":
             self._event_loop.show_application()
             for win in self.windows:
-                win._sync_webview_visibility()
+                win._sync_webview_visibility_impl()
         else:
             for win in self.windows:
-                win.show()
+                win._show_impl()
 
     @main_thread
     def set_dock_visibility(self, visible: bool) -> None:
-        """Show (``True``) or hide (``False``) the macOS Dock icon.
-
-        Combined with ``App(activation_policy=ActivationPolicy.Accessory)``
-        this makes a menu-bar/tray application. **macOS only** — raises
-        :class:`NotImplementedError` elsewhere.
-        """
+        """Show or hide the macOS Dock icon (macOS only)."""
         if sys.platform != "darwin":
             raise NotImplementedError("set_dock_visibility() is macOS only")
         if self._event_loop is None:
@@ -921,9 +828,11 @@ class App:
     def _run_asyncio(self, entry: Callable | None) -> None:
 
         async def _main() -> None:
-            ready = self._emit(AppEvent.ReadyEvent(), stop_on_error=True)
+            # Ready handlers finish before entry starts; a failing handler is only
+            # logged (the remaining ones still run) and does not abort the startup.
+            ready = self._emit(AppEvent.ReadyEvent())
             if ready is not None:
-                ready.on_exception(self._on_ready_failed)
+                await ready
             if entry is not None:
                 try:
                     await run_async(entry)
@@ -942,18 +851,18 @@ class App:
         finally:
             self._async_ready.set()
 
+        loop = self._async_loop
         try:
-            self._async_loop.run_forever()
+            loop.run_forever()
         except BaseException:
             _log.exception("Asyncio loop crashed")
-
-    def _on_ready_failed(self, exc: BaseException) -> None:
-        """A ReadyEvent handler crashed — the startup failed, exit non-zero."""
-        if exc is not None:
-            _log.error("Error in ReadyEvent handler: %s", exc, exc_info=exc)
-            self.exit(1)
-
-    # Window tracking
+        finally:
+            # Close on the loop thread, right after run_forever returns.
+            try:
+                loop.close()
+            except Exception:
+                _log.exception("Failed to close the asyncio loop")
+            asyncio.set_event_loop(None)
 
     def _register_window(self, window: "Window") -> None:
         """Register a fully created window (main thread)."""
@@ -992,183 +901,65 @@ class App:
         if self._exit_on_last_window and empty:
             self.exit()
 
-    # Tao event callback
-
     def _on_tao_event(self, event: TaoEvent) -> EventLoopControl | None:
         self._drain_commands()
 
-        if isinstance(event, UserEvent):
-            data = json.loads(event.data)
-            cmd = data.get("cmd")
-            if cmd == "exit":
-                return self._handle_exit_event()
-            elif cmd == "wake":
-                pass  # just woke us to drain commands
-            return EventLoopControl.Continue
-
-        if isinstance(event, ReopenEvent):
-            # macOS Dock reopen — app-scoped, not tied to a window.
-            # Fire-and-forget: handlers restore/create windows as they see fit.
-            self._emit(
-                AppEvent.ReopenEvent(has_visible_windows=event.has_visible_windows)
-            )
-            return EventLoopControl.Continue
-
-        if isinstance(event, LoopDestroyedEvent):
-            # The event loop is stopping. On macOS this is the only
-            # signal for Cmd+Q / app termination (tao does not intercept
-            # `applicationWillTerminate`, so windows never see a
-            # CloseRequested) — run the graceful shutdown so
-            # AppCloseEvent handlers actually execute. Idempotent via
-            # _handle_exit_event's state check.
-            return self._handle_exit_event()
-
-        # App-scoped loop events (window_id is None). Fire-and-forget:
-        # the per-frame events (NewEvents/MainEventsCleared/
-        # RedrawEventsCleared) only reach handlers if one is registered.
-        if isinstance(event, NewEventsEvent):
-            self._emit(AppEvent.NewEventsEvent(cause=event.cause))
-            return EventLoopControl.Continue
-
-        if isinstance(event, MainEventsClearedEvent):
-            self._emit(AppEvent.MainEventsClearedEvent())
-            return EventLoopControl.Continue
-
-        if isinstance(event, RedrawEventsClearedEvent):
-            self._emit(AppEvent.RedrawEventsClearedEvent())
-            return EventLoopControl.Continue
-
-        if isinstance(event, OpenedEvent):
-            self._emit(AppEvent.OpenedEvent(urls=event.urls))
-            return EventLoopControl.Continue
-
-        if isinstance(event, DeviceAddedEvent):
-            self._emit(AppEvent.DeviceAddedEvent())
-            return EventLoopControl.Continue
-
-        if isinstance(event, DeviceRemovedEvent):
-            self._emit(AppEvent.DeviceRemovedEvent())
-            return EventLoopControl.Continue
-
-        if isinstance(event, DeviceMouseMotionEvent):
-            self._emit(AppEvent.DeviceMouseMotionEvent(dx=event.dx, dy=event.dy))
-            return EventLoopControl.Continue
-
-        if isinstance(event, DeviceMouseWheelEvent):
-            self._emit(
-                AppEvent.DeviceMouseWheelEvent(
-                    delta_kind=event.delta_kind, dx=event.dx, dy=event.dy
-                )
-            )
-            return EventLoopControl.Continue
-
-        if isinstance(event, DeviceMotionEvent):
-            self._emit(AppEvent.DeviceMotionEvent(axis=event.axis, value=event.value))
-            return EventLoopControl.Continue
-
-        if isinstance(event, DeviceButtonEvent):
-            self._emit(
-                AppEvent.DeviceButtonEvent(button=event.button, state=event.state)
-            )
-            return EventLoopControl.Continue
-
-        if isinstance(event, DeviceKeyEvent):
-            self._emit(
-                AppEvent.DeviceKeyEvent(
-                    physical_key=event.physical_key, state=event.state
-                )
-            )
-            return EventLoopControl.Continue
-
-        if isinstance(event, DeviceTextEvent):
-            self._emit(AppEvent.DeviceTextEvent(codepoint=event.codepoint))
-            return EventLoopControl.Continue
-
-        # Every other tao event is window-scoped — route it to the window.
+        # Window-scoped events always carry an id; app events never do.
         if (wid := event.window_id) is not None:
             win = self.get_window(wid)
             if win is not None:
                 win._on_tao_event(event)
+            return EventLoopControl.Continue
+
+        match event:
+            case UserEvent(data=raw):
+                cmd = json.loads(raw).get("cmd")
+                if cmd == "exit-now":
+                    # Close phase over (or forced): leave; _finish does the rest.
+                    return EventLoopControl.Exit
+
+            case ReopenEvent(has_visible_windows=visible):
+                # macOS Dock reopen (fire-and-forget).
+                self._emit(AppEvent.ReopenEvent(has_visible_windows=visible))
+
+            case LoopDestroyedEvent():
+                # macOS Cmd+Q / final exit: nothing can defer this; _finish does the rest.
+                return EventLoopControl.Exit
+
+            # App-scoped loop events (fire-and-forget).
+            case OpenedEvent(urls=urls):
+                self._emit(AppEvent.OpenedEvent(urls=urls))
+
+            case DeviceAddedEvent():
+                self._emit(AppEvent.DeviceAddedEvent())
+
+            case DeviceRemovedEvent():
+                self._emit(AppEvent.DeviceRemovedEvent())
+
+            case DeviceMouseMotionEvent(dx=dx, dy=dy):
+                self._emit(AppEvent.DeviceMouseMotionEvent(dx=dx, dy=dy))
+
+            case DeviceMouseWheelEvent(delta_kind=kind, dx=dx, dy=dy):
+                self._emit(
+                    AppEvent.DeviceMouseWheelEvent(delta_kind=kind, dx=dx, dy=dy)
+                )
+
+            case DeviceMotionEvent(axis=axis, value=value):
+                self._emit(AppEvent.DeviceMotionEvent(axis=axis, value=value))
+
+            case DeviceButtonEvent(button=button, state=state):
+                self._emit(AppEvent.DeviceButtonEvent(button=button, state=state))
+
+            case DeviceKeyEvent(physical_key=key, state=state):
+                self._emit(AppEvent.DeviceKeyEvent(physical_key=key, state=state))
+
+            case DeviceTextEvent(codepoint=codepoint):
+                self._emit(AppEvent.DeviceTextEvent(codepoint=codepoint))
+
+            case _:
+                pass
 
         return EventLoopControl.Continue
-
-    def _handle_exit_event(self) -> EventLoopControl:
-        """Graceful shutdown sequence.
-
-        Single transition into STOPPING: ``exit()`` only records the
-        request, so this runs the real cleanup (closing windows,
-        emitting AppCloseEvent) on every exit path — explicit exit(),
-        Ctrl+C, last-window close, and LoopDestroyed alike.
-        """
-        if self._state == AppState.STOPPING:
-            # Already shutting down — a second trigger (e.g.
-            # LoopDestroyed following an exit() request, or a window
-            # closing mid-cleanup) must not re-run handlers or re-emit
-            # AppCloseEvent.
-            return EventLoopControl.Exit
-        self._state = AppState.STOPPING
-        with self._pending_lock:
-            self._closing = True
-
-        close_tasks: list[Task[None]] = []
-
-        for win in self.windows:
-            try:
-                win._release_native()
-            except Exception:
-                _log.exception("Error closing window")
-            finally:
-                # Emit ClosedEvent for pending wait_for / wait_loaded
-                # waiters; the dispatch is awaited in run()'s finally.
-                try:
-                    done = win._fail_closed()
-                except Exception:
-                    _log.exception("Error dispatching ClosedEvent")
-                else:
-                    if done is not None:
-                        close_tasks.append(done)
-
-        with self._windows_lock:
-            self._windows.clear()
-
-        # Menus and trays: release native handles here, on the main thread
-        # (unsendable objects may only drop on this thread). Trays first —
-        # a tray may hold Arc references into a menu tree; detaching the
-        # subclassed window before the menu drops is the safe order on
-        # Windows. Each object owns its own teardown; only the order lives
-        # here.
-        for tray in list(self._trays.values()):
-            try:
-                tray._release_native()
-            except Exception:
-                _log.exception("Error closing tray icon")
-        self._trays.clear()
-
-        for menu in self._menus:
-            try:
-                menu._release_native()
-            except Exception:
-                _log.exception("Error releasing menu")
-        for item in self._menu_items.values():
-            try:
-                item._release_native()
-            except Exception:
-                _log.exception("Error releasing menu item")
-        self._menus.clear()
-        self._menu_items.clear()
-
-        # Emit Close for remaining handlers. The dispatches are awaited in
-        # run()'s finally block before the asyncio loop stops, so cleanup
-        # handlers and pending waiters actually run.
-        app_close = self._emit(AppEvent.AppCloseEvent())
-        if app_close is not None:
-            close_tasks.append(app_close)
-        self._close_tasks = close_tasks
-
-        return EventLoopControl.Exit
-
-
-# Error types
 
 
 class AppClosedError(RuntimeError):
@@ -1188,13 +979,8 @@ class WindowClosedError(RuntimeError):
         super().__init__(msg)
 
 
-# Event bridges (module level — held by the Rust OnceLock callbacks)
-#
-# Registered once by App.run() in its STARTING phase; the Rust side keeps
-# a strong Py reference, so these must not close over a specific App
-# instance. Both run on the GUI thread (muda/tray-icon fire their events
-# there), where the GIL is released while the tao loop drains — calling
-# back into Python cannot deadlock.
+# Module level (the Rust OnceLock keeps a strong reference): no closure
+# over a specific App; both run on the GUI thread.
 
 
 def _menu_event_bridge(event: Any) -> None:

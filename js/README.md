@@ -54,7 +54,7 @@ await window.__LUMIVIEW__.invoke("greeter.greet", { name: "x" });
 - The client only works inside a LumiView window. Outside one (or with
   `WindowOptions(untrusted=True)`), `invoke()` rejects with an explanatory error
   and `isLumiView()` returns `false`.
-- Full documentation: [JS Client](https://github.com/xiaosuawa/LumiView/blob/main/docs/js-client.md)
-  · [IPC / Commands / Plugins](https://github.com/xiaosuawa/LumiView/blob/main/docs/plugins.md).
+- Full documentation: [JS ↔ Python Communication](https://github.com/xiaosuawa/LumiView/blob/main/docs/bridge-and-js-client.md)
+  · [Plugins & Permissions](https://github.com/xiaosuawa/LumiView/blob/main/docs/plugins-and-permissions.md).
 
 Licensed under MPL-2.0.

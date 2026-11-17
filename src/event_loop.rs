@@ -8,7 +8,7 @@ use tao::event_loop::{
 };
 use tao::platform::run_return::EventLoopExtRunReturn;
 
-use crate::events::build_event;
+use crate::events::{build_event, is_python_event};
 use crate::monitor::Monitor;
 #[cfg(target_os = "macos")]
 use crate::types::ActivationPolicy;
@@ -129,6 +129,13 @@ unsafe fn run_event_loop_detached(
         // flowing, only the return is delayed. Known limitation.
         el.run_return(move |event, _elwt, control_flow| {
             *control_flow = ControlFlow::Wait;
+
+            // Drop events no Python handler consumes (mouse motion, key
+            // presses, modifier changes, ...) *before* re-acquiring the
+            // GIL — they are the highest-frequency events in the loop.
+            if !is_python_event(&event) {
+                return;
+            }
 
             // Re-acquire the GIL to create Python event objects.
             Python::attach(|py| {

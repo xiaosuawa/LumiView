@@ -1,16 +1,11 @@
-"""
-Static file serving from a local directory.
-
-Supports directory traversal protection, MIME detection, SPA fallback,
-and ETag/Last-Modified headers.
-"""
+"""Static file serving from a local directory."""
 
 from __future__ import annotations
 
 import mimetypes
 import os
 import posixpath
-import time
+from email.utils import formatdate
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -22,18 +17,7 @@ mimetypes.init()
 class Static(Serve):
     """Serve files from a local directory.
 
-    Parameters:
-        root: Filesystem path to the document root.
-        spa: If ``True``, requests for paths without a file extension
-            that accept ``text/html`` are served ``index.html`` instead
-            (SPA history-mode fallback).
-        scheme: Name of the custom protocol this directory is served
-            under (default ``"lumiview"``).
-
-    Usage::
-
-        source = Static("frontend/dist", spa=True)
-        source = Static("frontend/dist", scheme="app")
+    ``spa=True`` serves ``index.html`` for extension-less paths that accept HTML.
     """
 
     def __init__(
@@ -123,7 +107,7 @@ class Static(Serve):
         ]
         if mtime:
             headers.append(("ETag", f'"{mtime:x}"'))
-            headers.append(("Last-Modified", _http_date(mtime)))
+            headers.append(("Last-Modified", formatdate(mtime, usegmt=True)))
         return 200, headers
 
 
@@ -135,8 +119,3 @@ def _is_spa_candidate(path: str) -> bool:
     clean = path.split("?")[0].split("#")[0]
     _, ext = posixpath.splitext(clean)
     return not ext
-
-
-def _http_date(timestamp: int) -> str:
-    """Format a Unix timestamp as an HTTP-date (RFC 7231)."""
-    return time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(timestamp))

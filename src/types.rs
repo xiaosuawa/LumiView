@@ -31,14 +31,6 @@ pub enum EventKind {
     Reopen,
     ScaleFactorChanged,
     ThemeChanged,
-    // Input events
-    MouseInput,
-    CursorMoved,
-    MouseWheel,
-    KeyboardInput,
-    ModifiersChanged,
-    CursorEntered,
-    CursorLeft,
     RedrawRequested,
     // Window lifecycle
     Started,
@@ -52,9 +44,6 @@ pub enum EventKind {
     Touch,
     DecorationsClick,
     // Loop-level events
-    NewEvents,
-    MainEventsCleared,
-    RedrawEventsCleared,
     Opened,
     // Device events
     DeviceAdded,
@@ -68,64 +57,6 @@ pub enum EventKind {
     // System events
     UserEvent,
     LoopDestroyed,
-}
-
-// ModifiersState
-
-/// Keyboard modifier key state snapshot.
-///
-/// Immutable — each event carries the modifier state at the moment it fired.
-/// For live modifier tracking, listen to :class:`ModifiersChangedEvent`.
-#[pyclass(frozen)]
-#[derive(Clone, Debug)]
-pub struct ModifiersState {
-    /// Shift key is held down.
-    #[pyo3(get)]
-    pub shift: bool,
-    /// Control key is held down.
-    #[pyo3(get)]
-    pub ctrl: bool,
-    /// Alt key is held down.
-    #[pyo3(get)]
-    pub alt: bool,
-    /// Super key (Windows / Command) is held down.
-    #[pyo3(get)]
-    pub super_key: bool,
-}
-
-impl From<tao::keyboard::ModifiersState> for ModifiersState {
-    fn from(m: tao::keyboard::ModifiersState) -> Self {
-        ModifiersState {
-            shift: m.shift_key(),
-            ctrl: m.control_key(),
-            alt: m.alt_key(),
-            super_key: m.super_key(),
-        }
-    }
-}
-
-#[pymethods]
-impl ModifiersState {
-    fn __repr__(&self) -> String {
-        let mut parts = Vec::new();
-        if self.shift {
-            parts.push("Shift");
-        }
-        if self.ctrl {
-            parts.push("Ctrl");
-        }
-        if self.alt {
-            parts.push("Alt");
-        }
-        if self.super_key {
-            parts.push("Super");
-        }
-        if parts.is_empty() {
-            "ModifiersState()".into()
-        } else {
-            format!("ModifiersState({})", parts.join("|"))
-        }
-    }
 }
 
 // Input type enums
@@ -178,17 +109,6 @@ simple_enum!(
         Moved => "Moved",
         Ended => "Ended",
         Cancelled => "Cancelled",
-    }
-);
-
-simple_enum!(
-    KeyLocation,
-    "Physical key location on the keyboard.",
-    {
-        Standard => "Standard",
-        Left => "Left",
-        Right => "Right",
-        Numpad => "Numpad",
     }
 );
 
@@ -266,18 +186,6 @@ impl From<tao::event::TouchPhase> for TouchPhase {
     }
 }
 
-impl From<tao::keyboard::KeyLocation> for KeyLocation {
-    fn from(l: tao::keyboard::KeyLocation) -> Self {
-        match l {
-            tao::keyboard::KeyLocation::Standard => KeyLocation::Standard,
-            tao::keyboard::KeyLocation::Left => KeyLocation::Left,
-            tao::keyboard::KeyLocation::Right => KeyLocation::Right,
-            tao::keyboard::KeyLocation::Numpad => KeyLocation::Numpad,
-            _ => KeyLocation::Standard,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,26 +199,6 @@ mod tests {
         assert_eq!(
             ElementState::from(tao::event::ElementState::Released),
             ElementState::Released
-        );
-    }
-
-    #[test]
-    fn key_location_from_tao() {
-        assert_eq!(
-            KeyLocation::from(tao::keyboard::KeyLocation::Standard),
-            KeyLocation::Standard
-        );
-        assert_eq!(
-            KeyLocation::from(tao::keyboard::KeyLocation::Left),
-            KeyLocation::Left
-        );
-        assert_eq!(
-            KeyLocation::from(tao::keyboard::KeyLocation::Right),
-            KeyLocation::Right
-        );
-        assert_eq!(
-            KeyLocation::from(tao::keyboard::KeyLocation::Numpad),
-            KeyLocation::Numpad
         );
     }
 
@@ -338,40 +226,6 @@ mod tests {
     fn theme_from_tao() {
         assert_eq!(Theme::from(tao::window::Theme::Light), Theme::Light);
         assert_eq!(Theme::from(tao::window::Theme::Dark), Theme::Dark);
-    }
-
-    #[test]
-    fn modifiers_state_from_tao() {
-        let m = tao::keyboard::ModifiersState::SHIFT | tao::keyboard::ModifiersState::ALT;
-        let state = ModifiersState::from(m);
-        assert!(state.shift);
-        assert!(!state.ctrl);
-        assert!(state.alt);
-        assert!(!state.super_key);
-    }
-
-    #[test]
-    fn modifiers_state_empty() {
-        let m = tao::keyboard::ModifiersState::empty();
-        let state = ModifiersState::from(m);
-        assert!(!state.shift);
-        assert!(!state.ctrl);
-        assert!(!state.alt);
-        assert!(!state.super_key);
-    }
-
-    #[test]
-    fn modifiers_state_repr() {
-        let state = ModifiersState {
-            shift: true,
-            ctrl: true,
-            alt: false,
-            super_key: false,
-        };
-        let repr = state.__repr__();
-        assert!(repr.contains("Shift"));
-        assert!(repr.contains("Ctrl"));
-        assert!(!repr.contains("Alt"));
     }
 
     #[test]
@@ -524,34 +378,6 @@ impl From<AttentionType> for tao::window::UserAttentionType {
         match t {
             AttentionType::Critical => Self::Critical,
             AttentionType::Informational => Self::Informational,
-        }
-    }
-}
-
-// StartCause
-
-/// Why the event loop started a new batch of events.
-#[pyclass(eq, frozen, hash, from_py_object)]
-#[derive(Clone, PartialEq, Debug, Hash)]
-pub enum StartCause {
-    /// The loop was freshly initialized.
-    Init,
-    /// The loop is polling (continuous refresh).
-    Poll,
-    /// A ``Wait`` was cancelled before the deadline (external wake).
-    WaitCancelled,
-    /// A scheduled ``WaitUntil`` deadline was reached.
-    ResumeTimeReached,
-}
-
-impl From<tao::event::StartCause> for StartCause {
-    fn from(cause: tao::event::StartCause) -> Self {
-        match cause {
-            tao::event::StartCause::Init => StartCause::Init,
-            tao::event::StartCause::Poll => StartCause::Poll,
-            tao::event::StartCause::WaitCancelled { .. } => StartCause::WaitCancelled,
-            tao::event::StartCause::ResumeTimeReached { .. } => StartCause::ResumeTimeReached,
-            _ => StartCause::Init,
         }
     }
 }

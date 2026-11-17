@@ -1,75 +1,64 @@
-"""
-WSGI adapter — run a WSGI application inside a ``lumiview://`` custom protocol.
+"""WSGI adapter for ``lumiview://``.
 
-This is a compatibility adapter. New projects should prefer :class:`Static`
-+ :class:`Bridge` for better performance and type safety.
-
-.. warning::
-
-    Streaming responses (chunked transfer encoding, Server-Sent Events,
-    long-polling, etc.) **will not work** through the ``lumiview://``
-    custom protocol. The protocol delivers one complete response — the
-    handler must call ``respond()`` exactly once with the full body.
-    Streaming requires a real HTTP server.
+Streaming is not supported: call ``respond()`` once with the complete body.
 """
 
 from __future__ import annotations
 
+import io
 import logging
 import sys
-from concurrent.futures import ThreadPoolExecutor
+import warnings
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from lumiview.serve.base import Request, RespondFn, Serve
 
-log = logging.getLogger("lumiview.serve.wsgi")
+_log = logging.getLogger("lumiview.serve.wsgi")
 
 
 class WSGI(Serve):
     """Adapt a WSGI application to the :class:`Serve` interface.
 
-    Parameters:
-        app: A WSGI callable (``environ, start_response -> body_iterable``).
-        max_workers: Thread pool size for executor isolation.
-            WSGI apps run in a dedicated thread pool to avoid blocking
-            the custom protocol callback thread.
-        scheme: Name of the custom protocol this app is served under
-            (default ``"lumiview"``).
-
-    Usage::
-
-        from flask import Flask
-        flask_app = Flask(__name__)
-
-        win = await Window.create(source=WSGI(flask_app))
-
-    .. note::
-        WSGI is a synchronous protocol. Async Python web frameworks
-        are not supported through this adapter.
+    Runs on the App's shared thread pool; ``max_workers=`` is deprecated and ignored.
     """
 
     def __init__(
         self,
         app: Any,
         *,
-        max_workers: int = 4,
+        max_workers: int | None = None,
         scheme: str = "lumiview",
     ) -> None:
         super().__init__(scheme=scheme)
         self._app = app
-        self._pool = ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="lumiview-wsgi",
-        )
+        if max_workers is not None:
+            warnings.warn(
+                "WSGI(max_workers=...) is deprecated and ignored — WSGI apps "
+                "run on the App's shared thread pool; size it with "
+                "App(max_workers=...).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
     def __call__(self, request: Request, respond: RespondFn) -> None:
-        """Handle a request — offloads to the thread pool and returns immediately.
+        """Offload the request to the App's pool and return immediately."""
+        from lumiview.app import App
 
-        The wsgi app runs on a thread pool thread and calls ``respond()`` when done.
-        """
-        self._pool.submit(self._handle, request, respond)
+        try:
+            pool = App.get()._threadpool
+        except RuntimeError:
+            pool = None
+        if pool is None:
+            respond(503, [("Content-Type", "text/plain")], b"App is shutting down")
+            return
+
+        try:
+            pool.submit(self._handle, request, respond)
+        except RuntimeError:
+            _log.warning("thread pool closed while dispatching a WSGI request")
+            respond(503, [("Content-Type", "text/plain")], b"App is shutting down")
 
     def _handle(self, request: Request, respond: RespondFn) -> None:
         """Run the WSGI app and deliver the response via ``respond()``."""
@@ -78,13 +67,7 @@ class WSGI(Serve):
         error_recalled = False
 
         def _send_error() -> None:
-            """Send the best available error response.
-
-            Only trust the status/headers set by ``start_response`` when
-            the app re-called it with ``exc_info`` after the exception
-            (PEP 3333 error handling); otherwise the earlier status is
-            void and we must not echo it (e.g. 200 + error body).
-            """
+            """Send the best available error response (PEP 3333 error handling)."""
             if error_recalled and status_line:
                 code = 500
                 try:
@@ -123,7 +106,7 @@ class WSGI(Serve):
         try:
             result = self._app(environ, start_response)
         except Exception:
-            log.exception("WSGI app raised an exception")
+            _log.exception("WSGI app raised an exception")
             _send_error()
             return
 
@@ -133,7 +116,7 @@ class WSGI(Serve):
                     chunk = chunk.encode("utf-8", errors="replace")
                 body_chunks.append(chunk)
         except Exception:
-            log.exception("WSGI app iterable raised an exception")
+            _log.exception("WSGI app iterable raised an exception")
             _send_error()
             return
         finally:
@@ -141,9 +124,8 @@ class WSGI(Serve):
                 try:
                     result.close()
                 except Exception:
-                    log.exception("WSGI close() raised an exception")
+                    _log.exception("WSGI close() raised an exception")
 
-        # Parse status line: "200 OK" → 200
         status_code = 500
         if status_line:
             try:
@@ -153,13 +135,11 @@ class WSGI(Serve):
 
         body = b"".join(body_chunks)
 
-        # Enforce response size limit (10 MB).
         max_body = 10 * 1024 * 1024
         if len(body) > max_body:
             respond(500, [("Content-Type", "text/plain")], b"Response too large")
             return
 
-        # Ensure Content-Length is present.
         has_content_length = any(
             k.lower() == "content-length" for k, _ in response_headers
         )
@@ -168,12 +148,10 @@ class WSGI(Serve):
 
         respond(status_code, response_headers, body)
 
-    # WSGI environ
-
     @staticmethod
     def _build_environ(request: Request, scheme: str) -> dict[str, Any]:
         parsed = urlparse(request.url)
-        path = parsed.path or "/"
+        path = unquote(parsed.path) or "/"
         query = parsed.query or ""
 
         environ: dict[str, Any] = {
@@ -187,7 +165,7 @@ class WSGI(Serve):
             "REMOTE_ADDR": "127.0.0.1",
             "wsgi.version": (1, 0),
             "wsgi.url_scheme": scheme,
-            "wsgi.input": _BytesIO(request.body),
+            "wsgi.input": io.BytesIO(request.body),
             "wsgi.errors": sys.stderr,
             "wsgi.multithread": True,
             "wsgi.multiprocess": False,
@@ -197,7 +175,6 @@ class WSGI(Serve):
         if request.body:
             environ["CONTENT_LENGTH"] = str(len(request.body))
 
-        # Headers → WSGI HTTP_* convention
         content_type = None
         for key, value in request.headers:
             if key.lower() == "content-type":
@@ -209,26 +186,3 @@ class WSGI(Serve):
             environ["CONTENT_TYPE"] = content_type
 
         return environ
-
-
-class _BytesIO:
-    """Minimal BytesIO wrapper for wsgi.input."""
-
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-        self._pos = 0
-
-    def read(self, size: int = -1) -> bytes:
-        if size < 0:
-            chunk = self._data[self._pos :]
-            self._pos = len(self._data)
-            return chunk
-        chunk = self._data[self._pos : self._pos + size]
-        self._pos += size
-        return chunk
-
-    def readline(self) -> bytes:
-        idx = self._data.find(b"\n", self._pos)
-        if idx < 0:
-            return self.read()
-        return self.read(idx - self._pos + 1)

@@ -23,7 +23,7 @@ async def _entry() -> None:
             messages.append(event.message)
             got.set()
 
-        win.on(WindowEvent.WebMessageReceivedEvent)(on_message)
+        win.on(WindowEvent.WebMessageReceivedEvent, on_message)
 
     win = await Window.create(
         WindowOptions(

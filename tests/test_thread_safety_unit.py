@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import queue
 import sys
 import threading
 import time
 
-from lumiview import App
-from lumiview.menu import MenuItem
+from lumiview import App, AppState
+from lumiview.menu import Menu, MenuItem, Submenu
 from lumiview.scope import Scope, iter_tree
 
 
@@ -80,3 +81,54 @@ def test_menu_native_call_reads_inner_once():
 
     assert reads["n"] == 1
     assert handle.done()
+
+
+def test_submenu_edits_are_serialized_on_the_main_thread(monkeypatch):
+    """append() then remove() must not resurrect the item in the native menu.
+
+    Both calls come from a non-main thread, so the old dual-write dropped the
+    item from ``items`` while its native append was still queued — the queued
+    ``_do`` then added it to the native submenu for good.
+    """
+
+    class NativeMenu:
+        def __init__(self) -> None:
+            self.items: list[object] = []
+
+        def append(self, item: object) -> None:
+            self.items.append(item)
+
+        def insert(self, item: object, position: int) -> None:
+            self.items.insert(position, item)
+
+        def remove(self, item: object) -> None:
+            self.items.remove(item)
+
+    app = object.__new__(App)
+    app._state = AppState.RUNNING
+    app._main_tid = -1  # the calling thread is not the "main" thread
+    app._pending = {}
+    app._pending_lock = threading.Lock()
+    app._cmd_queue = queue.Queue()
+    app._wake_cond = threading.Condition()
+    app._proxy = None
+    monkeypatch.setattr(App, "_instance", app)
+
+    def materialize(item):
+        if item._inner is None:
+            item._inner = object()
+        return item._inner
+
+    monkeypatch.setattr(Menu, "_materialize_item", staticmethod(materialize))
+
+    native = NativeMenu()
+    submenu = Submenu(text="File")
+    submenu._inner = native  # type: ignore[assignment]
+    item = MenuItem(text="Open", id="open")
+
+    submenu.append(item)
+    submenu.remove(item)
+    app._drain_commands()
+
+    assert submenu.items == []
+    assert native.items == []

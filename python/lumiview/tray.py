@@ -1,15 +1,8 @@
 """System tray icons (tray-icon).
 
-``TrayIconOptions`` is a plain data object (any thread); the native icon
-is created on the main thread by ``await TrayIcon.create(options)``.
-Dropping the native handle removes the icon from the system tray —
-:meth:`TrayIcon.close` does this explicitly on the main thread, and
-``App.run()`` does it during shutdown.
-
-Tray events (click, double click, enter/move/leave) arrive through a
-single per-process callback registered by :meth:`App.run` and are emitted
-as :class:`~lumiview.events.AppEvent.TrayIcon*Event`. Menu items attached
-to the tray's menu fire the regular menu activation events.
+Options are pure data; the native icon is created on the main thread with
+``await TrayIcon.create(options)`` and removed by dropping it or
+:meth:`TrayIcon.close`.
 """
 
 from __future__ import annotations
@@ -17,14 +10,14 @@ from __future__ import annotations
 import logging
 import sys
 import uuid
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from lumiview.app import App
 from lumiview._utils import main_thread
 from lumiview._core import TaoTrayIcon
 
-log = logging.getLogger("lumiview.tray")
+_log = logging.getLogger("lumiview.tray")
 
 if TYPE_CHECKING:
     from lumiview.menu import Menu
@@ -39,20 +32,8 @@ def _auto_id(prefix: str) -> str:
 class TrayIconOptions:
     """Options for creating a :class:`TrayIcon`.
 
-    Attributes:
-        icon: Raw RGBA icon data — ``(rgba_bytes, width, height)``
-            (or a file path / PIL image, like
-            :class:`~lumiview.window.WindowOptions` icon inputs).
-        id: Unique tray icon id; auto-generated when omitted. Tray
-            events carry this id.
-        tooltip: Hover text (not supported on Linux).
-        menu: A :class:`~lumiview.menu.Menu` shown on click (all
-            platforms). Note: on Linux the menu cannot be replaced after
-            creation.
-        menu_on_left_click: Show the menu on left click too.
-        menu_on_right_click: Show the menu on right click.
-        icon_as_template: macOS — render the icon as a template image
-            (auto black/white).
+    On Linux the tooltip is unsupported and the menu cannot be replaced after
+    creation.
     """
 
     icon: "_IconSource"
@@ -68,11 +49,7 @@ class TrayIconOptions:
 
 
 class TrayIcon:
-    """A system tray icon.
-
-    Create with ``await TrayIcon.create(options)`` — the plain
-    constructor raises.
-    """
+    """A system tray icon (create with ``await TrayIcon.create``)."""
 
     def __init__(self) -> None:
         raise RuntimeError("Use 'await TrayIcon.create(TrayIconOptions(...))' instead")
@@ -88,11 +65,7 @@ class TrayIcon:
     @classmethod
     @main_thread
     def create(cls, options: TrayIconOptions) -> "TrayIcon":
-        """Create the tray icon on the main thread.
-
-        Returns a :class:`Task` — ``await`` in async code, ``.result()``
-        in sync code.
-        """
+        """Create the tray icon on the main thread."""
         app = App.get()
         if options.menu is not None:
             options.menu._materialize()
@@ -112,7 +85,7 @@ class TrayIcon:
         if options.icon_as_template and sys.platform == "darwin":
             tray._tray.set_icon_as_template(True)
         app._register_tray(tray)
-        log.info("Tray icon created (id=%s)", tray._id)
+        _log.info("Tray icon created (id=%s)", tray._id)
         return tray
 
     def _release_native(self) -> None:
@@ -126,7 +99,7 @@ class TrayIcon:
         app = App.get()
         app._unregister_tray(self)
         self._tray = None
-        log.debug("Tray icon removed (id=%s)", self._id)
+        _log.debug("Tray icon removed (id=%s)", self._id)
 
     @main_thread
     def set_tooltip(self, tooltip: str | None) -> None:
@@ -145,11 +118,7 @@ class TrayIcon:
 
 
 def _load_icon(icon: "_IconSource") -> tuple[bytes, int, int]:
-    """Resolve icon input to ``(rgba_bytes, width, height)``.
-
-    Reuses :func:`lumiview.window._load_icon` (file path / PIL image /
-    raw tuple); Pillow is required only for the first two.
-    """
+    """Resolve icon input to ``(rgba_bytes, width, height)`` (Pillow for paths/images)."""
     from lumiview.window import _load_icon as _window_load_icon
 
     return _window_load_icon(icon)

@@ -1,5 +1,18 @@
 name: Build
 
+# Release wheels. The matrix is the three stable-ABI families PyO3 supports:
+#
+#   cp310-abi3        GIL-enabled CPython 3.10+   (pyo3/abi3-py310)
+#   cp314-cp314t      free-threaded CPython 3.14  (version-specific)
+#   cp315-abi3.abi3t  GIL-enabled *and* free-threaded CPython 3.15+
+#                     (PEP 803 compressed tag; pyo3/abi3t-py315)
+#
+# A single maturin build selects at most one stable ABI family, so every
+# family gets its own interpreter: 3.12 -> abi3, 3.14t -> cp314t,
+# 3.15t -> abi3t. The interpreter is the family switch; do not drop it.
+#
+# Free-threaded 3.13 is the one supported interpreter without a wheel: PyO3
+# can build cp313-cp313t on demand, so those users install from the sdist.
 on:
   push:
     tags:
@@ -11,223 +24,151 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # maturin >= 1.14.1 is required for abi3t, >= 1.15 for the PyModExport
+  # entry point check, and >= 1.16 for sorted compressed tag sets.
+  MATURIN_VERSION: v1.16.0
+
 jobs:
-  linux:
-    runs-on: ${{ matrix.runner }}
+  wheels:
+    name: ${{ matrix.kind }} / ${{ matrix.os }} / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            target: x86_64
-            python-version: "3.12"
-            abi: abi3
-          - runner: ubuntu-latest
-            target: x86_64
-            python-version: "3.15"
-            abi: abi3t
-    steps:
-      - uses: actions/checkout@v4
-      # The page-side JS client is generated (git-ignored) — the wheel needs it.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Build JS client
-        run: |
-          npm --prefix js ci
-          npm --prefix js run build
-      - name: Install webkit2gtk
-        run: |
-          sudo apt-get update
-          # libxdo-dev: muda's GTK backend sends predefined-item shortcuts
-          # (copy/paste/...) through xdo; bundled into the wheel by
-          # auditwheel (no GTK-style global-type-registry concern).
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libglib2.0-dev libxdo-dev
-      - uses: actions/setup-python@v7
-        with:
-          python-version: ${{ matrix.python-version }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}-${{ matrix.python-version }}-${{ matrix.abi }}
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
-
-      - name: Build wheel
-        uses: PyO3/maturin-action@v1
-        with:
-          args: --release --out dist --interpreter python
-      - name: Repair manylinux (exclude system GTK/GLib/dbus — must not bundle)
-        run: |
-          pip install auditwheel
-          # GTK/GLib libraries can never be bundled into the wheel: the
-          # GObject type registry is process-global, so a second copy breaks
-          # any process that also links the system GTK (LumiView's own tao
-          # window and wryview both do). libdbus-1/libsystemd likewise exist
-          # on every desktop that can run GTK3 (the gtk .deb depends on
-          # them) — bundling them only adds weight and risks version skew.
-          auditwheel repair \
-            --exclude 'libgtk-3.*' \
-            --exclude 'libgdk-3.*' \
-            --exclude 'libglib-2.0.*' \
-            --exclude 'libgobject-2.0.*' \
-            --exclude 'libgio-2.0.*' \
-            --exclude 'libgmodule-2.0.*' \
-            --exclude 'libgdk_pixbuf-2.0.*' \
-            --exclude 'libpango-1.0.*' \
-            --exclude 'libpangocairo-1.0.*' \
-            --exclude 'libpangoft2-1.0.*' \
-            --exclude 'libatk-1.0.*' \
-            --exclude 'libharfbuzz.*' \
-            --exclude 'libfribidi.*' \
-            --exclude 'libepoxy.*' \
-            --exclude 'libcairo.*' \
-            --exclude 'libcairo-gobject.*' \
-            --exclude 'libxkbcommon.*' \
-            --exclude 'libwayland-client.*' \
-            --exclude 'libdbus-1.*' \
-            --exclude 'libsystemd.*' \
-            --exclude 'libgcrypt.*' \
-            --exclude 'libgpg-error.*' \
-            --exclude 'libcap.*' \
-            --exclude 'libzstd.*' \
-            --exclude 'liblz4.*' \
-            --exclude 'liblzma.*' \
-            -w dist dist/lumiview-*.whl
-          rm -f dist/*-linux_x86_64.whl
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-linux-${{ matrix.abi }}
-          path: dist
-
-  windows:
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - runner: windows-latest
-            target: x64
-            python-arch: x64
-            python-version: "3.12"
-            abi: abi3
-          - runner: windows-latest
-            target: x64
-            python-arch: x64
-            python-version: "3.15"
-            abi: abi3t
-          - runner: windows-latest
-            target: x86
-            python-arch: x86
-            python-version: "3.12"
-            abi: abi3
-          - runner: windows-latest
-            target: x86
-            python-arch: x86
-            python-version: "3.15"
-            abi: abi3t
+          # Linux x86_64
+          - { os: ubuntu-latest, target: x86_64, arch: x64, kind: abi3, python: "3.12", tag: cp310-abi3 }
+          - { os: ubuntu-latest, target: x86_64, arch: x64, kind: cp314t, python: "3.14t", tag: cp314-cp314t }
+          - { os: ubuntu-latest, target: x86_64, arch: x64, kind: abi3t, python: "3.15t", tag: cp315-abi3.abi3t }
+          # Windows x64
+          - { os: windows-latest, target: x64, arch: x64, kind: abi3, python: "3.12", tag: cp310-abi3 }
+          - { os: windows-latest, target: x64, arch: x64, kind: cp314t, python: "3.14t", tag: cp314-cp314t }
+          - { os: windows-latest, target: x64, arch: x64, kind: abi3t, python: "3.15t", tag: cp315-abi3.abi3t }
+          # Windows x86 (CPython still ships free-threaded 32-bit builds)
+          - { os: windows-latest, target: x86, arch: x86, kind: abi3, python: "3.12", tag: cp310-abi3 }
+          - { os: windows-latest, target: x86, arch: x86, kind: cp314t, python: "3.14t", tag: cp314-cp314t }
+          - { os: windows-latest, target: x86, arch: x86, kind: abi3t, python: "3.15t", tag: cp315-abi3.abi3t }
+          # macOS arm64
+          - { os: macos-latest, target: aarch64, arch: arm64, kind: abi3, python: "3.12", tag: cp310-abi3 }
+          - { os: macos-latest, target: aarch64, arch: arm64, kind: cp314t, python: "3.14t", tag: cp314-cp314t }
+          - { os: macos-latest, target: aarch64, arch: arm64, kind: abi3t, python: "3.15t", tag: cp315-abi3.abi3t }
+          # macOS x86_64
+          - { os: macos-26-intel, target: x86_64, arch: x64, kind: abi3, python: "3.12", tag: cp310-abi3 }
+          - { os: macos-26-intel, target: x86_64, arch: x64, kind: cp314t, python: "3.14t", tag: cp314-cp314t }
+          - { os: macos-26-intel, target: x86_64, arch: x64, kind: abi3t, python: "3.15t", tag: cp315-abi3.abi3t }
     steps:
       - uses: actions/checkout@v7
-      # The page-side JS client is generated (git-ignored) — the wheel needs it.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Build JS client
-        run: |
-          npm --prefix js ci
-          npm --prefix js run build
-      - uses: actions/setup-python@v7
-        with:
-          python-version: ${{ matrix.python-version }}
-          architecture: ${{ matrix.python-arch }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}-${{ matrix.python-version }}-${{ matrix.abi }}
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist --interpreter python
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-windows-${{ matrix.target }}-${{ matrix.abi }}
-          path: dist
 
-  macos:
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - runner: macos-26
-            target: aarch64
-            python-version: "3.12"
-            abi: abi3
-          - runner: macos-26
-            target: aarch64
-            python-version: "3.15"
-            abi: abi3t
-          - runner: macos-26-intel
-            target: x86_64
-            python-version: "3.12"
-            abi: abi3
-          - runner: macos-26-intel
-            target: x86_64
-            python-version: "3.15"
-            abi: abi3t
-    steps:
-      - uses: actions/checkout@v4
-      # The page-side JS client is generated (git-ignored) — the sdist needs it.
-      - uses: actions/setup-node@v4
+      # The page-side JS client is generated (git-ignored) — the wheel needs it.
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Build JS client
         run: |
           npm --prefix js ci
           npm --prefix js run build
+
+      # LumiView itself links GTK, not WebKit (wryview is a Python runtime
+      # dependency), but the smoke import below imports wryview, whose
+      # extension links libwebkit2gtk at load time. libxdo-dev is needed by
+      # muda's GTK backend.
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libglib2.0-dev libxdo-dev
+
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.arch }}
+
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}-${{ matrix.python-version }}-${{ matrix.abi }}
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+          key: ${{ matrix.os }}-${{ matrix.target }}
+
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
           target: ${{ matrix.target }}
-          args: --release --out dist --interpreter python
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
+          # Build against the runner's apt-installed GTK/WebKit, not a
+          # manylinux container (the wheel is repaired afterwards).
+          manylinux: off
+          args: --release --locked --out dist --interpreter python
+
+      - name: Repair Linux wheel
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install --upgrade "auditwheel>=6.8,<7"
+          bash .github/scripts/repair-wheel.sh
+
+      - name: Verify wheel tag and contents
+        run: python .github/scripts/verify_wheel.py "${{ matrix.tag }}"
+
+      # A release wheel must at least import on its own interpreter. Until
+      # wryview ships cp314t, the 3.14t leg builds wryview from its sdist.
+      - name: Smoke import
+        shell: bash
+        run: |
+          python -m pip install --no-deps dist/*.whl
+          python -m pip install "wryview~=0.5.5" "cattrs~=26.1" "typing_extensions~=4.11"
+          python -c "import lumiview; print(lumiview.__version__)"
+
+      - uses: actions/upload-artifact@v7
         with:
-          name: wheels-macos-${{ matrix.target }}-${{ matrix.abi }}
-          path: dist
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.kind }}
+          path: dist/*.whl
+          retention-days: 30
 
   sdist:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      # The page-side JS client is generated (git-ignored) — the sdist needs it.
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Build JS client
         run: |
           npm --prefix js ci
           npm --prefix js run build
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libxdo-dev
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
+          maturin-version: ${{ env.MATURIN_VERSION }}
           args: --out dist
-      - name: Upload sdist
-        uses: actions/upload-artifact@v4
+      - name: Verify sdist contents
+        run: python .github/scripts/verify_sdist.py
+      # Prove the sdist is complete enough to build a wheel without the
+      # generated JS file (it must already be inside the archive).
+      - name: Build wheel from sdist
+        run: python -m pip wheel --no-deps -w /tmp/from-sdist dist/*.tar.gz
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-sdist
-          path: dist
+          path: dist/*.tar.gz
+          retention-days: 30
 
   pypi-publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows, macos, sdist]
+    needs: [wheels, sdist]
     permissions:
       id-token: write
       contents: read
@@ -235,27 +176,21 @@ jobs:
       name: pypi
       url: https://pypi.org/project/lumiview/
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate version match
-        shell: pwsh
-        run: |
-          $pyprojectVersion = (Select-String -Path pyproject.toml -Pattern 'version = "(.+?)"').Matches.Groups[1].Value
-          $gitTag = "${{ github.ref }}".Split('/')[-1]
-          $gitTagVersion = $gitTag.TrimStart('v')
-          if ($pyprojectVersion -ne $gitTagVersion) {
-            Write-Error "Version mismatch: pyproject.toml=$pyprojectVersion vs tag=$gitTag"
-            exit 1
-          }
-          Write-Host "Versions match: $pyprojectVersion"
-
-      - name: Retrieve release distributions
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Validate versions against the tag
+        run: python .github/scripts/check_versions.py "${{ github.ref_name }}"
+      - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           path: dist/
           merge-multiple: true
-
+      - name: Check distributions
+        run: |
+          python -m pip install --upgrade "twine>=7,<8"
+          python -m twine check dist/*
       - name: Publish release distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

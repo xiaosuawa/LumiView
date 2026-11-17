@@ -169,6 +169,36 @@ class TestBindArguments:
         kwargs = bind_arguments(cmd, {"a": 1, "extra": 2}, None)
         assert kwargs == {"a": 1}
 
+    def test_strict_rejects_extra_key_with_injected_only_params(self):
+        """strict must not depend on the command having regular parameters."""
+
+        def ping(ctx: BridgeContext) -> None:
+            return None
+
+        cmd = self._scope_with(ping)
+        assert isinstance(bind_arguments(cmd, {}, None)["ctx"], BridgeContext)
+        with pytest.raises(BridgeError) as ei:
+            bind_arguments(cmd, {"typo": 1}, None)
+        assert ei.value.code == "invalid_argument"
+        assert "typo" in str(ei.value)
+
+    def test_strict_rejects_extra_key_with_no_params(self):
+        def ping() -> None:
+            return None
+
+        cmd = self._scope_with(ping)
+        assert bind_arguments(cmd, {}, None) == {}
+        with pytest.raises(BridgeError) as ei:
+            bind_arguments(cmd, {"typo": 1}, None)
+        assert ei.value.code == "invalid_argument"
+
+    def test_strict_false_allows_extra_key_with_no_params(self):
+        def ping() -> None:
+            return None
+
+        cmd = self._scope_with(ping, strict=False)
+        assert bind_arguments(cmd, {"typo": 1}, None) == {}
+
     def test_payload_non_dict_raises(self):
         def add(a: int) -> int:
             return a

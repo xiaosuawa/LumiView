@@ -57,7 +57,7 @@ maturin develop
 python examples/hello_world.py
 ```
 
-`npm --prefix js run build` writes `python/lumiview/_bridge_client.py` (git-ignored) and the npm package into `js/dist`. Re-run it after changing anything under `js/src`.
+`npm --prefix js run build` writes `python/lumiview/_bridge_client.py` (git-ignored) and the npm package artifacts into `js/dist` (local only — nothing is published to npm yet). Re-run it after changing anything under `js/src`.
 
 ## Testing
 
@@ -76,15 +76,14 @@ WebView2 / WKWebView / WebKitGTK and a display (on Linux, run it under Xvfb).
 ## Documentation
 
 User docs live in `docs/` — English `*.md` and Chinese `*.zh.md` side by side. Keep
-both versions in sync, and add a [CHANGELOG.md](CHANGELOG.md) entry for every
-user-visible change.
+both versions in sync.
 
 ## Project Structure
 
 ```
 src/              Rust bindings (PyO3 + tao + wryview)
 python/lumiview/ Python layer (App, Window, Bridge, Task, serve)
-js/               Page-side TypeScript client (injected + npm package)
+js/               Page-side TypeScript client (injected + typed npm facade)
 docs/             User docs (English `*.md`, Chinese `*.zh.md`)
 examples/         Runnable example scripts
 ```

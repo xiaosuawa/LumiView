@@ -10,35 +10,51 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MATURIN_VERSION: v1.16.0
+
 jobs:
   test:
-    name: test (${{ matrix.os }})
+    name: full test (${{ matrix.os }} / ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
+        include:
+          # Linux x86_64
+          - { os: ubuntu-latest, target: x86_64, arch: x64, python: "3.15" }
+          - { os: ubuntu-latest, target: x86_64, arch: x64, python: "3.15t" }
+          # Windows x64
+          - { os: windows-latest, target: x64, arch: x64, python: "3.15" }
+          - { os: windows-latest, target: x64, arch: x64, python: "3.15t" }
+          # Windows x86 (CPython still ships free-threaded 32-bit builds)
+          - { os: windows-latest, target: x86, arch: x86, python: "3.15" }
+          - { os: windows-latest, target: x86, arch: x86, python: "3.15t" }
+          # macOS arm64
+          - { os: macos-latest, target: aarch64, arch: arm64, python: "3.15" }
+          - { os: macos-latest, target: aarch64, arch: arm64, python: "3.15t" }
+          # macOS x86_64
+          - { os: macos-26-intel, target: x86_64, arch: x64, python: "3.15" }
+          - { os: macos-26-intel, target: x86_64, arch: x64, python: "3.15t" }
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The page-side JS client is generated (git-ignored) — the wheel needs it.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
+
       - name: Build JS client
         run: |
           npm --prefix js ci
           npm --prefix js run build
-      - name: Test JS client
-        run: npm --prefix js test
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+          npm --prefix js test
 
       # Linux: webkit2gtk is the WebKit engine; xvfb provides a virtual X
       # display (LumiView windows are real GTK windows — there is no headless
@@ -54,39 +70,28 @@ jobs:
             libxdo-dev \
             xvfb
 
-      # Reuse the cargo build cache so the debug wheel build is fast.
-      - uses: actions/cache@v4
+      - uses: actions/setup-python@v7
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.arch }}
 
-      - name: Install pytest
-        run: python -m pip install --upgrade pytest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}-${{ matrix.target }}
 
-      - name: Build native module wheel
+      - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
-          command: build
-          args: --out dist
-          # Native build (no manylinux container) so the apt-installed
-          # webkit2gtk/gtk dev libraries are visible; the wheel only needs
-          # to run on this runner.
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          target: ${{ matrix.target }}
           manylinux: off
+          args: --release --locked --out dist --interpreter python
 
-      # bash expands the wheel glob on every runner (pwsh on Windows does
-      # not expand globs for native commands, so pip would see the literal
-      # pattern). pip then pulls the runtime deps from PyPI.
-      - name: Install lumiview from the built wheel
+      - name: Install lumiview and pytest
         shell: bash
-        run: python -m pip install dist/lumiview-*.whl
-
-      # Fail fast (and friendlily) before shelling out to the suite.
-      - name: Confirm lumiview importable
-        run: python -c "import lumiview; print('lumiview', lumiview.__version__)"
+        run: |
+          python -m pip install --upgrade pytest
+          python -m pip install dist/lumiview-*.whl
 
       - name: Run pytest (Linux, xvfb + webkit env)
         if: runner.os == 'Linux'

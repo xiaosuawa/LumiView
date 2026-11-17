@@ -25,22 +25,8 @@ const dist = path.join(root, "dist");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 const version = pkg.version;
 
-// The npm package and the wheel must stay in lockstep: the injected client
-// stamps its build version, and the Python side reports the same number.
 const pyproject = readFileSync(path.join(repo, "pyproject.toml"), "utf8");
 const pyVersion = /^version\s*=\s*"(.+?)"/m.exec(pyproject)?.[1];
-
-// PEP 440 (PyPI) and semver (npm/Cargo) spell prereleases differently:
-// 0.2.0rc1 <-> 0.2.0-rc.1. Compare normalized, but stamp the injected
-// client with the Python version so ``window.__LUMIVIEW__.build`` matches
-// ``lumiview.__version__``.
-const pep440 = (value) => value.replace(/-rc\.(\d+)$/, "rc$1");
-if (pyVersion === undefined || pep440(version) !== pyVersion) {
-  throw new Error(
-    `Version mismatch: js/package.json=${version} vs pyproject.toml=${pyVersion}`,
-  );
-}
-const buildVersion = pyVersion;
 
 // Start from a clean slate: a stale `dist` (e.g. from a different compiler
 // version) must not leak into the npm package.
@@ -57,7 +43,7 @@ const injected = await build({
   minify: false,
   charset: "utf8",
   legalComments: "none",
-  define: { __LV_VERSION__: JSON.stringify(buildVersion) },
+  define: { __LV_VERSION__: JSON.stringify(pyVersion) },
   write: false,
 });
 const script = injected.outputFiles[0].text.trimEnd();
@@ -111,5 +97,5 @@ execFileSync(
 rmSync(path.join(dist, "inject.d.ts"), { force: true });
 
 console.log(
-  `built lumiview ${buildVersion} (npm ${version}): dist/{index,window-controls}.{mjs,cjs,d.ts} + python/lumiview/_bridge_client.py (${script.length} bytes)`,
+  `built lumiview ${pyVersion} (npm ${version}): dist/{index,window-controls}.{mjs,cjs,d.ts} + python/lumiview/_bridge_client.py (${script.length} bytes)`,
 );

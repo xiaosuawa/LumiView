@@ -1,31 +1,12 @@
 """Native menus (muda) — app menu bar, window menu bar, tray menus.
 
-``MenuItem`` / ``Submenu`` / ``CheckMenuItem`` / ``PredefinedMenuItem``
-are **pure data carriers** (like :class:`~lumiview.window.WindowOptions`)
-— construct them on any thread, before or after :meth:`App.run`. The
-native menu tree is materialized on the main thread when the data tree is
-attached (:meth:`Menu.create`, :meth:`Menu.attach_to_window`,
-:meth:`Menu.install_nsapp`) or edited at runtime.
+Items are pure data (any thread); the tree is materialized on the main thread
+by :meth:`Menu.create` / ``attach_to_window`` / ``install_nsapp``. Runtime edits
+follow dual-write on the main thread: data first, native call only when already
+materialized.
 
-Runtime edits follow a dual-write model: the data field is updated first
-(any thread, plain Python), then — only if the item is already
-materialized — the native call is dispatched to the main thread and the
-result returned as a :class:`Task`. Unattached items never touch native
-objects, so editing them before :meth:`App.run` is free.
-
-Activation events reach Python through a single per-process callback
-registered by :meth:`App.run` (muda's ``MenuEvent::set_event_handler``
-is a OnceCell). Every :class:`MenuItem` can register its own handler —
-pass ``on_activate=fn`` at construction, or register later via
-:meth:`MenuItem.on_activate` (decorator style) — and the same event is
-also emitted globally as
-:class:`~lumiview.events.AppEvent.MenuItemActivatedEvent` for
-``app.on(...)``-style handling.
-
-Handlers may be sync or ``async`` (auto-detected, like
-:meth:`App.on <lumiview.app.App.on>`): async handlers are awaited on the
-asyncio loop, sync handlers are dispatched to the app's thread pool.
-Neither ever runs on the GUI thread.
+Activation reaches both the item's ``on_activate`` handlers and
+:class:`~lumiview.events.AppEvent.MenuItemActivatedEvent`.
 """
 
 from __future__ import annotations
@@ -35,9 +16,9 @@ import logging
 import sys
 import uuid
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Callable, TypeAlias
+from typing import TYPE_CHECKING, Any, Callable, TypeAlias, TypeVar
 
-from lumiview.app import App, WindowClosedError
+from lumiview.app import App
 from lumiview.events import AppEvent
 from lumiview.task import Task
 from lumiview._utils import main_thread
@@ -52,17 +33,15 @@ from lumiview._core import (
 if TYPE_CHECKING:
     from lumiview.window import Window
 
-log = logging.getLogger("lumiview.menu")
+_log = logging.getLogger("lumiview.menu")
 
-# Item — a user-facing menu entry (data carrier). CheckMenuItem is a
-# MenuItem subclass but is listed explicitly for clarity. String form:
-# the classes are defined below and PEP 563 defers the annotation anyway.
 Item: TypeAlias = "MenuItem | Submenu | CheckMenuItem | PredefinedMenuItem"
 
-# NativeItem — the materialized Rust-side object for an Item.
 NativeItem: TypeAlias = (
     "TaoMenuItem | TaoSubmenu | TaoCheckMenuItem | TaoPredefinedMenuItem"
 )
+
+R = TypeVar("R")
 
 
 def _auto_id(prefix: str) -> str:
@@ -71,26 +50,7 @@ def _auto_id(prefix: str) -> str:
 
 @dataclass(kw_only=True, init=False)
 class MenuItem:
-    """A plain menu item (pure data).
-
-    Materialized on the main thread when added to a :class:`Menu`.
-
-    Attributes:
-        text: Label shown in the menu.
-        id: Unique id string; auto-generated when omitted. Activation
-            events carry this id.
-        enabled: Whether the item is initially enabled.
-        accelerator: Keyboard shortcut in muda syntax, e.g.
-            ``"CmdOrCtrl+Shift+K"`` (modifiers may be ``Ctrl``, ``Shift``,
-            ``Alt``, ``Cmd``, ``CmdOrCtrl`` ...). A malformed string
-            raises ``ValueError`` when the item is materialized.
-
-            .. note::
-               **Windows**: accelerators may not fire from the keyboard —
-               PRs welcome to fix this.
-        on_activate: A handler called when the item is activated — the
-            same as calling :meth:`on_activate` afterwards.
-    """
+    """A plain menu item (pure data; materialized on the main thread)."""
 
     text: str
     # Always set — the constructor accepts None and generates an id.
@@ -98,7 +58,6 @@ class MenuItem:
     enabled: bool = True
     accelerator: str | None = None
 
-    # Internal state — not constructor arguments.
     _inner: NativeItem | None = field(default=None, init=False, repr=False)
     _activate_callbacks: list[Callable[[AppEvent.MenuItemActivatedEvent], Any]] = field(
         default_factory=list, init=False, repr=False
@@ -113,9 +72,7 @@ class MenuItem:
         accelerator: str | None = None,
         on_activate: Callable[[AppEvent.MenuItemActivatedEvent], Any] | None = None,
     ) -> None:
-        # Hand-written __init__ (dataclass init=False): the *on_activate*
-        # keyword names the same thing as the instance method below, which
-        # a dataclass-generated __init__ cannot express.
+        # Hand-written __init__: a generated one cannot shadow on_activate().
         self.text = text
         self.id = id if id is not None else _auto_id("item")
         self.enabled = enabled
@@ -126,27 +83,16 @@ class MenuItem:
             self._activate_callbacks.append(on_activate)
 
     def on_activate(
-        self, fn: Callable[[AppEvent.MenuItemActivatedEvent], Any]
-    ) -> Callable[[AppEvent.MenuItemActivatedEvent], Any]:
-        """Register a handler for this item's activation.
+        self, fn: Callable[[AppEvent.MenuItemActivatedEvent], R]
+    ) -> Callable[[AppEvent.MenuItemActivatedEvent], R]:
+        """Register a handler for this item's activation (decorator or plain call).
 
-        Equivalent to passing ``on_activate=fn`` at construction. Works
-        as a decorator or a plain call; multiple handlers are supported
-        and run in registration order.
-
-        Handlers may be sync or ``async`` — auto-detected. They run on
-        the asyncio loop (never the main GUI thread): async handlers are
-        awaited directly, sync handlers are dispatched to the app's
-        thread pool. Safe to call :meth:`~lumiview.window.Window` methods
-        from inside a handler (``await`` in async handlers, ``.result()``
-        in sync ones).
+        Handlers are sync or async and never run on the GUI thread.
         """
         self._activate_callbacks.append(fn)
         return fn
 
-    # Runtime edits — dual write: update the data field, then push to the
-    # native item if materialized. Returns a Task (done immediately when
-    # the item is not materialized).
+    # Dual write: data first, native only if materialized.
 
     def set_text(self, text: str) -> Task[None]:
         """Change the label (any thread)."""
@@ -159,17 +105,12 @@ class MenuItem:
         return self._native_call("set_enabled", enabled)
 
     def set_accelerator(self, accelerator: str | None) -> Task[None]:
-        """Replace the keyboard shortcut; ``None`` removes it (any thread).
-
-        A malformed string fails the returned :class:`Task` with
-        ``ValueError``.
-        """
+        """Replace the keyboard shortcut; ``None`` removes it (any thread)."""
         self.accelerator = accelerator
         return self._native_call("set_accelerator", accelerator)
 
     def _native_call(self, name: str, *args: Any) -> Task[None]:
-        # Read once: shutdown clears _inner on the main thread, and a second
-        # read here could observe None and raise AttributeError.
+        # Read once: shutdown may clear _inner between two reads.
         inner = self._inner
         if inner is None:
             return Task._done(None)
@@ -180,13 +121,7 @@ class MenuItem:
         self._inner = None
 
     def copy(self, **changes: Any) -> "MenuItem":
-        """Return a copy with *changes* applied.
-
-        Prefer this over :func:`dataclasses.replace` for menu items:
-        ``replace`` regenerates ``id`` and drops the registered
-        ``on_activate`` handlers (both are ``init=False`` fields), which
-        silently breaks activation routing. This keeps both.
-        """
+        """Return a copy with *changes* applied (keeps ``id`` and ``on_activate``)."""
         clone = copy.copy(self)
         clone._inner = None
         clone._activate_callbacks = list(self._activate_callbacks)
@@ -200,13 +135,7 @@ class MenuItem:
 
 @dataclass(kw_only=True, init=False)
 class CheckMenuItem(MenuItem):
-    """A checkable menu item (toggle with a checkmark).
-
-    Attributes:
-        checked: Initial checked state.
-        on_activate: A handler called when the item is activated (same as
-            :meth:`MenuItem.on_activate`).
-    """
+    """A checkable menu item (toggle with a checkmark)."""
 
     checked: bool = False
 
@@ -237,17 +166,7 @@ class CheckMenuItem(MenuItem):
 
 @dataclass(kw_only=True, init=False)
 class Submenu:
-    """A submenu: a menu item that can contain other items.
-
-    Also used as the top level of a menu bar (each top-level entry of a
-    :class:`Menu` is a :class:`Submenu`).
-
-    Attributes:
-        text: Label shown in the menu bar / parent menu.
-        items: Child items (may be nested).
-        id: Unique id string; auto-generated when omitted.
-        enabled: Whether the submenu is initially enabled.
-    """
+    """A submenu — also the top level of a menu bar."""
 
     text: str
     items: list[Item] = field(default_factory=list)
@@ -289,53 +208,45 @@ class Submenu:
             setattr(clone, name, value)
         return clone
 
-    # Runtime edits — same dual-write model as MenuItem. Native work is
-    # batched into a single main-thread dispatch: materializing *item*
-    # creates an unsendable object and must not run off-thread.
+    # Structural edits run on the main thread, so the data order and the native
+    # order cannot diverge (and the list is serialized with materialization).
 
-    def append(self, item: Item) -> Task[None]:
+    @main_thread
+    def append(self, item: Item) -> None:
         """Append an item at runtime (any thread)."""
+        inner_menu = self._inner
+        if inner_menu is None:
+            self.items.append(item)
+            return
+        inner = Menu._materialize_item(item)
         self.items.append(item)
-        if self._inner is None:
-            return Task._done(None)
-        app = App.get()
-        inner_menu = self._inner  # narrowed below; captured by the closure
+        inner_menu.append(inner)
 
-        def _do() -> None:
-            inner_item = Menu._materialize_item(item)
-            inner_menu.append(inner_item)
-
-        return app.call_on_main(_do)
-
-    def insert(self, item: Item, position: int) -> Task[None]:
-        """Insert an item at *position* (any thread)."""
+    @main_thread
+    def insert(self, item: Item, position: int) -> None:
+        """Insert an item at *position* at runtime (any thread)."""
+        inner_menu = self._inner
+        if inner_menu is None:
+            self.items.insert(position, item)
+            return
+        inner = Menu._materialize_item(item)
         self.items.insert(position, item)
-        if self._inner is None:
-            return Task._done(None)
-        app = App.get()
-        inner_menu = self._inner  # narrowed below; captured by the closure
+        inner_menu.insert(inner, position)
 
-        def _do() -> None:
-            inner_item = Menu._materialize_item(item)
-            inner_menu.insert(inner_item, position)
-
-        return app.call_on_main(_do)
-
-    def remove(self, item: Item) -> Task[None]:
+    @main_thread
+    def remove(self, item: Item) -> None:
         """Remove an item at runtime (any thread)."""
         if item in self.items:
             self.items.remove(item)
-        if self._inner is None or item._inner is None:
-            return Task._done(None)
-        return App.get().call_on_main(self._inner.remove, item._inner)
+        inner_menu = self._inner
+        if inner_menu is not None and item._inner is not None:
+            inner_menu.remove(item._inner)
 
 
 class PredefinedMenuItem:
     """A system-behavior menu item (pure data).
 
-    Predefined items perform their OS action natively (copy, quit,
-    separator, ...) and **do not** generate activation events, so there
-    is no ``on_activate``. Use the classmethod factories to build them.
+    Performs its OS action natively and never emits an activation event.
     """
 
     def __init__(
@@ -350,8 +261,6 @@ class PredefinedMenuItem:
         self.name = name
         self.version = version
         self._inner: TaoPredefinedMenuItem | None = None
-
-    # Factories
 
     @classmethod
     def separator(cls) -> "PredefinedMenuItem":
@@ -437,17 +346,9 @@ class PredefinedMenuItem:
 
 
 class Menu:
-    """A root menu — the app menu bar (macOS), a window menu bar
-    (Windows), or the menu attached to a tray icon.
-
-    Create with ``await Menu.create(items=[...])`` — the plain
-    constructor raises.
-
-    On macOS, :meth:`App.run` installs a default menu bar
-    (:meth:`default_app_menu`); replace it by creating a Menu and calling
-    :meth:`install_nsapp` (``remove_from_nsapp`` restores nothing — it
-    only detaches the current menu). On Windows, attach a menu to a
-    window with :meth:`attach_to_window`.
+    """A root menu: the app menu bar (macOS), a window menu bar (Windows) or a tray
+    menu. Create with ``await Menu.create(items=[...])`` — the plain constructor
+    raises.
     """
 
     def __init__(self) -> None:
@@ -468,11 +369,7 @@ class Menu:
     @classmethod
     @main_thread
     def create(cls, *, items: list[Item]) -> "Menu":
-        """Materialize the whole menu tree on the main thread.
-
-        Returns a :class:`Task` — ``await`` in async code, ``.result()``
-        in sync code.
-        """
+        """Materialize the whole menu tree on the main thread."""
         app = App.get()
         menu = cls.__new__(cls)
         menu._items = list(items)
@@ -481,17 +378,15 @@ class Menu:
         for item in items:
             inner = cls._materialize_item(item)
             menu._inner.append(inner)
-        log.debug("Materialized menu with %d item(s)", len(items))
+        _log.debug("Materialized menu with %d item(s)", len(items))
         return menu
 
     @classmethod
     def default_app_menu(cls) -> "Menu":
-        """The default app menu bar (pure data — any thread, no
-        materialization): Application / Edit / Window, all system
-        behaviors.
+        """The default app menu bar (Application / Edit / Window).
 
-        Installed automatically by :meth:`App.run` on macOS; call
-        :meth:`install_nsapp` on another Menu to replace it.
+        Installed automatically on macOS. Its Quit item calls ``App.exit()`` so ⌘Q takes
+        the graceful path instead of the native ``terminate:``.
         """
         menu = cls.__new__(cls)
         app_menu = Submenu(
@@ -506,7 +401,12 @@ class Menu:
                 PredefinedMenuItem.hide_others(),
                 PredefinedMenuItem.show_all(),
                 PredefinedMenuItem.separator(),
-                PredefinedMenuItem.quit(),
+                MenuItem(
+                    id="__quit",
+                    text="Quit",
+                    accelerator="CmdOrCtrl+Q",
+                    on_activate=lambda _event: App.get().exit(),
+                ),
             ],
         )
         edit_menu = Submenu(
@@ -569,8 +469,7 @@ class Menu:
                 item._inner = TaoPredefinedMenuItem(
                     kind=item.kind, text=item.text, name=item.name, version=item.version
                 )
-            # Predefined items never emit activation events — no id to
-            # register (and no on_activate).
+            # Predefined items never emit activation events.
         elif isinstance(item, Submenu):
             if item._inner is None:
                 item._inner = TaoSubmenu(
@@ -590,15 +489,11 @@ class Menu:
 
     @classmethod
     def _register(cls, item: MenuItem | Submenu) -> None:
-        """Register *item* under its id in the app's table, warning on
-        duplicates (Windows shares command ids among duplicates, which
-        makes activation events ambiguous). Only items that can emit
-        activation events are registered (PredefinedMenuItem never does).
-        """
+        """Register *item* under its id (duplicate ids make activation ambiguous)."""
         app = App.get()
         prev = app._menu_items.get(item.id)
         if prev is not None and prev is not item:
-            log.warning(
+            _log.warning(
                 "duplicate menu item id %r — activation events may be ambiguous",
                 item.id,
             )
@@ -619,11 +514,7 @@ class Menu:
 
     @main_thread
     def install_nsapp(self) -> None:
-        """macOS: replace the application menu bar with this menu.
-
-        ``Window`` submenus built with ``_is_window_menu`` are registered
-        so macOS populates the window list and tiling shortcuts.
-        """
+        """macOS: replace the application menu bar with this menu."""
         if sys.platform != "darwin":
             raise NotImplementedError("install_nsapp() is macOS only")
         inner = self._materialize()

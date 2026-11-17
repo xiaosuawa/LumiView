@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 
 from lumiview import App, AppEvent
 
-ran: set[str] = set()
+order: list[str] = []
 
 
 async def _entry() -> None:
-    ran.add("entry")
+    order.append("entry")
     App.get().exit(0)
 
 
@@ -20,11 +21,18 @@ def main() -> int:
 
     @app.on(AppEvent.ReadyEvent)
     async def on_ready(_event) -> None:
-        ran.add("ready")
+        # Yield to the loop: proves entry waits for every Ready handler to finish.
+        await asyncio.sleep(0)
+        order.append("ready")
+
+    @app.on(AppEvent.ReadyEvent)
+    async def on_ready_raises(_event) -> None:
+        order.append("boom")
+        raise RuntimeError("ready handler failed")
 
     code = app.run(_entry)
-    assert code == 0, f"run() returned {code}"
-    assert ran == {"ready", "entry"}, f"expected both hooks to run, got {ran!r}"
+    assert code == 0, f"run() returned {code} (a failing Ready handler must not abort)"
+    assert order == ["ready", "boom", "entry"], f"unexpected order: {order!r}"
     return 0
 
 

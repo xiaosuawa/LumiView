@@ -96,6 +96,16 @@ def test_window_waiter_on_shutdown():
     assert code == 0
 
 
+def test_app_close_order():
+    code = run_scenario("app_close_order")
+    assert code == 0
+
+
+def test_app_close_prevent():
+    code = run_scenario("app_close_prevent")
+    assert code == 0
+
+
 def test_window_close_waiter():
     code = run_scenario("window_close_waiter")
     assert code == 0

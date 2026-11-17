@@ -20,7 +20,7 @@
 >
 > LumiView 目前处于**alpha**阶段。API 已可用但**尚未完全稳定**——方法名、参数结构、导入路径仍可能在版本间调整。我们通过 alpha 版本收集早期反馈，同时保留灵活调整 API 的权利。
 >
-> **欢迎早期体验者！** 尝试用它构建应用，然后告诉我们哪里好用、哪里不好用。你的反馈将直接塑造最终的稳定 API。升级时请关注[变更日志](CHANGELOG.md)并做好调整代码的准备。
+> **欢迎早期体验者！** 尝试用它构建应用，然后告诉我们哪里好用、哪里不好用。你的反馈将直接塑造最终的稳定 API。升级时请关注发行版说明并做好调整代码的准备。
 
 ---
 
@@ -53,14 +53,16 @@ flowchart TB
 
 ## 文档
 
-- [快速入门](docs/getting-started.zh.md)
-- [架构与线程模型](docs/architecture.zh.md)
-- [自定义插件](docs/plugins.zh.md)
-- [菜单与托盘](docs/menus.zh.md)
-- [JS 客户端（npm / `window.__LUMIVIEW__`）](docs/js-client.zh.md)
-- [第三方集成](docs/integrations.zh.md)
-- [Serve 协议](docs/serve.zh.md)
-- [变更日志](CHANGELOG.md)
+建议先从[文档导航](docs/README.zh.md)和其中的「3 分钟建立心智模型」开始，再按章节深入：
+
+- [快速入门](docs/getting-started.zh.md) — 安装、异步/同步最小应用、`WindowOptions`、多窗口共享上下文与日志
+- [架构与并发模型](docs/architecture-and-concurrency.zh.md) — 分层架构、线程模型、`Task[T]`、死锁防护与第三方 GUI 集成
+- [生命周期与事件系统](docs/lifecycle-and-events.zh.md) — `AppState`、两阶段优雅退出、可阻止事件与一次性等待
+- [窗口管理与原生外观](docs/window-and-appearance.zh.md) — 窗口几何、无边框标题栏、原生特效与 WebView 能力
+- [JS ↔ Python 通信](docs/bridge-and-js-client.zh.md) — Bridge、`window.__LUMIVIEW__`、类型化命令与安全模式
+- [插件与权限系统](docs/plugins-and-permissions.zh.md) — `Scope` 命令树、`ScopePermission` 权限链与自定义插件
+- [Serve 自定义协议](docs/serve-protocols.zh.md) — 通过 `lumiview://` 运行 `Static`、`Handler`、`WSGI` 与 `ASGI`
+- [原生菜单与系统托盘](docs/menus-and-tray.zh.md) — 菜单树、快捷键、托盘图标与 close-to-tray
 
 > 英文版见 [README.md](README.md)（文档为 `docs/*.md`）。
 
@@ -95,7 +97,7 @@ app.run(main)
 
 - **🧵 统一 async/sync** — 所有跨线程/异步操作返回 `Task`。`await`、`.result()` 或 `.on_done()`，同一套 API，自由选择。
 - **⏳ 事件过滤与一次性等待** — `where=` 谓词、`wait_for()` / `wait_loaded()`、可取消的 `Subscription`，以及页面 → Python 的 `WindowEvent.JsEvent`。
-- **🌉 JS ↔ Python Bridge** — Python 函数通过 `window.__LUMIVIEW__.invoke()` 暴露给 JS。无需 HTTP 服务器，无需手动序列化；可选的 `lumiview` npm 包给打包前端提供类型。
+- **🌉 JS ↔ Python Bridge** — Python 函数通过 `window.__LUMIVIEW__.invoke()` 暴露给 JS。无需 HTTP 服务器，无需手动序列化；`js/` 下有给打包前端的类型化门面（尚未发布到 npm）。
 - **🪟 原生窗口效果** — Acrylic、Mica、Vibrancy `window-vibrancy`。
 - **🎨 自定义标题栏** — 声明式 `data-lumiview-drag-region` 拖动区域 + 内置 `__LUMIVIEW__.plugins.window.*` JS API（最小化/最大化/关闭）。
 - **📋 原生菜单** — 条目 `on_activate` 回调 + 全局 `MenuItemActivatedEvent`；macOS 默认应用菜单自动安装，Windows 支持窗口菜单栏。
@@ -137,7 +139,7 @@ logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + 调度 / 事件派发
 - [x] 窗口管理 (TaoWindow + Window)
 - [x] WebView 嵌入 (wryview)
 - [x] JS ↔ Python Bridge (invoke/emit/listen IPC)
-- [x] TypeScript 客户端 + 可选 `lumiview` npm 包
+- [x] TypeScript 页面客户端（`js/`）；npm 发布待定
 - [x] 事件类体系 (WindowEvent / AppEvent)
 - [x] 事件过滤、一次性等待与可取消订阅
 - [x] 统一 async/sync `Task` 接口
@@ -147,7 +149,7 @@ logging.getLogger("lumiview").setLevel(logging.DEBUG)  # + 调度 / 事件派发
 - [x] 自定义标题栏
 - [x] 原生菜单 (muda)
 - [x] 系统托盘 (tray-icon)
-- [x] abi3 + abi3t wheel 构建（CPython 3.10+ / free-threaded 3.15）
+- [x] abi3 + cp314t + abi3.abi3t wheel 构建（CPython 3.10+ / free-threaded 3.14+）
 - [ ] API 稳定化
 - [ ] 完整文档站点
 

@@ -18,7 +18,7 @@ async def _entry() -> None:
     win = await Window.create(
         WindowOptions(html="<html><body></body></html>", visible=False)
     )
-    win.on(WindowEvent.ClosedEvent)(closed_events.append)
+    win.on(WindowEvent.ClosedEvent, closed_events.append)
 
     # Pending waiter fails when the window closes.
     waiter = win.wait_for(WindowEvent.ReceivedImeTextEvent, timeout=10)

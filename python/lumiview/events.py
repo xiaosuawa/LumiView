@@ -1,15 +1,12 @@
 """Event class system.
 
-:class:`WindowBaseEvent` is the true window-event base (context data +
-``prevent()``); :class:`WindowEvent` and :class:`AppEvent` are pure
-namespace containers — event classes nest inside them (inheriting the
-*BaseEvent classes), so both namespace access
-(``WindowEvent.TitleChangedEvent``) and isinstance checks
-(``isinstance(event, WindowBaseEvent)``) work.
-
-Event classes are ``@dataclass(slots=True, kw_only=True)`` — every field
-is a real dataclass field, so static type checkers see the full shape
-(no dynamic ``setattr``).
+:class:`WindowBaseEvent` / :class:`AppBaseEvent` carry the context shared by a
+whole event family. Only the events whose default behavior can be cancelled
+derive from :class:`WindowPreventableEvent` / :class:`AppPreventableEvent`,
+which add ``prevented`` and :meth:`~WindowPreventableEvent.prevent` — the other
+events have no ``prevent()`` at all. :class:`WindowEvent` and :class:`AppEvent`
+are namespace containers. Every event is a slots dataclass, so type checkers
+see the full shape.
 """
 
 from __future__ import annotations
@@ -27,7 +24,6 @@ if TYPE_CHECKING:
         ElementState,
         MouseButton,
         ScrollDeltaKind,
-        StartCause,
         Theme,
         TouchPhase,
     )
@@ -43,20 +39,28 @@ class Event:
 
 @dataclass(slots=True, kw_only=True)
 class WindowBaseEvent(Event):
-    """Base class of all window events: context + prevent primitive.
+    """Base of all window events: the window the event belongs to.
 
-    Attributes:
-        window: The :class:`~lumiview.window.Window` the event belongs to.
-            Filled by the dispatch machinery before handlers run.
-        prevented: Set by :meth:`prevent` — true when the default
-            behavior was cancelled.
+    ``window`` is filled in by the dispatcher before handlers run.
     """
 
     window: Window | None = None
+
+
+@dataclass(slots=True, kw_only=True)
+class WindowPreventableEvent(WindowBaseEvent):
+    """Base of the window events whose default behavior can be cancelled.
+
+    A handler calls :meth:`prevent` to keep the current behavior — stay on the
+    page, block the download, keep the window open. These events are dispatched
+    from synchronous native callbacks, which block until every handler finished,
+    so their handlers must not block on the GUI thread.
+    """
+
     prevented: bool = False
 
     def prevent(self) -> None:
-        """Cancel the default behavior (meaningful on preventable events)."""
+        """Cancel the default behavior of this event."""
         self.prevented = True
 
 
@@ -66,6 +70,21 @@ class AppBaseEvent(Event):
     __slots__ = ()
 
 
+@dataclass(slots=True, kw_only=True)
+class AppPreventableEvent(AppBaseEvent):
+    """Base of the app events whose default behavior can be cancelled.
+
+    A handler calls :meth:`prevent` to cancel the action (for example to keep the
+    app running after a close request).
+    """
+
+    prevented: bool = False
+
+    def prevent(self) -> None:
+        """Cancel the default behavior of this event."""
+        self.prevented = True
+
+
 class WindowEvent:
     """Window event namespace (pure module separation)."""
 
@@ -73,70 +92,43 @@ class WindowEvent:
 
     @dataclass(slots=True, kw_only=True)
     class PageLoadStartedEvent(WindowBaseEvent):
-        """A page load has started (initial page or a navigation).
-
-        Attributes:
-            url: URL of the page being loaded.
-        """
+        """A page load has started (initial page or a navigation)."""
 
         url: str
 
     @dataclass(slots=True, kw_only=True)
     class PageLoadFinishedEvent(WindowBaseEvent):
-        """A page load has finished.
-
-        Attributes:
-            url: URL of the page that finished loading.
-        """
+        """A page load has finished."""
 
         url: str
 
     @dataclass(slots=True, kw_only=True)
     class TitleChangedEvent(WindowBaseEvent):
-        """The page title changed.
-
-        Attributes:
-            title: The new title.
-        """
+        """The page title changed."""
 
         title: str
 
     # Navigation / new window (preventable + extension actions)
 
     @dataclass(slots=True, kw_only=True)
-    class NavigationRequestedEvent(WindowBaseEvent):
-        """A navigation is requested in this window.
-
-        Preventable — call :meth:`~WindowBaseEvent.prevent` to block the
-        navigation (the WebView stays on the current page).
-
-        Attributes:
-            url: The URL being navigated to.
-        """
+    class NavigationRequestedEvent(WindowPreventableEvent):
+        """A navigation is requested; prevent it to stay on the current page."""
 
         url: str
 
     @dataclass(slots=True, kw_only=True)
-    class NewWindowRequestedEvent(WindowBaseEvent):
+    class NewWindowRequestedEvent(WindowPreventableEvent):
         """The page requested a new window (e.g. ``window.open``).
 
-        wry cannot open a second in-app window, so the default behavior
-        is to deny the new window and open *url* in the system browser.
-        Preventable — :meth:`~WindowBaseEvent.prevent` blocks the default
-        entirely; :meth:`open_in` overrides the browser target.
-
-        Attributes:
-            url: The URL the new window would have shown.
+        Denied by default — the URL opens in the system browser. Prevent to block it
+        entirely, or call :meth:`open_in` to override the target.
         """
 
         url: str
         _open_url: str | None = None
 
         def open_in(self, url: str) -> None:
-            """Open *url* in the system browser via :func:`webbrowser.open`.
-
-            The in-webview window is denied (wry has no in-app redirect).
-            """
+            """Open *url* in the system browser (the in-webview window is denied)."""
             self._open_url = url
 
     # Drag & drop
@@ -145,15 +137,8 @@ class WindowEvent:
     class DragEvent(WindowBaseEvent):
         """File drag & drop over the window.
 
-        Only emitted after a handler is first registered for this event
-        class (the underlying wryview handler is installed lazily to keep
-        WebView2's built-in external-file drops working on Windows).
-
-        Attributes:
-            kind: The wryview :class:`~wryview.DragDropEvent` phase —
-                ``Enter`` / ``Over`` / ``Leave`` / ``Drop``.
-            paths: Absolute paths of the dragged files.
-            position: Pointer position inside the window.
+        Only emitted after a handler is registered for this class: the wryview handler
+        is installed lazily so WebView2's built-in external-file drops keep working.
         """
 
         kind: DragDropEvent
@@ -163,16 +148,11 @@ class WindowEvent:
     # Downloads
 
     @dataclass(slots=True, kw_only=True)
-    class DownloadStartedEvent(WindowBaseEvent):
+    class DownloadStartedEvent(WindowPreventableEvent):
         """A download is about to start.
 
-        Preventable — :meth:`~WindowBaseEvent.prevent` cancels the
-        download; :meth:`save_to` redirects it to a custom path. The
-        default is to save to *suggested_path*.
-
-        Attributes:
-            url: The URL being downloaded.
-            suggested_path: The path the WebView suggested.
+        Prevent to cancel it, or redirect with :meth:`save_to` (default: the suggested
+        path).
         """
 
         url: str
@@ -185,13 +165,7 @@ class WindowEvent:
 
     @dataclass(slots=True, kw_only=True)
     class DownloadCompletedEvent(WindowBaseEvent):
-        """A download finished (successfully or not).
-
-        Attributes:
-            url: The URL that was downloaded.
-            saved_path: The final path on disk, or ``None``.
-            success: Whether the download completed without error.
-        """
+        """A download finished, successfully or not."""
 
         url: str
         saved_path: str | None
@@ -199,47 +173,29 @@ class WindowEvent:
 
     # Window (tao events)
 
-    class CloseRequestedEvent(WindowBaseEvent):
-        """The window received a close request.
+    class CloseRequestedEvent(WindowPreventableEvent):
+        """The window received a close request; prevent to cancel it.
 
-        Preventable — :meth:`~WindowBaseEvent.prevent` cancels the
-        request; otherwise the window's configured close behavior is
-        applied (see :class:`~lumiview.window.CloseBehavior`).
+        Otherwise ``close_behavior`` is applied.
         """
 
         ...
 
     class ClosedEvent(WindowBaseEvent):
-        """The window has closed.
-
-        Emitted once, after the native window and WebView are gone.
-        Handlers run on the asyncio loop like every other event; pending
-        :meth:`~lumiview.window.Window.wait_for` waiters fail with
-        :class:`~lumiview.app.WindowClosedError` when it is dispatched.
-        """
+        """The window and its WebView are gone (dispatched once)."""
 
         ...
 
     @dataclass(slots=True, kw_only=True)
     class ResizedEvent(WindowBaseEvent):
-        """The window was resized.
-
-        Attributes:
-            width: New window width.
-            height: New window height.
-        """
+        """The window was resized (physical pixels)."""
 
         width: int
         height: int
 
     @dataclass(slots=True, kw_only=True)
     class MovedEvent(WindowBaseEvent):
-        """The window was moved.
-
-        Attributes:
-            x: New outer position, x coordinate.
-            y: New outer position, y coordinate.
-        """
+        """The window moved (physical screen coordinates)."""
 
         x: int
         y: int
@@ -256,21 +212,13 @@ class WindowEvent:
 
     @dataclass(slots=True, kw_only=True)
     class ScaleFactorChangedEvent(WindowBaseEvent):
-        """The display scale factor changed (e.g. across monitors).
-
-        Attributes:
-            scale_factor: The new scale factor.
-        """
+        """The display scale factor changed (e.g. across monitors)."""
 
         scale_factor: float
 
     @dataclass(slots=True, kw_only=True)
     class ThemeChangedEvent(WindowBaseEvent):
-        """The system or window theme changed.
-
-        Attributes:
-            theme: The new :class:`~lumiview._core.Theme`.
-        """
+        """The system or window theme changed."""
 
         theme: Theme
 
@@ -305,53 +253,27 @@ class WindowEvent:
 
     @dataclass(slots=True, kw_only=True)
     class ReceivedImeTextEvent(WindowBaseEvent):
-        """Input method editor (IME) text arrived.
-
-        Carries the pre-edit / committed string of a composition
-        session (e.g. Chinese pinyin candidates).
-
-        Attributes:
-            text: The IME text.
-        """
+        """IME pre-edit / committed text (e.g. pinyin candidates)."""
 
         text: str
 
     @dataclass(slots=True, kw_only=True)
     class TouchpadPressureEvent(WindowBaseEvent):
-        """Touchpad pressure changed (macOS).
-
-        Attributes:
-            pressure: Normalized pressure 0.0–1.0.
-            stage: The pressure stage (1 = light, 2 = deep click).
-        """
+        """Touchpad pressure changed (macOS)."""
 
         pressure: float
         stage: int
 
     @dataclass(slots=True, kw_only=True)
     class AxisMotionEvent(WindowBaseEvent):
-        """Joystick / additional input axis motion.
-
-        Attributes:
-            axis: The axis identifier.
-            value: The axis position (typically -1.0–1.0).
-        """
+        """Joystick / additional input axis motion."""
 
         axis: int
         value: float
 
     @dataclass(slots=True, kw_only=True)
     class TouchEvent(WindowBaseEvent):
-        """A touch contact on a touch screen.
-
-        Attributes:
-            phase: The :class:`~lumiview._core.TouchPhase` of the contact.
-            x: Logical x position inside the window.
-            y: Logical y position inside the window.
-            force: Pressure 0.0–1.0, or ``None`` if the platform does
-                not report it.
-            id: Unique finger identifier.
-        """
+        """A touch contact on a touch screen."""
 
         phase: TouchPhase
         x: float
@@ -363,15 +285,9 @@ class WindowEvent:
 
     @dataclass(slots=True, kw_only=True)
     class JsEvent(WindowBaseEvent):
-        """An event emitted by the page via ``window.__LUMIVIEW__.emit``.
+        """A fire-and-forget event emitted by the page (``__LUMIVIEW__.emit``).
 
-        The JS→Python counterpart of :meth:`Window.emit` — a
-        fire-and-forget notification, not a request/response call (use
-        a :class:`~lumiview.bridge.Bridge` command for the latter).
-
-        Attributes:
-            event: The event name passed to ``window.__LUMIVIEW__.emit()``.
-            payload: The JSON payload, or ``None``.
+        Use a :class:`~lumiview.bridge.Bridge` command for request/response.
         """
 
         event: str
@@ -379,15 +295,10 @@ class WindowEvent:
 
     @dataclass(slots=True, kw_only=True)
     class WebMessageReceivedEvent(WindowBaseEvent):
-        """A raw message arrived from the page's ``window.ipc.postMessage``.
+        """A raw message from the page's ``window.ipc.postMessage``.
 
-        Emitted for every IPC message, even when a :class:`Bridge
-        <lumiview.bridge.Bridge>` handles it. With ``untrusted=True``
-        this is the only way to receive page messages (no client is
-        injected and messages are not parsed).
-
-        Attributes:
-            message: The raw message string as posted by the page.
+        Emitted for every IPC message, even when a ``Bridge`` handles it. In
+        ``untrusted`` mode this is the only way to receive page messages.
         """
 
         message: str
@@ -397,78 +308,53 @@ class AppEvent:
     """App event namespace (pure module separation)."""
 
     class ReadyEvent(AppBaseEvent):
-        """The app is ready.
+        """The app is ready — dispatched once, right before ``entry`` runs.
 
-        Emitted on the asyncio loop just before the ``run()`` entry
-        point is called — register handlers here to run early setup.
-        """
-
-        ...
-
-    class AppCloseEvent(AppBaseEvent):
-        """The app is shutting down.
-
-        Emitted during shutdown; handlers are awaited before the asyncio
-        loop stops, so cleanup code placed here actually runs.
+        Every handler finishes before ``entry`` starts; a failing handler is logged
+        and the remaining ones still run, so it never aborts the startup.
         """
 
         ...
 
     @dataclass(slots=True, kw_only=True)
-    class ReopenEvent(AppBaseEvent):
-        """The app was reopened via the macOS Dock icon (macOS only).
+    class CloseRequestedEvent(AppPreventableEvent):
+        """A graceful exit was requested — the cancellable close hook.
 
-        Emitted when the user clicks the Dock icon while the app is
-        running with no visible windows — restore or recreate a window
-        here (e.g. ``win.show()``).
+        Dispatched before anything is torn down: windows, menus and trays are alive and
+        the whole API keeps working, so a handler may save state or ask the user. There
+        is no timeout. Call :meth:`prevent` to cancel the exit; a later ``exit()``
+        starts over.
 
-        Attributes:
-            has_visible_windows: Whether any window was visible at
-                reopen time.
+        Only negotiated exits dispatch it (``exit()``, the last-window policy, a failing
+        ``entry``/Ready handler) — a process that terminates on its own (macOS
+        ``LoopDestroyed``) only dispatches :class:`ClosedEvent`.
         """
+
+        exit_code: int = 0
+
+    @dataclass(slots=True, kw_only=True)
+    class ClosedEvent(AppBaseEvent):
+        """The app has closed — the irreversible cleanup notification.
+
+        Dispatched exactly once, after the native loop returned and every window, tray
+        and menu was released. New work fails with ``AppClosedError``; outstanding
+        :meth:`App.wait_for` waiters fail too. Carries the value :meth:`App.run`
+        returns.
+        """
+
+        exit_code: int = 0
+
+    @dataclass(slots=True, kw_only=True)
+    class ReopenEvent(AppBaseEvent):
+        """The app was reopened from the Dock icon (macOS)."""
 
         has_visible_windows: bool
 
     # Loop-level events (not tied to a window)
 
     @dataclass(slots=True, kw_only=True)
-    class NewEventsEvent(AppBaseEvent):
-        """The event loop started a new batch of events.
-
-        Fires on every loop iteration — keep handlers cheap.
-
-        Attributes:
-            cause: Why the batch started
-                (:class:`~lumiview._core.StartCause`).
-        """
-
-        cause: StartCause
-
-    class MainEventsClearedEvent(AppBaseEvent):
-        """All events of the current batch were processed.
-
-        Fires once per loop iteration after the batch — a good place
-        for frame-synchronized work.
-        """
-
-        ...
-
-    class RedrawEventsClearedEvent(AppBaseEvent):
-        """All redraw requests of the current frame were processed.
-
-        Fires once per frame after redraws.
-        """
-
-        ...
-
-    @dataclass(slots=True, kw_only=True)
     class OpenedEvent(AppBaseEvent):
-        """The app was opened with a URL (custom scheme / file
-        association).
-
-        Attributes:
-            urls: The URLs the app was opened with.
-        """
+        """The app was opened with URLs (custom scheme / file association)."""
 
         urls: list[str]
 
@@ -486,26 +372,14 @@ class AppEvent:
 
     @dataclass(slots=True, kw_only=True)
     class DeviceMouseMotionEvent(AppBaseEvent):
-        """Global (device-level) mouse motion.
-
-        Attributes:
-            dx: Motion delta on the x axis.
-            dy: Motion delta on the y axis.
-        """
+        """Global (device-level) pointer motion."""
 
         dx: float
         dy: float
 
     @dataclass(slots=True, kw_only=True)
     class DeviceMouseWheelEvent(AppBaseEvent):
-        """Global (device-level) mouse wheel.
-
-        Attributes:
-            delta_kind: :class:`~lumiview._core.ScrollDeltaKind` of the
-                delta (lines or pixels).
-            dx: Horizontal delta.
-            dy: Vertical delta.
-        """
+        """Global (device-level) mouse wheel."""
 
         delta_kind: ScrollDeltaKind
         dx: float
@@ -513,48 +387,28 @@ class AppEvent:
 
     @dataclass(slots=True, kw_only=True)
     class DeviceMotionEvent(AppBaseEvent):
-        """Global (device-level) axis motion.
-
-        Attributes:
-            axis: The axis identifier.
-            value: The axis position.
-        """
+        """Global (device-level) axis motion."""
 
         axis: int
         value: float
 
     @dataclass(slots=True, kw_only=True)
     class DeviceButtonEvent(AppBaseEvent):
-        """Global (device-level) mouse button.
-
-        Attributes:
-            button: The button identifier.
-            state: :class:`~lumiview._core.ElementState` (pressed or
-                released).
-        """
+        """Global (device-level) mouse button."""
 
         button: int
         state: ElementState
 
     @dataclass(slots=True, kw_only=True)
     class DeviceKeyEvent(AppBaseEvent):
-        """Global (device-level) keyboard event.
-
-        Attributes:
-            physical_key: The hardware key (e.g. ``"KeyW"``).
-            state: :class:`~lumiview._core.ElementState`.
-        """
+        """Global (device-level) keyboard event."""
 
         physical_key: str
         state: ElementState
 
     @dataclass(slots=True, kw_only=True)
     class DeviceTextEvent(AppBaseEvent):
-        """Global (device-level) text input.
-
-        Attributes:
-            codepoint: The Unicode code point of the character.
-        """
+        """Global (device-level) text input."""
 
         codepoint: int
 
@@ -562,18 +416,10 @@ class AppEvent:
 
     @dataclass(slots=True, kw_only=True)
     class MenuItemActivatedEvent(AppBaseEvent):
-        """A menu item was activated (app menu, window menu bar, or tray menu).
+        """A menu item was activated (app menu, window menu bar or tray menu).
 
-        Predefined system items (quit, copy, ...) perform their OS action
-        natively and never emit this event.
-
-        Attributes:
-            id: The item's id string (as passed at construction).
-            menu_item: The matching
-                :class:`~lumiview.menu.MenuItem`/:class:`~lumiview.menu.Submenu`
-                wrapper, filled by the dispatcher; ``None`` when the id is
-                unknown. Prefer :meth:`~lumiview.menu.MenuItem.on_activate`
-                over matching on this field.
+        Predefined system items perform their OS action and never emit it. ``menu_item``
+        is filled by the dispatcher (``None`` for an unknown id).
         """
 
         id: str
@@ -583,18 +429,7 @@ class AppEvent:
 
     @dataclass(slots=True, kw_only=True)
     class TrayIconClickEvent(AppBaseEvent):
-        """A click on a tray icon.
-
-        Attributes:
-            id: The tray icon id.
-            position: Physical pointer position ``(x, y)``.
-            rect: Physical tray icon bounds ``(x, y, width, height)``.
-            button: The mouse button (:class:`~lumiview._core.MouseButton`).
-            button_state: Pressed or released
-                (:class:`~lumiview._core.ElementState`).
-            tray: The :class:`~lumiview.tray.TrayIcon` wrapper, filled by
-                the dispatcher; ``None`` when the id is unknown.
-        """
+        """A click on a tray icon (``tray`` is filled by the dispatcher)."""
 
         id: str
         position: tuple[float, float]
@@ -605,16 +440,7 @@ class AppEvent:
 
     @dataclass(slots=True, kw_only=True)
     class TrayIconDoubleClickEvent(AppBaseEvent):
-        """A double click on a tray icon (Windows only).
-
-        Attributes:
-            id: The tray icon id.
-            position: Physical pointer position ``(x, y)``.
-            rect: Physical tray icon bounds ``(x, y, width, height)``.
-            button: The mouse button (:class:`~lumiview._core.MouseButton`).
-            tray: The :class:`~lumiview.tray.TrayIcon` wrapper, filled by
-                the dispatcher; ``None`` when the id is unknown.
-        """
+        """A double click on a tray icon (Windows only)."""
 
         id: str
         position: tuple[float, float]
@@ -624,15 +450,7 @@ class AppEvent:
 
     @dataclass(slots=True, kw_only=True)
     class TrayIconEnterEvent(AppBaseEvent):
-        """The pointer entered the tray icon region.
-
-        Attributes:
-            id: The tray icon id.
-            position: Physical pointer position ``(x, y)``.
-            rect: Physical tray icon bounds ``(x, y, width, height)``.
-            tray: The :class:`~lumiview.tray.TrayIcon` wrapper, filled by
-                the dispatcher; ``None`` when the id is unknown.
-        """
+        """The pointer entered the tray icon region."""
 
         id: str
         position: tuple[float, float]
@@ -641,15 +459,7 @@ class AppEvent:
 
     @dataclass(slots=True, kw_only=True)
     class TrayIconMoveEvent(AppBaseEvent):
-        """The pointer moved over the tray icon region.
-
-        Attributes:
-            id: The tray icon id.
-            position: Physical pointer position ``(x, y)``.
-            rect: Physical tray icon bounds ``(x, y, width, height)``.
-            tray: The :class:`~lumiview.tray.TrayIcon` wrapper, filled by
-                the dispatcher; ``None`` when the id is unknown.
-        """
+        """The pointer moved over the tray icon region."""
 
         id: str
         position: tuple[float, float]
@@ -658,15 +468,7 @@ class AppEvent:
 
     @dataclass(slots=True, kw_only=True)
     class TrayIconLeaveEvent(AppBaseEvent):
-        """The pointer left the tray icon region.
-
-        Attributes:
-            id: The tray icon id.
-            position: Physical pointer position ``(x, y)``.
-            rect: Physical tray icon bounds ``(x, y, width, height)``.
-            tray: The :class:`~lumiview.tray.TrayIcon` wrapper, filled by
-                the dispatcher; ``None`` when the id is unknown.
-        """
+        """The pointer left the tray icon region."""
 
         id: str
         position: tuple[float, float]
@@ -677,7 +479,9 @@ class AppEvent:
 __all__ = [
     "Event",
     "WindowBaseEvent",
+    "WindowPreventableEvent",
     "AppBaseEvent",
+    "AppPreventableEvent",
     "WindowEvent",
     "AppEvent",
 ]

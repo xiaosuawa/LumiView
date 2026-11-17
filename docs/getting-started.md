@@ -1,290 +1,158 @@
-# Getting Started
+# Getting started
 
-LumiView is a Python runtime for desktop windows with a WebView. You write Python;
-the window, the WebView and the native chrome are Rust underneath. No Rust toolchain,
-no Node.js, no `tauri.conf.json` — `pip install` and go.
+## Requirements and installation
 
-> **Status:** 0.2.0rc1, alpha. The API is not frozen yet; read the
-> [changelog](../CHANGELOG.md) before upgrading between minor versions.
-
-## Requirements
-
-- Python 3.10+
-- A system WebView: WebView2 (Windows), WKWebView (macOS) or WebKitGTK (Linux)
-- Linux only: GTK 3 and `libwebkit2gtk-4.1`
-
-## Install
+- **Python >= 3.10** (free-threaded builds without the GIL are supported too, such as Python 3.14t / 3.15t)
+- **Operating system and system WebView runtime**:
+  - **Windows**: WebView2 (usually bundled with Windows 10/11)
+  - **macOS**: the system WKWebView
+  - **Linux**: WebKitGTK (usually requires installing `libwebkit2gtk-4.1` and the GTK3 runtime)
 
 ```bash
 pip install lumiview
 ```
 
-## Hello, window
+---
+
+## Your first app
+
+### Async style (recommended)
 
 ```python
-import asyncio
-
 from lumiview import App, Window, WindowOptions
 
-app = App(name="Hello")
+app = App(name="HelloLumiView")
 
 
-async def main() -> None:
+async def main():
     win = await Window.create(
         WindowOptions(
-            title="Hello LumiView",
+            title="Hello LumiView!",
+            url="https://example.com",
             width=900,
             height=640,
-            html="<h1>Hello from LumiView!</h1>",
+            devtools=True,
         )
     )
 
+    # Wait for the initial page load (pre-registered inside create(), so a fast load is not missed)
     await win.wait_loaded()
-    print("page is ready")
 
-    await asyncio.sleep(5)
-    await win.close()
+    # Run JS in the page and get the return value
+    title = await win.eval_js("document.title")
+    print("Page title:", title)
 
 
 if __name__ == "__main__":
     app.run(main)
 ```
 
-Three things are worth noticing:
+### Pure sync style
 
-- `Window.create(...)` returns a `Task[Window]`, so you `await` it in async code and
-  call `.result()` in sync code.
-- `app.run(main)` blocks the main thread until the app exits. `main` may be an
-  `async def` (runs on the asyncio thread) or a plain function (runs on the thread
-  pool).
-- Closing the last window exits the app by default (`exit_on_last_window=True`).
-
-## The sync flavour
-
-The same API works without `async`. `app.run()` starts the loop before any window
-can be created, so pass a plain function as the entry point and block on each
-`Task`:
+Every cross-thread operation in LumiView returns a `Task[T]`. If your entry function is a plain synchronous `def`, just call `.result()` where you need the value:
 
 ```python
-from lumiview import App, Window, WindowOptions
+import time
+from lumiview import App, Window
 
 app = App(name="HelloSync")
 
 
-def main() -> None:
-    win = Window.create(WindowOptions(title="Sync", html="<p>hi</p>")).result()
-    win.set_title("Sync — renamed").result()
+def main():
+    # Window.create also accepts keyword arguments directly
+    win = Window.create(
+        title="Hello Sync!",
+        html="<h1>Hello LumiView!</h1>",
+        width=800,
+        height=600,
+    ).result()
+
+    win.wait_loaded().result()
+    print(win.eval_js("document.querySelector('h1').textContent").result())
+
+    time.sleep(2)
+    win.load_url("https://www.python.org")
 
 
-app.run(main)
+if __name__ == "__main__":
+    app.run(main)
 ```
 
-`main` runs on the thread pool (never the GUI thread), which is exactly where
-`.result()` is safe.
+> **Tip**: `app.run(main)` blocks the current **main thread** while it runs the native event loop, and returns the exit code as an `int` once the app exits. An `async def` `main` runs on the internal asyncio thread; a plain `def` runs on the thread pool.
 
-## Window options
+---
 
-All window configuration is one mutable dataclass. `Window.create` accepts either a
-`WindowOptions` object or the fields as keyword arguments.
+## Page content sources
 
-| Group | Fields |
-|---|---|
-| Content | `url`, `html`, `source` (`Serve`, see [serve.md](serve.md)); `headers`, `user_agent`, `proxy`, `incognito`, `javascript`, `autoplay`, `clipboard`, `hotkeys_zoom`, `https_scheme`, `devtools` |
-| Geometry | `width`, `height`, `position`, `monitor`, `min_size`, `max_size`, `maximized` |
-| Chrome | `title`, `decorations`, `transparent`, `titlebar` (`TitleBarOptions`, macOS), `undecorated_shadow` (Windows), `theme`, `background_color`, `icon` |
-| Behaviour | `visible`, `focused`, `focusable`, `resizable`, `minimizable`, `maximizable`, `closable`, `always_on_top`, `always_on_bottom`, `visible_on_all_workspaces`, `content_protection`, `sync_visibility`, `close_behavior` |
-| WebView env | `data_directory`, `web_context`, `drag_drop`, `default_context_menus`, `back_forward_gestures` |
-| IPC | `bridge`, `untrusted` (see [plugins.md](plugins.md), [js-client.md](js-client.md)) |
-| Hook | `prepare` (see below) |
+`WindowOptions` accepts three content sources, in priority order **`url` > `html` > `source`**:
 
-Content precedence when several are given: `html=` wins over `source=`, `url=`
-wins over `source=`. The custom protocol from `source=` is registered either way,
-so the page can still `fetch("lumiview://...")`.
+| Option | Description | Example |
+|---|---|---|
+| `url` | Loads a remote or custom-protocol URL | `url="https://example.com"` |
+| `html` | Renders an HTML string directly | `html="<h1>Hi</h1>"` |
+| `source` | Registers a `lumiview://` custom protocol handler (a single handler or a list) | `source=Static("dist")` |
 
-`untrusted=True` disables IPC in both directions — nothing is injected and
-incoming messages are not parsed; see [js-client.md](js-client.md#untrustedtrue).
+Even when `url` or `html` overrides the initial page, the custom protocol registered by `source` stays active and the page can reach it through `fetch()`. See [Serve custom protocols](serve-protocols.md) for details.
 
-Reuse and tweak options with `dataclasses.replace`; subclass them for templates:
+---
+
+## Reusing configuration with `WindowOptions`
+
+`WindowOptions` is a mutable `dataclass`, handy for tweaking a configuration with `dataclasses.replace` or for defining app-level templates through inheritance:
 
 ```python
 from dataclasses import dataclass, replace
-
 from lumiview import WindowOptions
 
-base = WindowOptions(title="A", width=800)
-wide = replace(base, width=1280)   # new object; `base` is untouched
+base = WindowOptions(width=1024, height=768, devtools=True)
+secondary = replace(base, title="Secondary window", width=600, height=400)
 
 
-@dataclass
-class AppOptions(WindowOptions):
+# Note: a dataclass subclass must re-apply the @dataclass(kw_only=True)
+# decorator, otherwise the defaults overridden by the subclass do not apply.
+@dataclass(kw_only=True)
+class AppWindowOptions(WindowOptions):
     title: str = "MyApp"
-    devtools: bool = True
+    min_size: tuple[float, float] = (640, 480)
 ```
 
-A `WindowOptions` subclass must re-apply `@dataclass` — the generated `__init__`
-captures base defaults at class-creation time.
+---
 
-## Events
+## Multiple windows and a shared `WebContext`
 
-Handlers are registered per event class and receive the event object:
+Call `await Window.create(...)` more than once to open several windows. `app.windows` gives you a snapshot of every open window, and `app.get_window(win.id)` looks one up by ID.
+
+If several windows must share the same cookies, cache and `localStorage`, create a shared context with `await WebContext.create(...)` (the native context is bound to the main thread, so never instantiate `wryview.WebContext` directly at module level):
 
 ```python
-from lumiview import WindowEvent
+import tempfile
+from lumiview import App, WebContext, Window, WindowOptions
 
-@win.on(WindowEvent.TitleChangedEvent)
-def on_title(event):
-    print("new title:", event.title)
+app = App(name="MultiWindow", exit_on_last_window=True)
+DATA_DIR = tempfile.mkdtemp(prefix="lumiview_")
 
-@win.on(WindowEvent.NavigationRequestedEvent)
-def on_navigation(event):
-    if event.url.startswith("https://example.com"):
-        event.prevent()          # cancel this navigation
 
-@win.on(WindowEvent.JsEvent, where=lambda e: e.event == "data.changed")
-async def on_js(event):
-    print("from the page:", event.payload)
+async def main():
+    ctx = await WebContext.create(data_directory=DATA_DIR)
+
+    win_a = await Window.create(WindowOptions(title="Window A", url="https://example.com", web_context=ctx))
+    win_b = await Window.create(WindowOptions(title="Window B", url="https://example.com", web_context=ctx))
+
+    print("Window IDs:", [w.id for w in app.windows])
 ```
 
-- Handlers run off the GUI thread: `async def` on the asyncio loop, `def` on the
-  thread pool. Never touch native window objects directly — use `Window` methods
-  (they marshal to the GUI thread).
-- `where=` is a plain `(event) -> bool` filter function, run inline before the
-  handler. A filter that raises is treated as a non-match and logged — it never
-  breaks dispatch.
-- Preventable events: `CloseRequestedEvent`, `NavigationRequestedEvent`,
-  `NewWindowRequestedEvent`, `DownloadStartedEvent` (the last one can also
-  `save_to(path)`).
+- `exit_on_last_window=True` is the default: closing the last window calls `app.exit()` automatically.
+- Tray-resident apps can pass `App(exit_on_last_window=False)` instead.
 
-`event.window` is the `Window` the event belongs to.
+---
 
-### Subscriptions
+## Enabling diagnostic logging
 
-`win.on(...)` and `app.on(...)` return a `Subscription`: a callable, so the
-decorator form still works, with an extra `cancel()` to unregister:
+LumiView uses the standard-library `logging` module, and every record lives under the `lumiview` logger tree (`lumiview.app`, `lumiview.window`, `lumiview.bridge`, `lumiview.task`, and so on):
 
 ```python
-sub = win.on(WindowEvent.TitleChangedEvent)
+import logging
 
-
-@sub
-def on_title(event):
-    print("new title:", event.title)
-
-
-sub.cancel()   # idempotent
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("lumiview").setLevel(logging.DEBUG)  # show task scheduling, IPC timing and event dispatch details
 ```
-
-A dispatch already in flight may still reach the handler once after `cancel()`.
-
-### Waiting for one event
-
-`win.wait_for(...)` returns a `Task` that resolves with the next matching event and
-removes its temporary handler:
-
-```python
-event = await win.wait_for(WindowEvent.ClosedEvent, timeout=10)
-```
-
-`app.wait_for(...)` has the same shape. Waiters fail with `TimeoutError` on
-timeout and `WindowClosedError` / `AppClosedError` if the window/app is already
-gone. `win.wait_loaded()` is the common case: it waits for
-`PageLoadFinishedEvent` and is registered before the WebView exists, so it cannot
-miss the event.
-
-`WindowEvent.ClosedEvent` fires once after the native window and WebView are
-destroyed. At that point `win.is_closed` is `True` and window methods raise
-`WindowClosedError`; use the event for final cleanup, not for querying the window.
-
-### Registering handlers *before* the page loads
-
-`PageLoadStarted` / `PageLoadFinished` can fire before `Window.create()` returns.
-Use the `prepare` hook to register nothing-missable handlers on the window shell:
-
-```python
-def prepare(win):
-    win.on(WindowEvent.PageLoadStartedEvent)(
-        lambda event: print("loading", event.url)
-    )
-
-win = await Window.create(WindowOptions(url="https://example.com", prepare=prepare))
-```
-
-## Tasks and threads
-
-Everything that crosses a thread returns `Task` — a `concurrent.futures.Future`
-subclass with three consumption styles:
-
-```python
-result = await handle                  # asyncio thread
-result = handle.result()               # any non-GUI, non-asyncio thread
-handle.on_done(print)                  # callback, no blocking
-handle.on_exception(lambda exc: ...)
-```
-
-- `await` from asyncio code is the normal path.
-- `.result()` from the **asyncio thread** raises `TaskDeadlockError` (it would
-  deadlock the loop). From the GUI thread it drains the command queue while
-  waiting — the window freezes meanwhile, so don't do it in a hot path.
-- `task(fn, *args)` runs a function concurrently and wraps the result in a `Task`
-  (`async` → asyncio loop, `def` → thread pool).
-- `app.call_on_main(fn, ...)` runs `fn` on the GUI thread and returns a `Task`.
-
-Full model: [architecture.md](architecture.md).
-
-## Inspecting state
-
-These are plain reads, safe from any thread:
-
-```python
-from lumiview import App
-
-app = App.get()
-
-print(app.state)                  # AppState.RUNNING
-print(app.windows)                # tuple[Window, ...] snapshot
-win = app.get_window(window_id)   # Window | None
-print(win.id, win.is_closed)      # stable id / local flag
-print(app.is_async_thread())      # am I on the asyncio thread?
-print(app.async_loop)             # None before run() and during shutdown
-```
-
-`app.monitors()` and `app.primary_monitor()` touch the native event loop, so they
-run on the GUI thread and return a `Task`:
-
-```python
-monitors = await app.monitors()
-```
-
-## Closing
-
-`close_behavior` decides what a close request does:
-
-- `CloseBehavior.Close` (default) — destroy the window;
-- `CloseBehavior.Hide` — hide it instead (tray apps);
-- `CloseBehavior.Ignore` — do nothing, let the app decide.
-
-`CloseRequestedEvent` runs first and can `prevent()` any of them:
-
-```python
-from lumiview import CloseBehavior, WindowEvent
-
-win = await Window.create(WindowOptions(close_behavior=CloseBehavior.Hide))
-
-@win.on(WindowEvent.CloseRequestedEvent)
-def on_close(event):
-    if not document_saved():
-        event.prevent()      # nothing happens
-```
-
-`win.request_close()` goes through that flow; `await win.close()` skips it and
-destroys the window immediately.
-
-## Where to go next
-
-- [JS ↔ Python bridge](plugins.md) — expose Python functions to the page.
-- [Menus & tray icons](menus.md) — native menu bars and the system tray.
-- [JS client reference](js-client.md) — `window.__LUMIVIEW__` and the npm package.
-- [Serving a frontend](serve.md) — static files, WSGI, ASGI over `lumiview://`.
-- [Architecture](architecture.md) — threads, tasks, event pipeline.
-- [Third-party integrations](integrations.md) — dialogs, AppKit, GTK.
-- [Changelog](../CHANGELOG.md) — breaking changes and migration from 0.1.2.

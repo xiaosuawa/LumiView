@@ -2,7 +2,9 @@
 events.py — Events in both directions, plus one-shot waits.
 
 Shows:
-  - AppEvent.ReadyEvent / AppEvent.AppCloseEvent
+  - AppEvent.ReadyEvent / AppEvent.CloseRequestedEvent / AppEvent.ClosedEvent
+    (the close hook runs before the windows are released, the closed one
+    after everything is gone)
   - WindowEvent.TitleChangedEvent with a cancellable Subscription
   - win.wait_for(...) — one-shot wait for the next matching event
   - WindowEvent.JsEvent — page -> Python notifications via __LUMIVIEW__.emit()
@@ -47,9 +49,18 @@ async def on_ready(event: AppEvent.ReadyEvent):
     print("[AppEvent] Ready — app is running.")
 
 
-@app.on(AppEvent.AppCloseEvent)
-async def on_close(event: AppEvent.AppCloseEvent):
-    print("[AppEvent] Close — shutting down gracefully.")
+@app.on(AppEvent.CloseRequestedEvent)
+async def on_close(event: AppEvent.CloseRequestedEvent):
+    # Dispatched before the windows are released: native calls still work.
+    for win in app.windows:
+        await win.set_title("closing…")
+    print("[AppEvent] Close requested — shutting down gracefully.")
+
+
+@app.on(AppEvent.ClosedEvent)
+async def on_closed(event: AppEvent.ClosedEvent):
+    # Irreversible: the native side is gone, new work fails.
+    print(f"[AppEvent] Closed — exit code {event.exit_code}.")
 
 
 async def main():

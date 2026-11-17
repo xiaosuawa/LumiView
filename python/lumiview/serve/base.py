@@ -1,15 +1,11 @@
-"""
-Serve — request / response types and the handler base class for
-custom scheme handlers.
+"""Request/response types and the handler base for ``lumiview://`` handlers.
 
-A :class:`Serve` receives a :class:`Request` and a ``respond`` callback.
-It must call ``respond(status, headers, body)`` exactly once to deliver the
-response. The handler may do so synchronously or from any thread / event loop
-— the framework never blocks waiting for it.
+A :class:`Serve` must call ``respond(status, headers, body)`` exactly once.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -17,11 +13,10 @@ from typing import Callable, Awaitable
 
 from lumiview.task import run_async
 
-# (status, headers, body) — must be called exactly once to deliver a
-# response; may be called synchronously or from any thread.
+# Called exactly once, from any thread.
 RespondFn = Callable[[int, list[tuple[str, str]], bytes], None]
 
-log = logging.getLogger("lumiview.serve.base")
+_log = logging.getLogger("lumiview.serve.base")
 
 _SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*$")
 
@@ -39,17 +34,7 @@ def _check_scheme(scheme: str) -> str:
 
 @dataclass(frozen=True)
 class Request:
-    """Incoming request from the WebView custom protocol handler.
-
-    Attributes:
-        method: HTTP method (``"GET"``, ``"HEAD"``, etc.).
-        url: Full ``lumiview://app/...`` URL.
-        path: Path component (``"/"``, ``"/index.html"``, etc.).
-        query: Query string without ``?`` (``""`` if none).
-        headers: Request headers as ``list[tuple[str, str]]``.
-            Duplicate keys are allowed (e.g. multiple ``Accept``).
-        body: Raw request body bytes.
-    """
+    """Incoming request from the WebView custom protocol handler."""
 
     method: str
     url: str
@@ -61,38 +46,15 @@ class Request:
 
 @dataclass
 class Response:
-    """Response to send back to the WebView.
-
-    Attributes:
-        status: HTTP status code (default ``200``).
-        headers: Response headers as ``list[tuple[str, str]]``.
-            Duplicate keys are allowed (e.g. multiple ``Set-Cookie``).
-        body: Response body bytes.
-    """
+    """Response to send back to the WebView."""
 
     status: int = 200
     headers: list[tuple[str, str]] = field(default_factory=list)
     body: bytes = b""
 
 
-# Serve base class
-
-
 class Serve:
-    """Base class for custom scheme handlers.
-
-    A ``Serve`` receives a :class:`Request` and a ``respond`` callback.
-    It must call ``respond(status, headers, body)`` exactly once — the
-    framework does **not** inspect the return value::
-
-        class MyHandler(Serve):
-            def __call__(self, request: Request, respond: RespondFn) -> None:
-                respond(200, [], b"hello")
-
-    The ``scheme`` parameter names the custom protocol this handler is
-    registered under (default ``"lumiview"``). To serve a plain function
-    that returns a :class:`Response`, use :class:`Handler`.
-    """
+    """Base class for custom scheme handlers (sync; runs on the protocol thread)."""
 
     def __init__(self, *, scheme: str = "lumiview") -> None:
         self.scheme = _check_scheme(scheme)
@@ -103,34 +65,10 @@ class Serve:
         )
 
 
-# Convenience: Handler from a plain function
-
-
 class Handler(Serve):
-    """Adapt a plain function into a :class:`Serve` handler.
+    """Adapt a plain function returning a :class:`Response` into a :class:`Serve`.
 
-    The function receives a :class:`Request` and must return a
-    :class:`Response`. Sync functions run on the App's thread pool;
-    async functions run on the App's asyncio loop — both via the same
-    ``run_async`` dispatch used for bridge commands and hook handlers::
-
-        def my_handler(request: Request) -> Response:
-            return Response(200, body=b"OK")
-
-        async def my_async_handler(request: Request) -> Response:
-            await something()
-            return Response(200, body=b"OK")
-
-        win = await Window.create(source=Handler(my_handler))
-
-    Parameters:
-        fn: Handler function.
-        scheme: Name of the custom protocol this handler is registered
-            under (default ``"lumiview"``).
-
-    Usage::
-
-        win = await Window.create(source=Handler(my_api, scheme="api"))
+    Sync functions run on the App's thread pool, async ones on its loop.
     """
 
     def __init__(
@@ -143,30 +81,47 @@ class Handler(Serve):
         self._fn = fn
 
     def __call__(self, request: Request, respond: RespondFn) -> None:
-        """Handle one request — dispatched to the App's asyncio loop.
-
-        Returns immediately; ``respond()`` is called from the asyncio
-        thread when the handler finishes (or fails).
-        """
-        from lumiview.app import App
+        """Handle one request; ``respond()`` runs on the asyncio thread."""
+        from lumiview.app import App, AppState
 
         app = App.get()
         loop = app._async_loop
         if loop is None:
-            respond(500, [("Content-Type", "text/plain")], b"App not running")
+            respond(503, [("Content-Type", "text/plain")], b"App is shutting down")
             return
+
+        responded = False
+
+        def _once(status: int, headers: list[tuple[str, str]], body: bytes) -> None:
+            """Deliver the response exactly once — later calls are dropped."""
+            nonlocal responded
+            if responded:
+                _log.warning(
+                    "Serve responder called twice (status=%s) — dropping", status
+                )
+                return
+            responded = True
+            respond(status, headers, body)
 
         async def _run() -> None:
             try:
                 result = await run_async(self._fn, request)
-                respond(result.status, result.headers, result.body)
-            except Exception:
-                log.exception("Serve handler raised an exception")
-                respond(500, [("Content-Type", "text/plain")], b"Internal Server Error")
+            except asyncio.CancelledError:
+                # The window may already be gone — do not answer, just unwind.
+                _log.debug("serve handler cancelled during shutdown")
+                raise
+            except BaseException:
+                _log.exception("Serve handler raised an exception")
+                if app.is_running:
+                    _once(
+                        500,
+                        [("Content-Type", "text/plain")],
+                        b"Internal Server Error",
+                    )
+                return
+            _once(result.status, result.headers, result.body)
 
         if not app._spawn(_run()):
-            # Same shutdown race as ASGI.__call__: the loop closed between the
-            # None-check and scheduling. _spawn() closed the coroutine, so it
-            # is not reported as "never awaited"; still answer the request.
-            log.warning("asyncio loop closed while dispatching a serve request")
-            respond(503, [("Content-Type", "text/plain")], b"App is shutting down")
+            # The loop closed between the check and the dispatch — answer 503.
+            _log.warning("asyncio loop closed while dispatching a serve request")
+            _once(503, [("Content-Type", "text/plain")], b"App is shutting down")

@@ -17,8 +17,7 @@ INJECTED_TYPES = {BridgeContext}
 _converter = Converter(forbid_extra_keys=True)
 
 
-# cattrs structures basic types via their constructors (int("3") == 3),
-# which would silently coerce — register exact-match hooks instead.
+# cattrs would coerce via constructors; register exact-match hooks.
 def _strict_scalar(value, typ):
     if typ is float:
         if type(value) is not bool and isinstance(value, (int, float)):
@@ -59,9 +58,7 @@ def bind_arguments(
             f"Payload must be an object, got {type(payload).__name__}",
         )
 
-    # Precomputed at registration and cached on the Command — no per-call
-    # introspection. Fall back to a fresh compute for a Command constructed
-    # directly (tests) or one whose hints failed to resolve earlier.
+    # Cached on the Command; fall back for direct/test construction.
     hints = cmd.type_hints
     if hints is None:
         try:
@@ -70,7 +67,6 @@ def bind_arguments(
             hints = {}
     sig = cmd.signature if cmd.signature is not None else inspect.signature(cmd.fn)
     bound: dict[str, Any] = {}
-    has_regular_params = False
 
     for param in sig.parameters.values():
         if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
@@ -86,7 +82,6 @@ def bind_arguments(
             )
             continue
 
-        has_regular_params = True
         if param.name not in payload:
             if param.default is inspect.Parameter.empty:
                 raise BridgeError(
@@ -103,13 +98,19 @@ def bind_arguments(
                 f"Invalid argument {param.name!r}: {exc}",
             ) from exc
 
-    if cmd.strict and has_regular_params:
+    if cmd.strict:
         injected_names = {
             p.name
             for p in sig.parameters.values()
             if hints.get(p.name, p.annotation) in INJECTED_TYPES
         }
-        legal = set(sig.parameters) - injected_names
+        # *args/**kwargs are unsupported: their names must not whitelist keys.
+        variadic_names = {
+            p.name
+            for p in sig.parameters.values()
+            if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
+        }
+        legal = set(sig.parameters) - injected_names - variadic_names
         extra = set(payload) - legal
         if extra:
             raise BridgeError(

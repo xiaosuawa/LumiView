@@ -20,7 +20,7 @@
 >
 > LumiView is currently in **alpha**. The API is functional but **not yet fully stable** — method names, parameter structures, and import paths may still change between releases. We use alpha releases to gather early feedback while retaining the flexibility to adjust the API.
 >
-> **Early adopters welcome!** Try building an app with it and tell us what works well and what doesn't. Your feedback will directly shape the final stable API. When upgrading, please check the [changelog](CHANGELOG.md) and be prepared to adjust your code.
+> **Early adopters welcome!** Try building an app with it and tell us what works well and what doesn't. Your feedback will directly shape the final stable API. When upgrading, please check the release notes and be prepared to adjust your code.
 
 ---
 
@@ -53,17 +53,19 @@ flowchart TB
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md)
-- [Architecture & Threading Model](docs/architecture.md)
-- [Custom Plugins](docs/plugins.md)
-- [Menus & Tray Icons](docs/menus.md)
-- [JS Client (npm / `window.__LUMIVIEW__`)](docs/js-client.md)
-- [Third-Party Integrations](docs/integrations.md)
-- [Serve Protocol](docs/serve.md)
-- [Changelog](CHANGELOG.md)
+Start with the [documentation index](docs/README.md) and its three-minute mental model, then dive into a chapter:
 
-> Chinese translations live next to the English docs (`docs/*.zh.md`), e.g.
-> [快速入门](docs/getting-started.zh.md).
+- [Getting Started](docs/getting-started.md) — installation, minimal async/sync apps, `WindowOptions`, multi-window contexts and logging
+- [Architecture & Concurrency](docs/architecture-and-concurrency.md) — layered design, threading, `Task[T]`, deadlock protection and third-party GUI integration
+- [Lifecycle & Events](docs/lifecycle-and-events.md) — `AppState`, two-phase shutdown, preventable events and one-shot waits
+- [Windows & Native Appearance](docs/window-and-appearance.md) — geometry, frameless titlebars, native effects and WebView capabilities
+- [JS ↔ Python Communication](docs/bridge-and-js-client.md) — the Bridge, `window.__LUMIVIEW__`, typed commands and secure modes
+- [Plugins & Permissions](docs/plugins-and-permissions.md) — `Scope` trees, `ScopePermission` chains and custom plugins
+- [Serve Protocols](docs/serve-protocols.md) — `Static`, `Handler`, `WSGI` and `ASGI` over `lumiview://`
+- [Native Menus & Tray](docs/menus-and-tray.md) — menu trees, accelerators, tray icons and close-to-tray
+
+> Chinese translations live next to the English docs (`docs/*.zh.md`), starting with the
+> [文档导航](docs/README.zh.md).
 
 ## Installation
 
@@ -96,7 +98,7 @@ app.run(main)
 
 - **🧵 Unified async/sync** — All cross-thread / async operations return `Task`. `await`, `.result()`, or `.on_done()` — same API, your choice.
 - **⏳ Event filters & one-shot waits** — `where=` predicates, `wait_for()` / `wait_loaded()`, cancellable `Subscription`s, and `WindowEvent.JsEvent` for page-to-Python notifications.
-- **🌉 JS ↔ Python Bridge** — Expose Python functions to JS via `window.__LUMIVIEW__.invoke()`. No HTTP server, no manual serialization required. The optional `lumiview` npm package adds typings for bundled frontends.
+- **🌉 JS ↔ Python Bridge** — Expose Python functions to JS via `window.__LUMIVIEW__.invoke()`. No HTTP server, no manual serialization required. A typed facade for bundled frontends lives in `js/` (not published to npm yet).
 - **🪟 Native window effects** — Acrylic, Mica, Vibrancy via `window-vibrancy`.
 - **🎨 Custom titlebar** — Declarative `data-lumiview-drag-region` drag areas + built-in `__LUMIVIEW__.plugins.window.*` JS API (minimize / maximize / close).
 - **📋 Native menus** — Per-item `on_activate` callbacks + global `MenuItemActivatedEvent`; macOS default app menu installed automatically, window menu bars on Windows.
@@ -141,7 +143,7 @@ For runnable code, see the [`examples/`](examples/) directory.
 - [x] Window management (TaoWindow + Window)
 - [x] WebView embedding (wryview)
 - [x] JS ↔ Python Bridge (invoke/emit/listen IPC)
-- [x] TypeScript client + optional `lumiview` npm package
+- [x] TypeScript page client (`js/`); npm publishing pending
 - [x] Event class system (WindowEvent / AppEvent)
 - [x] Event filters, one-shot waits and cancellable subscriptions
 - [x] Unified async/sync `Task` interface
@@ -151,7 +153,7 @@ For runnable code, see the [`examples/`](examples/) directory.
 - [x] Custom titlebar
 - [x] Native menus (muda)
 - [x] System tray (tray-icon)
-- [x] abi3 + abi3t wheel builds (CPython 3.10+ / free-threaded 3.15)
+- [x] abi3 + cp314t + abi3.abi3t wheel builds (CPython 3.10+ / free-threaded 3.14+)
 - [ ] API stabilization
 - [ ] Complete documentation site
 

@@ -29,18 +29,15 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<types::WindowHandleKind>()?;
     m.add_class::<types::EventLoopControl>()?;
     m.add_class::<types::EventKind>()?;
-    m.add_class::<types::ModifiersState>()?;
     m.add_class::<types::MouseButton>()?;
     m.add_class::<types::ElementState>()?;
     m.add_class::<types::ScrollDeltaKind>()?;
     m.add_class::<types::TouchPhase>()?;
-    m.add_class::<types::KeyLocation>()?;
     m.add_class::<types::Theme>()?;
     m.add_class::<types::WindowEffect>()?;
     m.add_class::<types::ResizeDirection>()?;
     m.add_class::<types::CursorIcon>()?;
     m.add_class::<types::AttentionType>()?;
-    m.add_class::<types::StartCause>()?;
     m.add_class::<types::ProgressState>()?;
     m.add_class::<types::VibrancyMaterial>()?;
     m.add_class::<types::ActivationPolicy>()?;
@@ -72,13 +69,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<events::ReopenEvent>()?;
     m.add_class::<events::ScaleFactorChangedEvent>()?;
     m.add_class::<events::ThemeChangedEvent>()?;
-    m.add_class::<events::MouseInputEvent>()?;
-    m.add_class::<events::CursorMovedEvent>()?;
-    m.add_class::<events::MouseWheelEvent>()?;
-    m.add_class::<events::KeyboardInputEvent>()?;
-    m.add_class::<events::ModifiersChangedEvent>()?;
-    m.add_class::<events::CursorEnteredEvent>()?;
-    m.add_class::<events::CursorLeftEvent>()?;
     m.add_class::<events::RedrawRequestedEvent>()?;
     m.add_class::<events::UserEvent>()?;
     m.add_class::<events::LoopDestroyedEvent>()?;
@@ -93,9 +83,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<events::AxisMotionEvent>()?;
     m.add_class::<events::TouchEvent>()?;
     // Loop-level events
-    m.add_class::<events::NewEventsEvent>()?;
-    m.add_class::<events::MainEventsClearedEvent>()?;
-    m.add_class::<events::RedrawEventsClearedEvent>()?;
     m.add_class::<events::OpenedEvent>()?;
     // Device events
     m.add_class::<events::DeviceAddedEvent>()?;

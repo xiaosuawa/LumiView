@@ -1,30 +1,12 @@
-"""
-lumiview
-
-Tao window management + wryview WebView = cross-platform desktop apps,
-powered by Rust under the hood.
-
-Application layer (default — start here)::
+"""lumiview — tao windows + wryview WebView, async-first and thread-safe.
 
     from lumiview import App, Window, WindowOptions
 
     app = App(name="MyApp")
-
-    async def main():
-        win = await Window.create(WindowOptions(title="MyApp", url="https://example.com"))
-        app.exit()
-
     app.run(main)
 
-Events::
-
-    from lumiview import WindowEvent
-
-    @win.on(WindowEvent.TitleChangedEvent)
-    def on_title(event):
-        print(event.title)
-
-Low-level bindings live in :mod:`lumiview._core`.
+Events live in :class:`lumiview.WindowEvent` / :class:`lumiview.AppEvent`;
+low-level bindings are in :mod:`lumiview._core`.
 """
 
 from lumiview.app import App, AppState, AppClosedError, WindowClosedError
@@ -63,8 +45,10 @@ from lumiview.events import (
     Event,
     WindowEvent,
     WindowBaseEvent,
+    WindowPreventableEvent,
     AppEvent,
     AppBaseEvent,
+    AppPreventableEvent,
 )
 from lumiview._utils import Subscription
 from lumiview._core import (
@@ -72,7 +56,6 @@ from lumiview._core import (
     ElementState,
     MouseButton,
     ScrollDeltaKind,
-    StartCause,
     TouchPhase,
 )
 from lumiview import utils
@@ -82,12 +65,10 @@ from lumiview import serve
 __version__ = "0.2.0rc1"
 
 __all__ = [
-    # Application layer
     "App",
     "AppState",
     "AppClosedError",
     "WindowClosedError",
-    # Window layer
     "WebContext",
     "Window",
     "WindowOptions",
@@ -103,7 +84,6 @@ __all__ = [
     "Monitor",
     "VideoMode",
     "WindowHandleKind",
-    # Menus & tray
     "Menu",
     "MenuItem",
     "Submenu",
@@ -112,21 +92,19 @@ __all__ = [
     "TrayIcon",
     "TrayIconOptions",
     "ActivationPolicy",
-    # Events
     "Event",
     "WindowEvent",
     "WindowBaseEvent",
+    "WindowPreventableEvent",
     "AppEvent",
     "AppBaseEvent",
+    "AppPreventableEvent",
     "DragDropEvent",
     "Subscription",
-    # Event field types
     "MouseButton",
     "ElementState",
     "ScrollDeltaKind",
-    "StartCause",
     "TouchPhase",
-    # IPC
     "Bridge",
     "BridgeError",
     "Scope",
@@ -134,11 +112,9 @@ __all__ = [
     "ScopePermission",
     "BridgeContext",
     "InitContext",
-    # Concurrency
     "task",
     "Task",
     "TaskDeadlockError",
-    # Subpackages
     "utils",
     "plugins",
     "serve",

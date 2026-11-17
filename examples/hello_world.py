@@ -9,6 +9,11 @@ Run:
 """
 
 import asyncio
+
+# set up logging to see debug output from the app and tasks
+# import logging
+# logging.basicConfig(level=logging.DEBUG)
+
 from lumiview import App, Window, WindowOptions
 
 app = App(name="HelloWorld")

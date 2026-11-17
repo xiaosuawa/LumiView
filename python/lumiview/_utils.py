@@ -1,27 +1,26 @@
-"""Internal helpers shared by the framework modules.
-
-Not part of the public API — user-facing helpers live in
-:mod:`lumiview.utils`. :func:`main_thread` lives here because importing it
-from :mod:`lumiview.app` at module level would create a cycle (app imports
-the menu/tray modules lazily, but those import app eagerly).
-"""
+"""Internal helpers shared by the framework modules."""
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 import re
 import threading
 import time
-from concurrent.futures import InvalidStateError
-from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
+from contextlib import suppress
+from typing import Any, Callable, Concatenate, Generic, ParamSpec, TYPE_CHECKING
+from typing_extensions import TypeVar
 
-from lumiview.events import WindowEvent
-from lumiview.task import Task
+from lumiview.events import Event, WindowEvent
+from lumiview.task import Task, run_async
+
+if TYPE_CHECKING:
+    from lumiview.app import App
 
 P = ParamSpec("P")
 R = TypeVar("R")
-E = TypeVar("E")
+E = TypeVar("E", default=Any)
 
 _log = logging.getLogger("lumiview.events")
 
@@ -39,6 +38,50 @@ def passes_where(where: Callable[[E], bool] | None, event: E) -> bool:
         return False
 
 
+def _dispatch_event(
+    app: "App",
+    entries: list[tuple[Callable[..., Any], Callable[[Any], bool] | None]],
+    event: Event,
+) -> Task[None] | None:
+    """Run the matching handlers for *event* on the app's asyncio loop.
+
+    Returns a Task that settles when every handler finished, or ``None`` when
+    there is no loop or no handlers. ``where`` filters run on the loop thread and
+    a handler failure is logged (the remaining handlers still run). Cancellation
+    settles the Task with ``None`` and re-raises, so a shutdown does not surface
+    as an error in a preventable event's GUI-thread caller.
+    """
+    if not entries or app._async_loop is None:
+        return None
+
+    if _log.isEnabledFor(logging.DEBUG):
+        _log.debug(
+            "dispatching %s to %d handler(s): %s",
+            type(event).__name__,
+            len(entries),
+            ", ".join(fn_name(fn) for fn, _ in entries),
+        )
+
+    done: Task[None] = Task()
+
+    async def _dispatch() -> None:
+        for fn, where in entries:
+            if not passes_where(where, event):
+                continue
+            try:
+                await run_async(fn, event)
+            except asyncio.CancelledError:
+                done._settle(result=None)
+                raise
+            except BaseException:
+                _log.exception("Error in %s handler: %s", type(event).__name__, fn)
+        done._settle(result=None)
+
+    if not app._spawn(_dispatch()):
+        done._settle(result=None)
+    return done
+
+
 def copy_signature_for_classmethod(
     _: Callable[P, Any],
 ) -> Callable[[Callable[..., R]], Callable[Concatenate[type[Any], P], R]]:
@@ -51,12 +94,7 @@ def copy_signature_for_classmethod(
 
 
 def main_thread(fn: Callable[P, R]) -> Callable[P, Task[R]]:
-    """
-    Decorate a sync ``def`` method to run on the main thread.
-
-    Returns a :class:`Task` — ``await`` in async code, ``.result()``
-    in sync code.
-    """
+    """Run a sync ``def`` on the main thread; returns a ``Task``."""
 
     @functools.wraps(fn)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> Task[R]:
@@ -68,12 +106,7 @@ def main_thread(fn: Callable[P, R]) -> Callable[P, Task[R]]:
 
 
 def fn_name(fn: Any) -> str:
-    """Best-effort human-readable name for a callable (for logs).
-
-    Handles :class:`functools.partial` and falls back to ``repr`` —
-    lambdas and functions carry ``__qualname__``; builtins / bound
-    objects without one fall to ``repr``.
-    """
+    """Best-effort human-readable name for a callable (for logs)."""
     if isinstance(fn, functools.partial):
         return fn_name(fn.func) + "(partial)"
     return getattr(fn, "__qualname__", getattr(fn, "__name__", repr(fn)))
@@ -85,11 +118,7 @@ def fmt_ms(start: float) -> float:
 
 
 def pattern_to_regex(pattern: str) -> re.Pattern[str]:
-    """Convert a ``*`` glob pattern to a compiled regex.
-
-    ``*`` matches any sequence (including ``/``, ``.``, ``?``); every
-    other character matches literally.
-    """
+    """Convert a ``*`` glob to a regex (``*`` matches anything; the rest is literal)."""
     parts = pattern.split("*")
     source = "^" + re.escape(parts[0])
     for part in parts[1:]:
@@ -110,20 +139,14 @@ def remove_handler(
     *,
     lock: threading.Lock | None = None,
 ) -> None:
-    """Remove a ``(handler, where)`` pair from an event-handler registry.
-
-    *lock* is the registry's lock (when the owner has one) so removal is
-    atomic with respect to registration and dispatch snapshots.
-    """
+    """Remove a ``(handler, where)`` pair from a registry (optionally under *lock*)."""
 
     def _remove() -> None:
         entries = handlers.get(event)
         if entries is None:
             return
-        try:
+        with suppress(ValueError):
             entries.remove(entry)
-        except ValueError:
-            pass
 
     if lock is None:
         _remove()
@@ -141,23 +164,17 @@ def wait_for_event(
     close_event: type,
     is_closed: Callable[[], bool],
     closed_error: Callable[[], BaseException],
-    lock: threading.Lock | None = None
+    lock: threading.Lock | None = None,
 ) -> Task[E]:
     """One-shot event waiter shared by ``App.wait_for`` / ``Window.wait_for``.
 
-    Registers a temporary handler in *handlers*, resolves the returned
-    :class:`Task` with the first matching *event*, and fails it with
-    *closed_error* when *close_event* is dispatched (or when *is_closed*
-    reports the owner already closed) or with :class:`TimeoutError` after
-    *timeout* seconds. Both temporary handlers are removed when the task
-    settles, so a timed-out waiter leaves nothing behind.
+    Fails with *closed_error* when *close_event* fires, or ``TimeoutError``.
     """
     from lumiview.app import App  # deferred — avoids an import cycle
 
     app = App.get()
-    loop = app._async_loop
 
-    if loop is None:
+    if app._async_loop is None:
         return Task._failed(RuntimeError("App is not running"))
 
     task: Task[E] = Task()
@@ -167,90 +184,54 @@ def wait_for_event(
         if task.done():
             return
         remove_handler(handlers, event, holder["entry"], lock=lock)
-        try:
-            task.set_result(ev)
-        except InvalidStateError:
-            # Lost a race with the close/timeout path — it wins.
-            pass
+        task._settle(result=ev)
 
     async def _on_closed(_ev: Any) -> None:
         if task.done():
             return
         remove_handler(handlers, event, entry, lock=lock)
         remove_handler(handlers, close_event, close_entry, lock=lock)
-        try:
-            task.set_exception(closed_error())
-        except InvalidStateError:
-            pass
+        task._settle(exc=closed_error())
 
     entry = (_handler, where)
     close_entry = (_on_closed, None)
     holder["entry"] = entry
     if lock is None:
         handlers.setdefault(event, []).append(entry)
-        # The close event shares the same registry as ordinary events: it is
-        # dispatched exactly like one, so waiting for it needs no second
-        # mechanism (and no notification object of its own).
+        # The close event is an ordinary event in the same registry.
         handlers.setdefault(close_event, []).append(close_entry)
     else:
-        # Register both waiters atomically: a dispatch snapshot taken between
-        # the two appends would otherwise miss the close waiter.
+        # Register both waiters atomically (a snapshot could miss one).
         with lock:
             handlers.setdefault(event, []).append(entry)
             handlers.setdefault(close_event, []).append(close_entry)
     _log.debug(
-        "wait_for %s (%stimeout=%s)",
+        "wait_for %s (timeout=%s)",
         event.__name__,
         f"{timeout}s" if timeout is not None else "none",
     )
 
-    timer: list[Any] = []
-
     def _cleanup(_: Any) -> None:
         remove_handler(handlers, event, entry, lock=lock)
         remove_handler(handlers, close_event, close_entry, lock=lock)
-        if timer:
-            try:
-                timer[0].cancel()
-            except Exception:
-                pass
 
     task.add_done_callback(_cleanup)
 
-    # The owner may have closed between the caller's check and the
-    # registration above — the close event has already been dispatched,
-    # so no further one is coming.
+    # Closed between the caller's check and registration: no event is coming.
     if is_closed():
-        try:
-            task.set_exception(closed_error())
-        except InvalidStateError:
-            pass
+        task._settle(exc=closed_error())
         return task
 
-    if timeout is not None:
+    if timeout is None:
+        return task
 
-        def _expire() -> None:
-            if task.done():
-                return
-            remove_handler(handlers, event, entry, lock=lock)
-            remove_handler(handlers, close_event, close_entry, lock=lock)
-            try:
-                task.set_exception(
-                    TimeoutError(
-                        f"wait_for({event.__name__}) timed out after {timeout}s"
-                    )
-                )
-            except InvalidStateError:
-                pass
-
-        def _arm() -> None:
-            if task.done():
-                return
-            timer.append(loop.call_later(timeout, _expire))
-
-        app._call_soon_threadsafe(_arm)
-
-    return task
+    bounded = task.with_timeout(
+        timeout,
+        message=f"wait_for({event.__name__}) timed out after {timeout}s",
+    )
+    # On timeout or caller cancellation, unregister the handlers.
+    bounded.add_done_callback(lambda _: task.cancel())
+    return bounded
 
 
 def navigation_policy(
@@ -258,18 +239,10 @@ def navigation_policy(
     allow: tuple[str, ...] = (),
     deny: tuple[str, ...] = (),
 ) -> Callable[[WindowEvent.NavigationRequestedEvent], None]:
-    """Build a handler for ``win.on(WindowEvent.NavigationRequestedEvent)``.
+    """Build a handler that prevents non-matching navigations.
 
-    Patterns are ``*`` globs matched against the full URL; deny wins.
-    Empty *allow* means "allow everything not denied" (same semantics as
-    the Bridge permission chain). Non-matching navigations are prevented
-    via :meth:`~lumiview.events.WindowBaseEvent.prevent`.
-
-    Example::
-
-        win.on(WindowEvent.NavigationRequestedEvent)(
-            utils.navigation_policy(allow=("https://*", "app://*"))
-        )
+    ``*`` globs matched against the full URL; deny wins, and an empty *allow* means
+    "allow everything not denied".
     """
 
     def handler(event: WindowEvent.NavigationRequestedEvent) -> None:
@@ -284,39 +257,30 @@ def navigation_policy(
     return handler
 
 
-class Subscription:
-    """A registered event handler that can be cancelled.
+class Subscription(Generic[E]):
+    """A handler slot returned by ``on()``.
 
-    Returned by ``Window.on`` / ``App.on``. Callable, so the decorator form
-    keeps working (and returns the handler unchanged), plus :meth:`cancel`
-    to remove it from the registry::
-
-        sub = win.on(WindowEvent.TitleChangedEvent)
-
-        @sub
-        def on_title(event):
-            print(event.title)
-
-        sub.cancel()   # idempotent; no-op before registration
+    Call it to register a handler (the decorator form), or let ``on(event,
+    handler)`` register immediately. ``cancel()`` unregisters idempotently.
     """
 
     __slots__ = ("_handlers", "_event", "_where", "_lock", "_entry", "_cancelled")
 
     def __init__(
         self,
-        handlers: dict[type, list[tuple]],
-        event: type,
-        where: Callable[[Any], bool] | None,
+        handlers: dict[Any, Any],
+        event: type[E],
+        where: Callable[[E], bool] | None,
         lock: threading.Lock | None,
     ) -> None:
         self._handlers = handlers
         self._event = event
         self._where = where
         self._lock = lock
-        self._entry: tuple | None = None
+        self._entry: tuple[Callable[[E], Any], Callable[[E], bool] | None] | None = None
         self._cancelled = False
 
-    def __call__(self, fn: Callable[..., Any]) -> Callable[..., Any]:
+    def __call__(self, fn: Callable[[E], R]) -> Callable[[E], R]:
         if not self._cancelled:
             entry = (fn, self._where)
             if self._lock is None:
