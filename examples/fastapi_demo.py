@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
 from lumiview import App, Window, WindowOptions
-from lumiview.serve import ASGI
+from lumiview.serve.asgi import ASGI
 
 # ── FastAPI app ─────────────────────────────────────────────────────────────
 

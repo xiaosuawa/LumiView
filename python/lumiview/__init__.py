@@ -7,21 +7,15 @@
 
 Events live in :class:`lumiview.WindowEvent` / :class:`lumiview.AppEvent`;
 low-level bindings are in :mod:`lumiview._core`.
+
+Optional submodules are imported explicitly so ``import lumiview`` stays light:
+``lumiview.serve`` (core protocol types), ``lumiview.plugins`` (plugins) and
+``lumiview.utils`` are not re-exported here. Serve adapters and plugins live in
+their own submodules, e.g. ``from lumiview.serve.static import Static`` or
+``from lumiview.plugins.window_controls import WindowControls``.
 """
 
 from lumiview.app import App, AppState, AppClosedError, WindowClosedError
-from lumiview._core import (
-    AttentionType,
-    CursorIcon,
-    Monitor,
-    ProgressState,
-    ResizeDirection,
-    Theme,
-    VibrancyMaterial,
-    VideoMode,
-    WindowEffect,
-    WindowHandleKind,
-)
 from lumiview.window import (
     CloseBehavior,
     TitleBarOptions,
@@ -51,16 +45,24 @@ from lumiview.events import (
     AppPreventableEvent,
 )
 from lumiview._utils import Subscription
+
 from lumiview._core import (
+    AttentionType,
+    CursorIcon,
+    Monitor,
+    ProgressState,
+    ResizeDirection,
+    Theme,
+    VibrancyMaterial,
+    VideoMode,
+    WindowEffect,
+    WindowHandleKind,
     ActivationPolicy,
     ElementState,
     MouseButton,
     ScrollDeltaKind,
     TouchPhase,
 )
-from lumiview import utils
-from lumiview import plugins
-from lumiview import serve
 
 __version__ = "0.2.0rc1"
 
@@ -115,7 +117,4 @@ __all__ = [
     "task",
     "Task",
     "TaskDeadlockError",
-    "utils",
-    "plugins",
-    "serve",
 ]

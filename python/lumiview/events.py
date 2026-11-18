@@ -484,4 +484,5 @@ __all__ = [
     "AppPreventableEvent",
     "WindowEvent",
     "AppEvent",
+    "DragDropEvent",
 ]

@@ -9,7 +9,9 @@ import warnings
 import pytest
 
 from lumiview.app import App, AppState
-from lumiview.serve import ASGI, Handler, Request, WSGI
+from lumiview.serve import Handler, Request
+from lumiview.serve.asgi import ASGI
+from lumiview.serve.wsgi import WSGI
 
 
 def _request() -> Request:

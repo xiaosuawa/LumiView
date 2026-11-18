@@ -5,7 +5,6 @@ import logging
 import sys
 import threading
 import time
-import webbrowser
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Callable, ParamSpec, TypeAlias, TypeVar, overload
 from urllib.parse import urlparse
@@ -1389,12 +1388,14 @@ class Window:
         if open_url is not None:
             _log.debug("new-window %s -> open external (%s)", url, open_url)
             try:
+                import webbrowser
                 webbrowser.open(open_url)
             except Exception:
                 _log.warning("failed to open url: %s", open_url, exc_info=True)
         elif not event.prevented:
             _log.debug("new-window %s -> open external", url)
             try:
+                import webbrowser
                 webbrowser.open(url)
             except Exception:
                 _log.warning("failed to open url: %s", url, exc_info=True)

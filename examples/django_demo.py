@@ -27,7 +27,7 @@ from django.template import Context, Template
 from django.urls import path
 
 from lumiview import App, Window, WindowOptions
-from lumiview.serve import WSGI
+from lumiview.serve.wsgi import WSGI
 
 # ── Django app (single-file, no settings.py / urls.py needed) ──────────────
 

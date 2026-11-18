@@ -4,6 +4,17 @@ With `WindowOptions(source=...)` you can serve frontend build output locally or 
 Python web framework directly over a custom protocol (default `lumiview://`) —
 **no local HTTP server, no port to bind, no cross-site access risk**.
 
+`lumiview.serve` exports the core protocol types (`Request`, `Response`, `Serve`,
+`RespondFn`, `Handler`). The file / WSGI / ASGI adapters live in dedicated submodules so
+that importing `lumiview` or `lumiview.serve` does not pull in optional machinery:
+
+```python
+from lumiview.serve import Handler, Request, Response, Serve
+from lumiview.serve.static import Static
+from lumiview.serve.wsgi import WSGI
+from lumiview.serve.asgi import ASGI
+```
+
 ---
 
 ## Four out-of-the-box adapters
@@ -14,7 +25,7 @@ Suited to bundled Vue / React / Svelte frontend projects:
 
 ```python
 from lumiview import Window, WindowOptions
-from lumiview.serve import Static
+from lumiview.serve.static import Static
 
 # spa=True (default): when no static file matches and the path has no extension, fall back to index.html
 win = await Window.create(
@@ -48,7 +59,7 @@ api_source = Handler(my_api, scheme="api")
 ### 3. `WSGI` — run synchronous web apps such as Flask / Django
 
 ```python
-from lumiview.serve import WSGI
+from lumiview.serve.wsgi import WSGI
 
 # Requests are submitted straight to the App's shared thread pool (sized by App(max_workers=...))
 win = await Window.create(WindowOptions(source=WSGI(django_app)))
@@ -61,7 +72,7 @@ win = await Window.create(WindowOptions(source=WSGI(django_app)))
 
 ```python
 from fastapi import FastAPI
-from lumiview.serve import ASGI
+from lumiview.serve.asgi import ASGI
 
 api = FastAPI()
 

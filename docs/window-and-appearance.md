@@ -44,12 +44,13 @@ no handler calls `prevent()`:
 ## Frameless windows and custom titlebars
 
 LumiView ships a first-party `WindowControls` Plugin, so you do not have to hand-write
-the drag hit-testing logic:
+the drag hit-testing logic. It lives in its own submodule so importing `lumiview` does not
+load the plugin:
 
 ```python
 import sys
 from lumiview import App, Bridge, Window, WindowEffect, WindowOptions
-from lumiview.plugins import WindowControls
+from lumiview.plugins.window_controls import WindowControls
 
 app = App(name="CustomTitlebar")
 bridge = Bridge(includes=[WindowControls(drag_regions=True)])

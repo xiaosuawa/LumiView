@@ -41,12 +41,13 @@ await win.close()                # 强制立即关闭并销毁资源
 
 ## 无边框窗口与自定义标题栏
 
-LumiView 内置了第一方插件 `WindowControls`，无需自己手写复杂的拖拽判断逻辑：
+LumiView 内置了第一方插件 `WindowControls`，无需自己手写复杂的拖拽判断逻辑。它位于独立子模块，
+因此 `import lumiview` 不会加载插件代码：
 
 ```python
 import sys
 from lumiview import App, Bridge, Window, WindowEffect, WindowOptions
-from lumiview.plugins import WindowControls
+from lumiview.plugins.window_controls import WindowControls
 
 app = App(name="CustomTitlebar")
 bridge = Bridge(includes=[WindowControls(drag_regions=True)])

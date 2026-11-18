@@ -2,6 +2,17 @@
 
 通过 `WindowOptions(source=...)`，你可以直接利用自定义协议（默认 `lumiview://`）在本地托管前端构建产物或直接运行 Python Web 框架，**无需启动任何本地 HTTP 服务器、无需占用端口、无跨站访问风险**。
 
+`lumiview.serve` 导出核心协议类型（`Request`、`Response`、`Serve`、`RespondFn`、
+`Handler`）。文件 / WSGI / ASGI 适配器位于独立子模块，避免 `import lumiview` 或
+`lumiview.serve` 时加载可选依赖：
+
+```python
+from lumiview.serve import Handler, Request, Response, Serve
+from lumiview.serve.static import Static
+from lumiview.serve.wsgi import WSGI
+from lumiview.serve.asgi import ASGI
+```
+
 ---
 
 ## 四种开箱即用的适配器
@@ -12,7 +23,7 @@
 
 ```python
 from lumiview import Window, WindowOptions
-from lumiview.serve import Static
+from lumiview.serve.static import Static
 
 # spa=True（默认）：找不到对应静态文件且路径无扩展名时，回退返回 index.html
 win = await Window.create(
@@ -45,7 +56,7 @@ api_source = Handler(my_api, scheme="api")
 ### 3. `WSGI` — 运行 Flask / Django 等同步 Web 应用
 
 ```python
-from lumiview.serve import WSGI
+from lumiview.serve.wsgi import WSGI
 
 # 请求直接提交至 App 共享线程池（大小由 App(max_workers=...) 控制）
 win = await Window.create(WindowOptions(source=WSGI(django_app)))
@@ -57,7 +68,7 @@ win = await Window.create(WindowOptions(source=WSGI(django_app)))
 
 ```python
 from fastapi import FastAPI
-from lumiview.serve import ASGI
+from lumiview.serve.asgi import ASGI
 
 api = FastAPI()
 

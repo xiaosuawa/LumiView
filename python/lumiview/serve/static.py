@@ -11,8 +11,6 @@ from urllib.parse import unquote
 
 from lumiview.serve.base import Request, RespondFn, Serve
 
-mimetypes.init()
-
 
 class Static(Serve):
     """Serve files from a local directory.

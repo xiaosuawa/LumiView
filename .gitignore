@@ -226,3 +226,8 @@ docs/superpowers
 js/node_modules/
 js/dist/
 python/lumiview/_bridge_client.py
+
+# Benchmark artifacts (machine-specific results and isolated installs).
+benchmarks/.deps/
+benchmarks/.venvs/
+benchmarks/results/

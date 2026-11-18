@@ -15,7 +15,7 @@ Run:
 import sys
 
 from lumiview import App, Bridge, Window, WindowEffect, WindowOptions
-from lumiview.plugins import WindowControls
+from lumiview.plugins.window_controls import WindowControls
 
 app = App(name="CustomTitlebar")
 

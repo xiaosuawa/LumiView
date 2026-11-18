@@ -13,7 +13,7 @@ import json
 import sys
 
 from lumiview import App, Bridge, Window, WindowEvent, WindowOptions
-from lumiview.plugins import WindowControls
+from lumiview.plugins.window_controls import WindowControls
 
 METHODS = [
     "close",
